@@ -43,3 +43,7 @@ devenv.local.yaml
 
 # local qodana checks
 qodana.yaml
+
+# serwist
+public/sw.js
+public/sw.js.map
