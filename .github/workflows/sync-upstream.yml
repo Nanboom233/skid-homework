@@ -1,0 +1,179 @@
+name: Sync Upstream
+
+on:
+  schedule:
+    # GitHub Actions 使用 UTC；20:00 UTC 对应 Asia/Shanghai 次日 04:00。
+    - cron: "0 20 * * *"
+  workflow_dispatch:
+    inputs:
+      upstream_branch:
+        description: Optional upstream branch to sync from
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout sync-main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: sync-main
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Add upstream remote
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git remote get-url upstream >/dev/null 2>&1; then
+            git remote set-url upstream https://github.com/cubewhy/skid-homework.git
+          else
+            git remote add upstream https://github.com/cubewhy/skid-homework.git
+          fi
+
+      - name: Resolve upstream branch
+        id: upstream
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --prune origin "+refs/heads/sync-main:refs/remotes/origin/sync-main"
+          git fetch --prune upstream
+
+          upstream_branch="${{ github.event.inputs.upstream_branch }}"
+
+          if [[ -z "$upstream_branch" ]]; then
+            upstream_branch="$(git ls-remote --symref upstream HEAD | awk '/^ref:/ {sub("refs/heads/", "", $2); print $2}')"
+          fi
+
+          if [[ -z "$upstream_branch" ]]; then
+            echo "无法确定上游分支" >&2
+            exit 1
+          fi
+
+          if ! git ls-remote --exit-code --heads upstream "$upstream_branch" >/dev/null 2>&1; then
+            echo "上游分支不存在: $upstream_branch" >&2
+            exit 1
+          fi
+
+          git fetch --prune upstream "+refs/heads/$upstream_branch:refs/remotes/upstream/$upstream_branch"
+
+          echo "branch=$upstream_branch" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse refs/remotes/upstream/$upstream_branch)" >> "$GITHUB_OUTPUT"
+
+      - name: Merge upstream into sync-main
+        id: sync
+        shell: bash
+        run: |
+          set -euo pipefail
+          git checkout -B sync-main origin/sync-main
+          upstream_ref="upstream/${{ steps.upstream.outputs.branch }}"
+          before_head="$(git rev-parse HEAD)"
+          pr_branch="sync-upstream-conflict-${{ steps.upstream.outputs.branch }}"
+          pr_branch="${pr_branch//\//-}"
+
+          if git merge-base --is-ancestor "$upstream_ref" HEAD; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "conflict=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          set +e
+          git merge --no-commit --no-ff "$upstream_ref"
+          merge_exit=$?
+          set -e
+
+          if [[ $merge_exit -ne 0 ]]; then
+            git merge --abort || true
+            git checkout -B "$pr_branch" "$upstream_ref"
+            git push origin "HEAD:refs/heads/$pr_branch" --force-with-lease
+            git checkout -B sync-main origin/sync-main
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "conflict=true" >> "$GITHUB_OUTPUT"
+            echo "pr_branch=$pr_branch" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git commit -m "chore(sync): merge upstream/${{ steps.upstream.outputs.branch }} into sync-main"
+          after_head="$(git rev-parse HEAD)"
+
+          if [[ "$before_head" == "$after_head" ]]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "conflict=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "conflict=false" >> "$GITHUB_OUTPUT"
+
+      - name: Push synced branch
+        if: steps.sync.outputs.changed == 'true' && steps.sync.outputs.conflict != 'true'
+        run: git push origin HEAD:sync-main
+
+      - name: Create or update conflict PR
+        if: steps.sync.outputs.conflict == 'true'
+        uses: actions/github-script@v7
+        env:
+          PR_BRANCH: ${{ steps.sync.outputs.pr_branch }}
+          UPSTREAM_BRANCH: ${{ steps.upstream.outputs.branch }}
+          UPSTREAM_SHA: ${{ steps.upstream.outputs.sha }}
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const base = 'sync-main';
+            const head = `${owner}:${process.env.PR_BRANCH}`;
+            const title = `chore: sync upstream ${process.env.UPSTREAM_BRANCH} into sync-main`;
+            const body = [
+              'Automated upstream sync detected merge conflicts.',
+              '',
+              `- Upstream branch: \`${process.env.UPSTREAM_BRANCH}\``,
+              `- Upstream commit: \`${process.env.UPSTREAM_SHA}\``,
+              '',
+              'This PR was opened automatically so the conflicts can be resolved manually.'
+            ].join('\n');
+
+            const { data: pulls } = await github.rest.pulls.list({
+              owner,
+              repo,
+              state: 'open',
+              head,
+              base,
+              per_page: 1
+            });
+
+            if (pulls.length > 0) {
+              await github.rest.pulls.update({
+                owner,
+                repo,
+                pull_number: pulls[0].number,
+                title,
+                body
+              });
+              core.notice(`Updated conflict PR #${pulls[0].number}`);
+              return;
+            }
+
+            const { data: pull } = await github.rest.pulls.create({
+              owner,
+              repo,
+              head,
+              base,
+              title,
+              body
+            });
+
+            core.notice(`Created conflict PR #${pull.number}`);
