@@ -12,6 +12,7 @@ on:
         type: string
 
 permissions:
+  actions: write
   contents: write
   pull-requests: write
 
@@ -122,6 +123,20 @@ jobs:
       - name: Push synced branch
         if: steps.sync.outputs.changed == 'true' && steps.sync.outputs.conflict != 'true'
         run: git push origin HEAD:sync-main
+
+      - name: Trigger Docker image workflow
+        if: steps.sync.outputs.changed == 'true' && steps.sync.outputs.conflict != 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data } = await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'docker-image.yml',
+              ref: 'sync-main'
+            });
+
+            core.notice(`Triggered docker-image.yml on sync-main`);
 
       - name: Create or update conflict PR
         if: steps.sync.outputs.conflict == 'true'
