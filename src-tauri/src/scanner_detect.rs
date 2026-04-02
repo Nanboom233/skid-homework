@@ -5,7 +5,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
 use image::imageops::FilterType;
-use image::{DynamicImage, GenericImageView, ImageBuffer, Luma, RgbImage};
+use image::{DynamicImage, GenericImageView, RgbImage, RgbaImage};
 use ort::ep::ExecutionProvider as _;
 use ort::{
     ep,
@@ -22,8 +22,7 @@ const WINDOWS_ORT_SHARED_RELATIVE_PATH: &str =
     "onnxruntime/windows/onnxruntime_providers_shared.dll";
 const WINDOWS_DIRECTML_RELATIVE_PATH: &str = "onnxruntime/windows/DirectML.dll";
 const LINUX_ORT_RELATIVE_PATH: &str = "onnxruntime/linux/libonnxruntime.so";
-const LINUX_TENSORRT_RELATIVE_PATH: &str =
-    "onnxruntime/linux/libonnxruntime_providers_tensorrt.so";
+const LINUX_TENSORRT_RELATIVE_PATH: &str = "onnxruntime/linux/libonnxruntime_providers_tensorrt.so";
 const LINUX_CUDA_RELATIVE_PATH: &str = "onnxruntime/linux/libonnxruntime_providers_cuda.so";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -203,9 +202,51 @@ pub struct ScannerPoint {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScannerDetectDocumentRequest {
+    #[serde(default)]
     pub source_bytes: Vec<u8>,
+    #[serde(default)]
+    pub rgba_bytes: Vec<u8>,
+    #[serde(default)]
+    pub rgba_width: Option<u32>,
+    #[serde(default)]
+    pub rgba_height: Option<u32>,
+    #[serde(default)]
     pub max_width: Option<u32>,
+    #[serde(default)]
     pub max_height: Option<u32>,
+}
+
+#[derive(Debug, Clone)]
+struct PreparedInferenceImage {
+    original_width: u32,
+    original_height: u32,
+    working_image: DynamicImage,
+}
+
+impl PreparedInferenceImage {
+    fn working_dimensions(&self) -> (u32, u32) {
+        self.working_image.dimensions()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DetectionContextCacheKey {
+    resource_dir_hint: Option<PathBuf>,
+    app_config_dir_hint: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone)]
+struct DetectionRuntimeContext {
+    resource_base_dir: PathBuf,
+    selected_model: Option<ResolvedScannerModel>,
+    preferred_provider: String,
+}
+
+#[derive(Debug, Default)]
+struct DetectionContextCacheState {
+    key: Option<DetectionContextCacheKey>,
+    context: Option<DetectionRuntimeContext>,
+    error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -276,7 +317,7 @@ pub async fn tauri_scanner_write_yolo_config(
     let writable_path = build_scanner_yolo_config_writable_path(app.path().app_config_dir().ok())?;
     validate_scanner_yolo_config(&config)?;
     write_scanner_yolo_config(&writable_path, &config)?;
-    reset_ort_session_cache();
+    reset_scanner_yolo_runtime_caches();
 
     Ok(ScannerYoloConfigResponse {
         config,
@@ -307,19 +348,15 @@ pub fn probe_native_yolo_runtime_with_hints(
         .as_ref()
         .map(|candidate| candidate.path.clone());
     let config_handle = resource_base_dir.as_ref().and_then(|base_dir| {
-        resolve_scanner_yolo_config(
-            Some(base_dir.clone()),
-            app_config_dir_hint.clone(),
-        )
-        .ok()
+        resolve_scanner_yolo_config(Some(base_dir.clone()), app_config_dir_hint.clone()).ok()
     });
     let config_error = if resource_base_dir.is_some() && config_handle.is_none() {
-        resolve_scanner_yolo_config(resource_base_dir.clone(), app_config_dir_hint.clone())
-            .err()
+        resolve_scanner_yolo_config(resource_base_dir.clone(), app_config_dir_hint.clone()).err()
     } else {
         None
     };
-    let resource_specs = resource_specs_for_current_platform(config_handle.as_ref().map(|handle| &handle.config));
+    let resource_specs =
+        resource_specs_for_current_platform(config_handle.as_ref().map(|handle| &handle.config));
     let resources = build_resource_statuses(resource_base_dir.as_deref(), &resource_specs);
     let selected_model = config_handle
         .as_ref()
@@ -395,12 +432,16 @@ pub fn probe_native_yolo_runtime_with_hints(
         preferred_provider,
         provider_candidates,
         selected_model_id: selected_model.as_ref().map(|model| model.config.id.clone()),
-        selected_model_kind: selected_model.as_ref().map(|model| model.config.kind.clone()),
-        selected_model_task: selected_model.as_ref().map(|model| model.config.task.clone()),
+        selected_model_kind: selected_model
+            .as_ref()
+            .map(|model| model.config.kind.clone()),
+        selected_model_task: selected_model
+            .as_ref()
+            .map(|model| model.config.task.clone()),
         selected_model_path: selected_model.as_ref().and_then(|model| {
-            resource_base_dir.as_deref().map(|base_dir| {
-                path_to_string(&base_dir.join(model.config.model_path.as_str()))
-            })
+            resource_base_dir
+                .as_deref()
+                .map(|base_dir| path_to_string(&base_dir.join(model.config.model_path.as_str())))
         }),
         runtime_ready: runtime_snapshot.ready,
         preferred_provider_ready,
@@ -427,65 +468,115 @@ pub fn detect_document_native_yolo(
     app_config_dir_hint: Option<PathBuf>,
 ) -> Result<ScannerDetectDocumentResponse, String> {
     let started_at = Instant::now();
-    let probe = probe_native_yolo_runtime_with_hints(
-        resource_dir_hint.clone(),
-        app_config_dir_hint.clone(),
-    );
-    let _requested_limits = (request.max_width, request.max_height);
+    let prepared_image = resolve_detect_input_image(&request)?;
 
-    let decoded_image = if request.source_bytes.is_empty() {
-        None
-    } else {
-        Some(
-            image::load_from_memory(&request.source_bytes).map_err(|error| {
-                format!("Failed to decode source image for native scanner inference: {error}")
-            })?,
-        )
-    };
-
-    let (input_width, input_height) = decoded_image
+    let (input_width, input_height) = prepared_image
         .as_ref()
-        .map(DynamicImage::dimensions)
-        .map_or((None, None), |(width, height)| (Some(width), Some(height)));
+        .map(|image| (Some(image.original_width), Some(image.original_height)))
+        .unwrap_or((None, None));
 
-    let resource_base_dir = select_resource_root(&build_resource_root_candidates(resource_dir_hint))
-        .map(|candidate| candidate.path);
-    let selected_model = if let Some(base_dir) = resource_base_dir.as_ref() {
-        let config_handle =
-            resolve_scanner_yolo_config(Some(base_dir.clone()), app_config_dir_hint).ok();
-        let resource_specs =
-            resource_specs_for_current_platform(config_handle.as_ref().map(|handle| &handle.config));
-        let resources = build_resource_statuses(Some(base_dir), &resource_specs);
-        config_handle
-            .as_ref()
-            .and_then(|handle| select_model_variant(handle, &resources))
-    } else {
-        None
-    };
+    let detection_context_result =
+        resolve_detection_runtime_context(resource_dir_hint, app_config_dir_hint);
+    let default_provider = default_preferred_provider_for_current_platform().to_string();
+    let (selected_model, preferred_provider, runtime_snapshot, session_snapshot, context_error) =
+        match detection_context_result {
+            Ok(context) => {
+                let runtime_snapshot = probe_ort_runtime(Some(context.resource_base_dir.as_path()));
+                let session_snapshot = if let Some(ref model) = context.selected_model {
+                    if runtime_snapshot.ready {
+                        ensure_ort_session(
+                            Some(context.resource_base_dir.as_path()),
+                            model,
+                            &context.preferred_provider,
+                        )
+                    } else {
+                        OrtSessionSnapshot {
+                            ready: false,
+                            session_error: Some(
+                                "ONNX Runtime environment is not ready yet, so the model session was not created."
+                                    .to_string(),
+                            ),
+                        }
+                    }
+                } else {
+                    OrtSessionSnapshot {
+                        ready: false,
+                        session_error: Some(
+                            "No supported stage-1 model was selected, so the model session is unavailable."
+                                .to_string(),
+                        ),
+                    }
+                };
 
-    let (points, message) = if !probe.runtime_ready {
-        (None, probe.message.clone())
-    } else if !probe.session_ready {
+                (
+                    context.selected_model,
+                    context.preferred_provider,
+                    runtime_snapshot,
+                    session_snapshot,
+                    None,
+                )
+            }
+            Err(error) => (
+                None,
+                default_provider,
+                OrtRuntimeSnapshot {
+                    ready: false,
+                    runtime_error: Some(error.clone()),
+                    ort_build_info: None,
+                    available_providers: Vec::new(),
+                },
+                OrtSessionSnapshot {
+                    ready: false,
+                    session_error: Some(error.clone()),
+                },
+                Some(error),
+            ),
+        };
+    let preferred_provider_ready =
+        is_provider_available(&preferred_provider, &runtime_snapshot.available_providers);
+
+    let (points, message) = if !runtime_snapshot.ready {
         (
             None,
-            probe.session_error.clone().unwrap_or_else(|| {
+            runtime_snapshot
+                .runtime_error
+                .clone()
+                .or(context_error.clone())
+                .unwrap_or_else(|| "Native scanner runtime is not ready yet.".to_string()),
+        )
+    } else if !session_snapshot.ready {
+        (
+            None,
+            session_snapshot.session_error.clone().unwrap_or_else(|| {
                 "ONNX Runtime is ready but the model session is not.".to_string()
             }),
         )
-    } else if decoded_image.is_none() {
+    } else if prepared_image.is_none() {
         (
             None,
-            "The request did not include image bytes, so inference was skipped.".to_string(),
+            "The request did not include image bytes or RGBA frame data, so inference was skipped."
+                .to_string(),
         )
-    } else if let Some(model) = selected_model {
-        match run_selected_model_inference(&model, decoded_image.as_ref().expect("image exists")) {
-            Ok(points) => (
-                Some(points),
-                format!(
-                    "Model {} completed native Rust inference.",
-                    model.config.id
-                ),
-            ),
+    } else if let Some(model) = selected_model.clone() {
+        let prepared_image = prepared_image.as_ref().expect("image exists");
+        let (working_width, working_height) = prepared_image.working_dimensions();
+        match run_selected_model_inference(&model, &prepared_image.working_image) {
+            Ok(points) => {
+                let scaled_points = scale_points_between_dimensions(
+                    points,
+                    working_width,
+                    working_height,
+                    prepared_image.original_width,
+                    prepared_image.original_height,
+                );
+                (
+                    Some(scaled_points),
+                    format!(
+                        "Model {} completed native Rust inference at {}x{} working resolution.",
+                        model.config.id, working_width, working_height
+                    ),
+                )
+            }
             Err(error) => (None, error),
         }
     } else {
@@ -494,27 +585,152 @@ pub fn detect_document_native_yolo(
             "No supported stage-1 model was selected, so inference was skipped.".to_string(),
         )
     };
+    let detection_implemented = selected_model
+        .as_ref()
+        .map(|model| model.variant.detection_implemented())
+        .unwrap_or(false);
 
     Ok(ScannerDetectDocumentResponse {
         stage: STAGE,
         processing_ms: started_at.elapsed().as_secs_f64() * 1000.0,
         input_width,
         input_height,
-        selected_model_id: probe.selected_model_id,
-        selected_model_kind: probe.selected_model_kind,
-        selected_model_task: probe.selected_model_task,
-        runtime_ready: probe.runtime_ready,
-        preferred_provider: probe.preferred_provider,
-        preferred_provider_ready: probe.preferred_provider_ready,
-        model_ready: probe.model_ready,
-        session_ready: probe.session_ready,
-        detection_implemented: probe.detection_implemented,
-        ort_build_info: probe.ort_build_info,
-        runtime_error: probe.runtime_error,
-        session_error: probe.session_error,
+        selected_model_id: selected_model.as_ref().map(|model| model.config.id.clone()),
+        selected_model_kind: selected_model.as_ref().map(|model| model.config.kind.clone()),
+        selected_model_task: selected_model.as_ref().map(|model| model.config.task.clone()),
+        runtime_ready: runtime_snapshot.ready,
+        preferred_provider,
+        preferred_provider_ready,
+        model_ready: selected_model.is_some(),
+        session_ready: session_snapshot.ready,
+        detection_implemented,
+        ort_build_info: runtime_snapshot.ort_build_info,
+        runtime_error: runtime_snapshot.runtime_error.or(context_error),
+        session_error: session_snapshot.session_error,
         points,
         message,
     })
+}
+
+fn resolve_detect_input_image(
+    request: &ScannerDetectDocumentRequest,
+) -> Result<Option<PreparedInferenceImage>, String> {
+    let decoded_image = if !request.rgba_bytes.is_empty() {
+        Some(build_dynamic_image_from_rgba_request(request)?)
+    } else if !request.source_bytes.is_empty() {
+        Some(
+            image::load_from_memory(&request.source_bytes).map_err(|error| {
+                format!("Failed to decode source image for native scanner inference: {error}")
+            })?,
+        )
+    } else {
+        None
+    };
+
+    Ok(decoded_image
+        .map(|image| prepare_inference_image(image, request.max_width, request.max_height)))
+}
+
+fn build_dynamic_image_from_rgba_request(
+    request: &ScannerDetectDocumentRequest,
+) -> Result<DynamicImage, String> {
+    let width = request
+        .rgba_width
+        .ok_or_else(|| "RGBA native scanner request is missing rgbaWidth.".to_string())?;
+    let height = request
+        .rgba_height
+        .ok_or_else(|| "RGBA native scanner request is missing rgbaHeight.".to_string())?;
+
+    if width == 0 || height == 0 {
+        return Err("RGBA native scanner dimensions must be greater than zero.".to_string());
+    }
+
+    let expected_len = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or_else(|| "RGBA native scanner dimensions overflowed.".to_string())?;
+
+    if request.rgba_bytes.len() != expected_len {
+        return Err(format!(
+            "RGBA native scanner payload length mismatch: expected {expected_len} bytes for {width}x{height}, got {}.",
+            request.rgba_bytes.len()
+        ));
+    }
+
+    let image =
+        RgbaImage::from_raw(width, height, request.rgba_bytes.clone()).ok_or_else(|| {
+            "Failed to materialize RGBA source frame for native scanner inference.".to_string()
+        })?;
+    Ok(DynamicImage::ImageRgba8(image))
+}
+
+fn prepare_inference_image(
+    image: DynamicImage,
+    max_width: Option<u32>,
+    max_height: Option<u32>,
+) -> PreparedInferenceImage {
+    let (original_width, original_height) = image.dimensions();
+    let (working_width, working_height) =
+        bounded_dimensions(original_width, original_height, max_width, max_height);
+
+    let working_image = if working_width == original_width && working_height == original_height {
+        image
+    } else {
+        DynamicImage::ImageRgba8(image::imageops::resize(
+            &image.to_rgba8(),
+            working_width,
+            working_height,
+            FilterType::Triangle,
+        ))
+    };
+
+    PreparedInferenceImage {
+        original_width,
+        original_height,
+        working_image,
+    }
+}
+
+fn bounded_dimensions(
+    width: u32,
+    height: u32,
+    max_width: Option<u32>,
+    max_height: Option<u32>,
+) -> (u32, u32) {
+    let max_width = max_width.filter(|value| *value > 0).unwrap_or(width);
+    let max_height = max_height.filter(|value| *value > 0).unwrap_or(height);
+    let scale = f64::min(
+        1.0,
+        f64::min(
+            max_width as f64 / f64::from(width.max(1)),
+            max_height as f64 / f64::from(height.max(1)),
+        ),
+    );
+
+    (
+        u32::max(1, (f64::from(width) * scale).round() as u32),
+        u32::max(1, (f64::from(height) * scale).round() as u32),
+    )
+}
+
+fn scale_points_between_dimensions(
+    points: Vec<ScannerPoint>,
+    source_width: u32,
+    source_height: u32,
+    target_width: u32,
+    target_height: u32,
+) -> Vec<ScannerPoint> {
+    if source_width == target_width && source_height == target_height {
+        return points;
+    }
+
+    points
+        .into_iter()
+        .map(|point| ScannerPoint {
+            x: scale_coordinate(point.x, source_width, target_width),
+            y: scale_coordinate(point.y, source_height, target_height),
+        })
+        .collect()
 }
 
 fn build_scanner_yolo_config_response(
@@ -569,10 +785,18 @@ fn resolve_scanner_yolo_config(
 }
 
 fn load_scanner_yolo_config_from_path(path: &Path) -> Result<ScannerYoloConfig, String> {
-    let raw = fs::read_to_string(path)
-        .map_err(|error| format!("Failed to read scanner YOLO config {}: {error}", path_to_string(path)))?;
-    let config = serde_json::from_str::<ScannerYoloConfig>(&raw)
-        .map_err(|error| format!("Failed to parse scanner YOLO config {}: {error}", path_to_string(path)))?;
+    let raw = fs::read_to_string(path).map_err(|error| {
+        format!(
+            "Failed to read scanner YOLO config {}: {error}",
+            path_to_string(path)
+        )
+    })?;
+    let config = serde_json::from_str::<ScannerYoloConfig>(&raw).map_err(|error| {
+        format!(
+            "Failed to parse scanner YOLO config {}: {error}",
+            path_to_string(path)
+        )
+    })?;
     validate_scanner_yolo_config(&config)?;
     Ok(config)
 }
@@ -644,6 +868,18 @@ fn validate_scanner_yolo_model_config(
     Ok(())
 }
 
+pub fn reset_scanner_yolo_runtime_caches() {
+    reset_detection_context_cache();
+    reset_ort_session_cache();
+}
+
+fn reset_detection_context_cache() {
+    let mut state = detection_context_cache()
+        .lock()
+        .expect("detection context cache mutex should not be poisoned");
+    *state = DetectionContextCacheState::default();
+}
+
 fn reset_ort_session_cache() {
     let mut state = runtime_state()
         .lock()
@@ -653,7 +889,9 @@ fn reset_ort_session_cache() {
     state.session_error = None;
 }
 
-fn build_resource_root_candidates(resource_dir_hint: Option<PathBuf>) -> Vec<ResourceRootCandidate> {
+fn build_resource_root_candidates(
+    resource_dir_hint: Option<PathBuf>,
+) -> Vec<ResourceRootCandidate> {
     let mut candidates = Vec::new();
     let mut seen = HashSet::new();
 
@@ -772,7 +1010,8 @@ fn build_resource_statuses(
     specs
         .iter()
         .map(|spec| {
-            let resolved_path = resource_base_dir.map(|base_dir| base_dir.join(&spec.relative_path));
+            let resolved_path =
+                resource_base_dir.map(|base_dir| base_dir.join(&spec.relative_path));
             let exists = resolved_path
                 .as_ref()
                 .map(|path| path.exists())
@@ -881,6 +1120,70 @@ fn runtime_state() -> &'static Mutex<OrtRuntimeState> {
     STATE.get_or_init(|| Mutex::new(OrtRuntimeState::default()))
 }
 
+fn detection_context_cache() -> &'static Mutex<DetectionContextCacheState> {
+    static STATE: OnceLock<Mutex<DetectionContextCacheState>> = OnceLock::new();
+    STATE.get_or_init(|| Mutex::new(DetectionContextCacheState::default()))
+}
+
+fn resolve_detection_runtime_context(
+    resource_dir_hint: Option<PathBuf>,
+    app_config_dir_hint: Option<PathBuf>,
+) -> Result<DetectionRuntimeContext, String> {
+    let key = DetectionContextCacheKey {
+        resource_dir_hint: resource_dir_hint.clone(),
+        app_config_dir_hint: app_config_dir_hint.clone(),
+    };
+    let mut cache = detection_context_cache()
+        .lock()
+        .expect("detection context cache mutex should not be poisoned");
+
+    if cache.key.as_ref() == Some(&key) {
+        if let Some(context) = cache.context.clone() {
+            return Ok(context);
+        }
+        if let Some(error) = cache.error.clone() {
+            return Err(error);
+        }
+    }
+
+    let result = build_detection_runtime_context(resource_dir_hint, app_config_dir_hint);
+    cache.key = Some(key);
+    match result {
+        Ok(context) => {
+            cache.context = Some(context.clone());
+            cache.error = None;
+            Ok(context)
+        }
+        Err(error) => {
+            cache.context = None;
+            cache.error = Some(error.clone());
+            Err(error)
+        }
+    }
+}
+
+fn build_detection_runtime_context(
+    resource_dir_hint: Option<PathBuf>,
+    app_config_dir_hint: Option<PathBuf>,
+) -> Result<DetectionRuntimeContext, String> {
+    let resource_root_candidates = build_resource_root_candidates(resource_dir_hint);
+    let selected_resource_root = select_resource_root(&resource_root_candidates)
+        .ok_or_else(|| "Could not resolve the scanner resource directory.".to_string())?;
+    let resource_base_dir = selected_resource_root.path;
+    let config_handle =
+        resolve_scanner_yolo_config(Some(resource_base_dir.clone()), app_config_dir_hint)?;
+    let resource_specs = resource_specs_for_current_platform(Some(&config_handle.config));
+    let resources = build_resource_statuses(Some(&resource_base_dir), &resource_specs);
+    let selected_model = select_model_variant(&config_handle, &resources);
+    let preferred_provider = preferred_provider_from_config(&config_handle.config);
+
+    Ok(DetectionRuntimeContext {
+        resource_base_dir,
+        selected_model,
+        preferred_provider,
+    })
+}
+
 fn probe_ort_runtime(resource_base_dir: Option<&Path>) -> OrtRuntimeSnapshot {
     let Some(resource_base_dir) = resource_base_dir else {
         return OrtRuntimeSnapshot {
@@ -891,10 +1194,13 @@ fn probe_ort_runtime(resource_base_dir: Option<&Path>) -> OrtRuntimeSnapshot {
         };
     };
 
-    let Some(runtime_library_path) = runtime_library_path_for_current_platform(resource_base_dir) else {
+    let Some(runtime_library_path) = runtime_library_path_for_current_platform(resource_base_dir)
+    else {
         return OrtRuntimeSnapshot {
             ready: false,
-            runtime_error: Some("This platform does not have a configured ORT runtime path yet.".to_string()),
+            runtime_error: Some(
+                "This platform does not have a configured ORT runtime path yet.".to_string(),
+            ),
             ort_build_info: None,
             available_providers: vec!["CPU".to_string()],
         };
@@ -920,7 +1226,12 @@ fn probe_ort_runtime(resource_base_dir: Option<&Path>) -> OrtRuntimeSnapshot {
         state.runtime_library_path = Some(runtime_library_path.clone());
 
         let init_result = ort::init_from(&runtime_library_path)
-            .map(|builder| builder.with_name("scanner-native-yolo").with_telemetry(false).commit())
+            .map(|builder| {
+                builder
+                    .with_name("scanner-native-yolo")
+                    .with_telemetry(false)
+                    .commit()
+            })
             .map_err(|error| {
                 format!(
                     "Failed to initialize ONNX Runtime from {}: {error}",
@@ -1041,9 +1352,7 @@ fn configure_session_builder_for_current_platform(
             builder
                 .with_parallel_execution(false)
                 .and_then(|builder: SessionBuilder| builder.with_memory_pattern(false))
-                .map_err(|error| {
-                    format!("Failed to apply DirectML-safe session options: {error}")
-                })
+                .map_err(|error| format!("Failed to apply DirectML-safe session options: {error}"))
         }
         _ => Ok(builder),
     }
@@ -1137,8 +1446,8 @@ fn build_docaligner_input(image: &RgbImage) -> Vec<f32> {
 fn decode_docaligner_heatmap_output(
     heatmap: &[f32],
     shape: &[i64],
-    original_width: u32,
-    original_height: u32,
+    output_width: u32,
+    output_height: u32,
 ) -> Result<Vec<ScannerPoint>, String> {
     if shape.len() != 4 {
         return Err(format!(
@@ -1174,61 +1483,38 @@ fn decode_docaligner_heatmap_output(
         let start = channel * plane_len;
         let end = start + plane_len;
         let plane = &heatmap[start..end];
-
-        let plane_u8 = plane
-            .iter()
-            .map(|value| (value.clamp(0.0, 1.0) * 255.0).round() as u8)
-            .collect::<Vec<_>>();
-        let plane_image = ImageBuffer::<Luma<u8>, Vec<u8>>::from_vec(
-            heatmap_width as u32,
-            heatmap_height as u32,
-            plane_u8,
-        )
-        .ok_or_else(|| "Failed to materialize heatmap image buffer.".to_string())?;
-        let upsampled = image::imageops::resize(
-            &plane_image,
-            original_width,
-            original_height,
-            FilterType::Triangle,
-        );
-
-        let centroid = largest_component_centroid(
-            upsampled.as_raw(),
-            upsampled.width(),
-            upsampled.height(),
-            77,
-        )
-        .ok_or_else(|| {
-            format!(
+        let centroid =
+            largest_component_centroid_f32(plane, heatmap_width, heatmap_height, 77.0 / 255.0)
+                .or_else(|| argmax_point_f32(plane, heatmap_width, heatmap_height))
+                .ok_or_else(|| {
+                    format!(
                 "DocAligner heatmap channel {channel} did not produce a detectable corner region."
             )
-        })?;
+                })?;
 
         points.push(ScannerPoint {
-            x: centroid.0,
-            y: centroid.1,
+            x: scale_coordinate(centroid.0, heatmap_width as u32, output_width),
+            y: scale_coordinate(centroid.1, heatmap_height as u32, output_height),
         });
     }
 
     Ok(points)
 }
 
-fn largest_component_centroid(
-    grayscale: &[u8],
-    width: u32,
-    height: u32,
-    threshold: u8,
+fn largest_component_centroid_f32(
+    heatmap: &[f32],
+    width: usize,
+    height: usize,
+    threshold: f32,
 ) -> Option<(f32, f32)> {
-    let width_usize = width as usize;
-    let height_usize = height as usize;
-    let mut visited = vec![false; width_usize * height_usize];
+    let mut visited = vec![false; width * height];
     let mut best_count = 0usize;
     let mut best_centroid = None;
 
-    for y in 0..height_usize {
-        for x in 0..width_usize {
-            let index = (y * width_usize) + x;
-            if visited[index] || grayscale.get(index).copied().unwrap_or(0) <= threshold {
+    for y in 0..height {
+        for x in 0..width {
+            let index = (y * width) + x;
+            if visited[index] || heatmap.get(index).copied().unwrap_or(0.0) <= threshold {
                 continue;
             }
 
@@ -1237,11 +1523,20 @@ fn largest_component_centroid(
             let mut count = 0usize;
             let mut sum_x = 0f64;
             let mut sum_y = 0f64;
+            let mut total_weight = 0f64;
 
             while let Some((cx, cy)) = queue.pop_front() {
                 count += 1;
-                sum_x += cx as f64;
-                sum_y += cy as f64;
+                let current_index = (cy * width) + cx;
+                let weight = heatmap
+                    .get(current_index)
+                    .copied()
+                    .unwrap_or(0.0)
+                    .clamp(0.0, 1.0) as f64;
+                let effective_weight = if weight > 0.0 { weight } else { 1.0 };
+                sum_x += cx as f64 * effective_weight;
+                sum_y += cy as f64 * effective_weight;
+                total_weight += effective_weight;
 
                 for dy in -1isize..=1 {
                     for dx in -1isize..=1 {
@@ -1251,19 +1546,15 @@ fn largest_component_centroid(
 
                         let nx = cx as isize + dx;
                         let ny = cy as isize + dy;
-                        if nx < 0
-                            || ny < 0
-                            || nx >= width_usize as isize
-                            || ny >= height_usize as isize
-                        {
+                        if nx < 0 || ny < 0 || nx >= width as isize || ny >= height as isize {
                             continue;
                         }
 
                         let nx = nx as usize;
                         let ny = ny as usize;
-                        let neighbor_index = (ny * width_usize) + nx;
+                        let neighbor_index = (ny * width) + nx;
                         if visited[neighbor_index]
-                            || grayscale.get(neighbor_index).copied().unwrap_or(0) <= threshold
+                            || heatmap.get(neighbor_index).copied().unwrap_or(0.0) <= threshold
                         {
                             continue;
                         }
@@ -1276,15 +1567,36 @@ fn largest_component_centroid(
 
             if count > best_count {
                 best_count = count;
-                best_centroid = Some((
-                    (sum_x / count as f64) as f32,
-                    (sum_y / count as f64) as f32,
-                ));
+                let divisor = if total_weight > 0.0 {
+                    total_weight
+                } else {
+                    count as f64
+                };
+                best_centroid = Some(((sum_x / divisor) as f32, (sum_y / divisor) as f32));
             }
         }
     }
 
     best_centroid
+}
+
+fn argmax_point_f32(heatmap: &[f32], width: usize, _height: usize) -> Option<(f32, f32)> {
+    let (best_index, _) = heatmap
+        .iter()
+        .copied()
+        .enumerate()
+        .max_by(|(_, left), (_, right)| left.total_cmp(right))?;
+
+    Some(((best_index % width) as f32, (best_index / width) as f32))
+}
+
+fn scale_coordinate(value: f32, source_size: u32, target_size: u32) -> f32 {
+    if source_size <= 1 || target_size <= 1 {
+        return 0.0;
+    }
+
+    (((value + 0.5) / source_size as f32) * target_size as f32 - 0.5)
+        .clamp(0.0, target_size.saturating_sub(1) as f32)
 }
 
 fn runtime_library_path_for_current_platform(resource_base_dir: &Path) -> Option<PathBuf> {
@@ -1429,9 +1741,15 @@ mod tests {
     fn current_platform_has_config_and_model_specs() {
         let config = sample_scanner_yolo_config();
         let specs = resource_specs_for_current_platform(Some(&config));
-        assert!(specs.iter().any(|spec| spec.key == "config" && spec.required));
-        assert!(specs.iter().any(|spec| spec.key == "model-active-public-baseline"));
-        assert!(specs.iter().any(|spec| spec.key == "model-intended-primary"));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.key == "config" && spec.required));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.key == "model-active-public-baseline"));
+        assert!(specs
+            .iter()
+            .any(|spec| spec.key == "model-intended-primary"));
     }
 
     #[test]
@@ -1471,19 +1789,35 @@ mod tests {
     }
 
     #[test]
+    fn bounded_dimensions_scales_into_requested_limits() {
+        assert_eq!(
+            bounded_dimensions(640, 360, Some(320), Some(180)),
+            (320, 180)
+        );
+        assert_eq!(
+            bounded_dimensions(4032, 3024, Some(1024), Some(1024)),
+            (1024, 768)
+        );
+        assert_eq!(
+            bounded_dimensions(320, 180, Some(640), Some(360)),
+            (320, 180)
+        );
+    }
+
+    #[test]
     fn largest_component_centroid_prefers_biggest_region() {
         let width = 6;
         let height = 4;
-        let mut mask = vec![0u8; width * height];
+        let mut mask = vec![0.0f32; width * height];
 
         for &(x, y) in &[(0usize, 0usize), (1, 0), (0, 1), (1, 1)] {
-            mask[(y * width) + x] = 255;
+            mask[(y * width) + x] = 1.0;
         }
         for &(x, y) in &[(4usize, 1usize), (5, 1)] {
-            mask[(y * width) + x] = 255;
+            mask[(y * width) + x] = 1.0;
         }
 
-        let centroid = largest_component_centroid(&mask, width as u32, height as u32, 1)
+        let centroid = largest_component_centroid_f32(&mask, width, height, 0.1)
             .expect("centroid should exist");
         assert!(centroid.0 < 1.0);
         assert!(centroid.1 < 1.0);

@@ -283,14 +283,9 @@ export const startTauriDecodeStream = async (
   let latestFramePacket: TauriRawChannelPayload | null = null;
   let frameDispatchScheduled = false;
   let disposed = false;
-  let animationFrameId: number | null = null;
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
   const clearScheduledDispatch = (): void => {
-    if (animationFrameId !== null && typeof window !== "undefined" && typeof window.cancelAnimationFrame === "function") {
-      window.cancelAnimationFrame(animationFrameId);
-      animationFrameId = null;
-    }
     if (timeoutId !== null) {
       clearTimeout(timeoutId);
       timeoutId = null;
@@ -300,7 +295,6 @@ export const startTauriDecodeStream = async (
 
   const flushLatestFrame = (): void => {
     frameDispatchScheduled = false;
-    animationFrameId = null;
     timeoutId = null;
 
     if (disposed) {
@@ -328,8 +322,8 @@ export const startTauriDecodeStream = async (
 
     frameDispatchScheduled = true;
 
-    if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
-      animationFrameId = window.requestAnimationFrame(() => {
+    if (typeof queueMicrotask === "function") {
+      queueMicrotask(() => {
         flushLatestFrame();
       });
       return;

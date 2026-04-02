@@ -1,0 +1,28 @@
+{
+  "runId": "20260403-scanner-yolo-realtime-structural-001",
+  "stage": "deep_interview",
+  "mode": "interactive_governed",
+  "goal": "Further reduce desktop native YOLO realtime cost using structural optimizations only.",
+  "deliverable": [
+    "at least one structural hotpath optimization in the native realtime chain",
+    "benchmark evidence separating structural gains from parameter changes"
+  ],
+  "constraints": [
+    "no parameter-tuning disguised as optimization",
+    "preserve current detection cadence and configured processing limits",
+    "preserve correctness and config semantics"
+  ],
+  "acceptanceCriteria": [
+    "detect path removes repeated non-essential work",
+    "benchmark demonstrates measured benefit",
+    "verification commands pass"
+  ],
+  "nonGoals": [
+    "lowering resolution",
+    "increasing detection interval",
+    "threshold tuning"
+  ],
+  "inferredAssumptions": [
+    "User values root-cause latency reduction over cosmetic benchmark wins."
+  ]
+}

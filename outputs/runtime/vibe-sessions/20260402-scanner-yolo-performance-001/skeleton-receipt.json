@@ -1,0 +1,17 @@
+{
+  "runId": "20260402-scanner-yolo-performance-001",
+  "stage": "skeleton_check",
+  "timestamp": "2026-04-02",
+  "cwd": "C:\\Users\\Nanboom233\\Desktop\\Code\\skid-homework",
+  "branch": "yolo-detection",
+  "head": "ff8fe3146a709c51e7d4e9750cf04e3070f9998b",
+  "relevantPaths": [
+    "src/components/scanner/ScannerView.tsx",
+    "src/lib/tauri/scanner-detect.ts",
+    "src-tauri/src/scanner_detect.rs",
+    "src/lib/scanner/frame-source.ts"
+  ],
+  "preExistingDirtyFiles": [
+    ".gitignore"
+  ]
+}

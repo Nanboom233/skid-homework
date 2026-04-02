@@ -40,7 +40,7 @@ import {
 } from "@/lib/scanner/scanner-postprocess-worker-client";
 import {shellTauriAdbCommand} from "@/lib/tauri/adb";
 import {
-  detectDocumentWithTauriNativeYolo,
+  detectDocumentWithTauriNativeYoloRgba,
   probeTauriScannerYolo,
   type TauriScannerYoloProbeResult,
 } from "@/lib/tauri/scanner-detect";
@@ -977,8 +977,7 @@ export default function ScannerView({
     const backendState = getDetectionBackendState();
     if (backendState.activeBackend === "native-yolo") {
       try {
-        const sourceBlob = await imageDataToPngBlob(frame);
-        const nativeResult = await detectDocumentWithTauriNativeYolo(sourceBlob, {
+        const nativeResult = await detectDocumentWithTauriNativeYoloRgba(frame, {
           maxWidth: processingSize.width,
           maxHeight: processingSize.height,
         });

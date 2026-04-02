@@ -1,0 +1,32 @@
+{
+  "runId": "20260402-scanner-yolo-performance-001",
+  "stage": "deep_interview",
+  "mode": "interactive_governed",
+  "goal": "Aggressively reduce desktop native YOLO preview latency and IPC wait in the scanner pipeline.",
+  "deliverable": [
+    "lower-latency native YOLO preview path",
+    "lighter Rust runtime preprocessing/postprocessing",
+    "verification evidence"
+  ],
+  "constraints": [
+    "preserve current desktop YOLO settings binding",
+    "avoid new dependencies",
+    "avoid unrelated file changes",
+    "keep capture-quality pipeline semantics intact"
+  ],
+  "acceptanceCriteria": [
+    "preview native YOLO no longer depends on per-frame PNG roundtrip",
+    "native detect honors maxWidth/maxHeight",
+    "typecheck and Rust checks/tests pass"
+  ],
+  "nonGoals": [
+    "model retraining",
+    "provider strategy changes",
+    "web runtime changes"
+  ],
+  "autonomyMode": "interactive_governed",
+  "inferredAssumptions": [
+    "Preview-stage accuracy may trade slightly for latency as long as capture-stage output quality does not regress.",
+    "The main user pain is runtime latency, not configuration coverage."
+  ]
+}
