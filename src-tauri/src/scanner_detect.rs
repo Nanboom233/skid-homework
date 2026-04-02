@@ -1,4 +1,5 @@
 use std::collections::{HashSet, VecDeque};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
@@ -27,56 +28,83 @@ const LINUX_CUDA_RELATIVE_PATH: &str = "onnxruntime/linux/libonnxruntime_provide
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ScannerModelVariant {
-    DocAlignerFastViTSA24,
-    YoloPose4PointPlanned,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct ScannerModelSpec {
-    resource_key: &'static str,
-    id: &'static str,
-    kind: &'static str,
-    task: &'static str,
-    relative_path: &'static str,
-    required: bool,
-    input_name: &'static str,
-    output_name: &'static str,
-    input_width: u32,
-    input_height: u32,
-    detection_implemented: bool,
+    ActivePublicBaseline,
+    IntendedPrimaryModel,
 }
 
 impl ScannerModelVariant {
-    fn spec(self) -> ScannerModelSpec {
+    fn resource_key(self) -> &'static str {
         match self {
-            Self::DocAlignerFastViTSA24 => ScannerModelSpec {
-                resource_key: "model-docaligner-fastvit-sa24",
-                id: "docaligner-fastvit-sa24",
-                kind: "public-baseline",
-                task: "document-corner-heatmap",
-                relative_path: "models/docaligner-fastvit_sa24.onnx",
-                required: true,
-                input_name: "img",
-                output_name: "heatmap",
-                input_width: 256,
-                input_height: 256,
-                detection_implemented: true,
-            },
-            Self::YoloPose4PointPlanned => ScannerModelSpec {
-                resource_key: "model-yolo-pose-4pt",
-                id: "document-boundary-yolo-pose-4pt",
-                kind: "planned-primary",
-                task: "document-corner-keypoints",
-                relative_path: "models/document-boundary-yolo-pose.onnx",
-                required: false,
-                input_name: "images",
-                output_name: "output0",
-                input_width: 640,
-                input_height: 640,
-                detection_implemented: false,
-            },
+            Self::ActivePublicBaseline => "model-active-public-baseline",
+            Self::IntendedPrimaryModel => "model-intended-primary",
         }
     }
+
+    fn detection_implemented(self) -> bool {
+        matches!(self, Self::ActivePublicBaseline)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScannerYoloModelConfig {
+    id: String,
+    kind: String,
+    task: String,
+    model_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    input_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    output_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    input_size: Option<[u32; 2]>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScannerYoloWindowsConfig {
+    preferred_provider: String,
+    runtime_library: String,
+    shared_library: String,
+    provider_library: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScannerYoloLinuxConfig {
+    preferred_providers: Vec<String>,
+    runtime_library: String,
+    #[serde(default)]
+    provider_libraries: Vec<String>,
+    official_gpu_release_artifact: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScannerYoloConfig {
+    stage: String,
+    task: String,
+    intended_primary_model: ScannerYoloModelConfig,
+    active_public_baseline: ScannerYoloModelConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    windows: Option<ScannerYoloWindowsConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    linux: Option<ScannerYoloLinuxConfig>,
+    #[serde(default)]
+    notes: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedScannerModel {
+    variant: ScannerModelVariant,
+    config: ScannerYoloModelConfig,
+}
+
+#[derive(Debug, Clone)]
+struct ScannerYoloConfigHandle {
+    config: ScannerYoloConfig,
+    resolved_path: PathBuf,
+    source: &'static str,
 }
 
 #[derive(Debug, Clone)]
@@ -87,8 +115,8 @@ struct ResourceRootCandidate {
 
 #[derive(Debug, Clone)]
 struct ResourceSpec {
-    key: &'static str,
-    relative_path: &'static str,
+    key: String,
+    relative_path: String,
     required: bool,
 }
 
@@ -121,8 +149,8 @@ struct OrtSessionSnapshot {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScannerYoloResourceStatus {
-    key: &'static str,
-    relative_path: &'static str,
+    key: String,
+    relative_path: String,
     resolved_path: Option<String>,
     exists: bool,
     required: bool,
@@ -134,6 +162,8 @@ pub struct ScannerYoloProbeResponse {
     stage: &'static str,
     platform: String,
     platform_target: String,
+    config_source: String,
+    config_path: Option<String>,
     preferred_provider: String,
     provider_candidates: Vec<String>,
     selected_model_id: Option<String>,
@@ -152,6 +182,15 @@ pub struct ScannerYoloProbeResponse {
     resource_base_dir: Option<String>,
     resources: Vec<ScannerYoloResourceStatus>,
     message: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScannerYoloConfigResponse {
+    config: ScannerYoloConfig,
+    source: String,
+    resolved_path: String,
+    writable_path: String,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -195,7 +234,11 @@ pub struct ScannerDetectDocumentResponse {
 #[command]
 pub async fn tauri_scanner_probe_yolo(app: AppHandle) -> Result<ScannerYoloProbeResponse, String> {
     let resource_dir_hint = app.path().resource_dir().ok();
-    Ok(probe_native_yolo_runtime_with_hint(resource_dir_hint))
+    let app_config_dir_hint = app.path().app_config_dir().ok();
+    Ok(probe_native_yolo_runtime_with_hints(
+        resource_dir_hint,
+        app_config_dir_hint,
+    ))
 }
 
 #[command]
@@ -204,19 +247,52 @@ pub async fn tauri_scanner_detect_document(
     request: ScannerDetectDocumentRequest,
 ) -> Result<ScannerDetectDocumentResponse, String> {
     let resource_dir_hint = app.path().resource_dir().ok();
+    let app_config_dir_hint = app.path().app_config_dir().ok();
     tauri::async_runtime::spawn_blocking(move || {
-        detect_document_native_yolo(request, resource_dir_hint)
+        detect_document_native_yolo(request, resource_dir_hint, app_config_dir_hint)
     })
     .await
     .map_err(|error| format!("Native YOLO task failed: {error}"))?
 }
 
-pub fn probe_native_yolo_runtime() -> ScannerYoloProbeResponse {
-    probe_native_yolo_runtime_with_hint(None)
+#[command]
+pub async fn tauri_scanner_read_yolo_config(
+    app: AppHandle,
+) -> Result<ScannerYoloConfigResponse, String> {
+    let resource_dir_hint = app.path().resource_dir().ok();
+    let app_config_dir_hint = app.path().app_config_dir().ok();
+    let resolved = resolve_scanner_yolo_config(resource_dir_hint, app_config_dir_hint)?;
+    Ok(build_scanner_yolo_config_response(
+        &resolved,
+        build_scanner_yolo_config_writable_path(app.path().app_config_dir().ok())?,
+    ))
 }
 
-pub fn probe_native_yolo_runtime_with_hint(
+#[command]
+pub async fn tauri_scanner_write_yolo_config(
+    app: AppHandle,
+    config: ScannerYoloConfig,
+) -> Result<ScannerYoloConfigResponse, String> {
+    let writable_path = build_scanner_yolo_config_writable_path(app.path().app_config_dir().ok())?;
+    validate_scanner_yolo_config(&config)?;
+    write_scanner_yolo_config(&writable_path, &config)?;
+    reset_ort_session_cache();
+
+    Ok(ScannerYoloConfigResponse {
+        config,
+        source: "app-config-override".to_string(),
+        resolved_path: path_to_string(&writable_path),
+        writable_path: path_to_string(&writable_path),
+    })
+}
+
+pub fn probe_native_yolo_runtime() -> ScannerYoloProbeResponse {
+    probe_native_yolo_runtime_with_hints(None, None)
+}
+
+pub fn probe_native_yolo_runtime_with_hints(
     resource_dir_hint: Option<PathBuf>,
+    app_config_dir_hint: Option<PathBuf>,
 ) -> ScannerYoloProbeResponse {
     let platform = std::env::consts::OS.to_string();
     let platform_target = platform_target_for_current_platform().to_string();
@@ -227,16 +303,35 @@ pub fn probe_native_yolo_runtime_with_hint(
 
     let resource_root_candidates = build_resource_root_candidates(resource_dir_hint);
     let selected_resource_root = select_resource_root(&resource_root_candidates);
-    let resource_specs = resource_specs_for_current_platform();
     let resource_base_dir = selected_resource_root
         .as_ref()
         .map(|candidate| candidate.path.clone());
+    let config_handle = resource_base_dir.as_ref().and_then(|base_dir| {
+        resolve_scanner_yolo_config(
+            Some(base_dir.clone()),
+            app_config_dir_hint.clone(),
+        )
+        .ok()
+    });
+    let config_error = if resource_base_dir.is_some() && config_handle.is_none() {
+        resolve_scanner_yolo_config(resource_base_dir.clone(), app_config_dir_hint.clone())
+            .err()
+    } else {
+        None
+    };
+    let resource_specs = resource_specs_for_current_platform(config_handle.as_ref().map(|handle| &handle.config));
     let resources = build_resource_statuses(resource_base_dir.as_deref(), &resource_specs);
-    let selected_model = select_model_variant(&resources);
+    let selected_model = config_handle
+        .as_ref()
+        .and_then(|handle| select_model_variant(handle, &resources));
+    let preferred_provider = config_handle
+        .as_ref()
+        .map(|handle| preferred_provider_from_config(&handle.config))
+        .unwrap_or_else(|| default_preferred_provider_for_current_platform().to_string());
     let runtime_snapshot = probe_ort_runtime(resource_base_dir.as_deref());
-    let session_snapshot = if let Some(model) = selected_model {
+    let session_snapshot = if let Some(ref model) = selected_model {
         if runtime_snapshot.ready {
-            ensure_ort_session(resource_base_dir.as_deref(), model)
+            ensure_ort_session(resource_base_dir.as_deref(), model, &preferred_provider)
         } else {
             OrtSessionSnapshot {
                 ready: false,
@@ -255,30 +350,31 @@ pub fn probe_native_yolo_runtime_with_hint(
             ),
         }
     };
-    let (preferred_provider, preferred_provider_ready) =
-        provider_selection_for_current_platform(&runtime_snapshot);
+    let preferred_provider_ready =
+        is_provider_available(&preferred_provider, &runtime_snapshot.available_providers);
 
     let message = if !runtime_snapshot.ready {
         runtime_snapshot
             .runtime_error
             .clone()
             .unwrap_or_else(|| "Native scanner runtime is not ready yet.".to_string())
-    } else if let Some(model) = selected_model {
-        let spec = model.spec();
+    } else if let Some(error) = config_error.clone() {
+        error
+    } else if let Some(ref model) = selected_model {
         if !session_snapshot.ready {
             session_snapshot
                 .session_error
                 .clone()
                 .unwrap_or_else(|| "The selected model session is not ready.".to_string())
-        } else if !spec.detection_implemented {
+        } else if !model.variant.detection_implemented() {
             format!(
                 "Model {} is present and its ORT session is ready, but Rust-side output decoding is not implemented yet.",
-                spec.id
+                model.config.id
             )
         } else {
             format!(
                 "Model {} is loaded and native Rust inference is ready.",
-                spec.id
+                model.config.id
             )
         }
     } else {
@@ -289,25 +385,32 @@ pub fn probe_native_yolo_runtime_with_hint(
         stage: STAGE,
         platform,
         platform_target,
-        preferred_provider: preferred_provider.to_string(),
+        config_source: config_handle
+            .as_ref()
+            .map(|handle| handle.source.to_string())
+            .unwrap_or_else(|| "unresolved".to_string()),
+        config_path: config_handle
+            .as_ref()
+            .map(|handle| path_to_string(&handle.resolved_path)),
+        preferred_provider,
         provider_candidates,
-        selected_model_id: selected_model.map(|model| model.spec().id.to_string()),
-        selected_model_kind: selected_model.map(|model| model.spec().kind.to_string()),
-        selected_model_task: selected_model.map(|model| model.spec().task.to_string()),
-        selected_model_path: selected_model.and_then(|model| {
-            resource_base_dir
-                .as_deref()
-                .map(|base_dir| path_to_string(&base_dir.join(model.spec().relative_path)))
+        selected_model_id: selected_model.as_ref().map(|model| model.config.id.clone()),
+        selected_model_kind: selected_model.as_ref().map(|model| model.config.kind.clone()),
+        selected_model_task: selected_model.as_ref().map(|model| model.config.task.clone()),
+        selected_model_path: selected_model.as_ref().and_then(|model| {
+            resource_base_dir.as_deref().map(|base_dir| {
+                path_to_string(&base_dir.join(model.config.model_path.as_str()))
+            })
         }),
         runtime_ready: runtime_snapshot.ready,
         preferred_provider_ready,
         model_ready: selected_model.is_some(),
         session_ready: session_snapshot.ready,
         detection_implemented: selected_model
-            .map(|model| model.spec().detection_implemented)
+            .map(|model| model.variant.detection_implemented())
             .unwrap_or(false),
         ort_build_info: runtime_snapshot.ort_build_info,
-        runtime_error: runtime_snapshot.runtime_error,
+        runtime_error: runtime_snapshot.runtime_error.or(config_error),
         session_error: session_snapshot.session_error,
         resource_resolution_source: selected_resource_root
             .map(|candidate| candidate.source.to_string())
@@ -321,9 +424,13 @@ pub fn probe_native_yolo_runtime_with_hint(
 pub fn detect_document_native_yolo(
     request: ScannerDetectDocumentRequest,
     resource_dir_hint: Option<PathBuf>,
+    app_config_dir_hint: Option<PathBuf>,
 ) -> Result<ScannerDetectDocumentResponse, String> {
     let started_at = Instant::now();
-    let probe = probe_native_yolo_runtime_with_hint(resource_dir_hint);
+    let probe = probe_native_yolo_runtime_with_hints(
+        resource_dir_hint.clone(),
+        app_config_dir_hint.clone(),
+    );
     let _requested_limits = (request.max_width, request.max_height);
 
     let decoded_image = if request.source_bytes.is_empty() {
@@ -341,10 +448,20 @@ pub fn detect_document_native_yolo(
         .map(DynamicImage::dimensions)
         .map_or((None, None), |(width, height)| (Some(width), Some(height)));
 
-    let selected_model = probe
-        .selected_model_id
-        .as_deref()
-        .and_then(scanner_model_variant_from_id);
+    let resource_base_dir = select_resource_root(&build_resource_root_candidates(resource_dir_hint))
+        .map(|candidate| candidate.path);
+    let selected_model = if let Some(base_dir) = resource_base_dir.as_ref() {
+        let config_handle =
+            resolve_scanner_yolo_config(Some(base_dir.clone()), app_config_dir_hint).ok();
+        let resource_specs =
+            resource_specs_for_current_platform(config_handle.as_ref().map(|handle| &handle.config));
+        let resources = build_resource_statuses(Some(base_dir), &resource_specs);
+        config_handle
+            .as_ref()
+            .and_then(|handle| select_model_variant(handle, &resources))
+    } else {
+        None
+    };
 
     let (points, message) = if !probe.runtime_ready {
         (None, probe.message.clone())
@@ -361,12 +478,12 @@ pub fn detect_document_native_yolo(
             "The request did not include image bytes, so inference was skipped.".to_string(),
         )
     } else if let Some(model) = selected_model {
-        match run_selected_model_inference(model, decoded_image.as_ref().expect("image exists")) {
+        match run_selected_model_inference(&model, decoded_image.as_ref().expect("image exists")) {
             Ok(points) => (
                 Some(points),
                 format!(
                     "Model {} completed native Rust inference.",
-                    model.spec().id
+                    model.config.id
                 ),
             ),
             Err(error) => (None, error),
@@ -398,6 +515,142 @@ pub fn detect_document_native_yolo(
         points,
         message,
     })
+}
+
+fn build_scanner_yolo_config_response(
+    handle: &ScannerYoloConfigHandle,
+    writable_path: PathBuf,
+) -> ScannerYoloConfigResponse {
+    ScannerYoloConfigResponse {
+        config: handle.config.clone(),
+        source: handle.source.to_string(),
+        resolved_path: path_to_string(&handle.resolved_path),
+        writable_path: path_to_string(&writable_path),
+    }
+}
+
+fn build_scanner_yolo_config_writable_path(
+    app_config_dir_hint: Option<PathBuf>,
+) -> Result<PathBuf, String> {
+    let Some(app_config_dir) = app_config_dir_hint else {
+        return Err("Could not resolve the writable app config directory.".to_string());
+    };
+
+    Ok(app_config_dir.join(CONFIG_RELATIVE_PATH))
+}
+
+fn resolve_scanner_yolo_config(
+    resource_dir_hint: Option<PathBuf>,
+    app_config_dir_hint: Option<PathBuf>,
+) -> Result<ScannerYoloConfigHandle, String> {
+    let resource_root_candidates = build_resource_root_candidates(resource_dir_hint);
+    let selected_resource_root = select_resource_root(&resource_root_candidates)
+        .ok_or_else(|| "Could not resolve the scanner resource directory.".to_string())?;
+    let default_config_path = selected_resource_root.path.join(CONFIG_RELATIVE_PATH);
+    let override_config_path = build_scanner_yolo_config_writable_path(app_config_dir_hint).ok();
+
+    if let Some(override_path) = override_config_path.as_ref() {
+        if override_path.exists() {
+            let config = load_scanner_yolo_config_from_path(override_path)?;
+            return Ok(ScannerYoloConfigHandle {
+                config,
+                resolved_path: override_path.clone(),
+                source: "app-config-override",
+            });
+        }
+    }
+
+    let config = load_scanner_yolo_config_from_path(&default_config_path)?;
+    Ok(ScannerYoloConfigHandle {
+        config,
+        resolved_path: default_config_path,
+        source: "bundled-resource-default",
+    })
+}
+
+fn load_scanner_yolo_config_from_path(path: &Path) -> Result<ScannerYoloConfig, String> {
+    let raw = fs::read_to_string(path)
+        .map_err(|error| format!("Failed to read scanner YOLO config {}: {error}", path_to_string(path)))?;
+    let config = serde_json::from_str::<ScannerYoloConfig>(&raw)
+        .map_err(|error| format!("Failed to parse scanner YOLO config {}: {error}", path_to_string(path)))?;
+    validate_scanner_yolo_config(&config)?;
+    Ok(config)
+}
+
+fn write_scanner_yolo_config(path: &Path, config: &ScannerYoloConfig) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            format!(
+                "Failed to create scanner YOLO config directory {}: {error}",
+                path_to_string(parent)
+            )
+        })?;
+    }
+
+    let payload = serde_json::to_string_pretty(config)
+        .map_err(|error| format!("Failed to serialize scanner YOLO config: {error}"))?;
+    fs::write(path, payload + "\n").map_err(|error| {
+        format!(
+            "Failed to write scanner YOLO config {}: {error}",
+            path_to_string(path)
+        )
+    })
+}
+
+fn validate_scanner_yolo_config(config: &ScannerYoloConfig) -> Result<(), String> {
+    validate_scanner_yolo_model_config(&config.intended_primary_model, "intendedPrimaryModel")?;
+    validate_scanner_yolo_model_config(&config.active_public_baseline, "activePublicBaseline")?;
+
+    if let Some(windows) = config.windows.as_ref() {
+        if windows.preferred_provider.trim().is_empty() {
+            return Err("windows.preferredProvider must not be empty.".to_string());
+        }
+    }
+
+    if let Some(linux) = config.linux.as_ref() {
+        if linux.preferred_providers.is_empty() {
+            return Err("linux.preferredProviders must not be empty.".to_string());
+        }
+        if linux
+            .preferred_providers
+            .iter()
+            .any(|provider| provider.trim().is_empty())
+        {
+            return Err("linux.preferredProviders must not contain empty entries.".to_string());
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_scanner_yolo_model_config(
+    config: &ScannerYoloModelConfig,
+    label: &str,
+) -> Result<(), String> {
+    if config.id.trim().is_empty()
+        || config.kind.trim().is_empty()
+        || config.task.trim().is_empty()
+        || config.model_path.trim().is_empty()
+    {
+        return Err(format!("{label} contains empty required fields."));
+    }
+
+    if let Some(input_size) = config.input_size {
+        if input_size[0] == 0 || input_size[1] == 0 {
+            return Err(format!("{label}.inputSize entries must be positive."));
+        }
+    }
+
+    Ok(())
+}
+
+fn reset_ort_session_cache() {
+    let mut state = runtime_state()
+        .lock()
+        .expect("ORT runtime state mutex should not be poisoned");
+    state.session = None;
+    state.session_model_path = None;
+    state.session_error = None;
 }
 
 fn build_resource_root_candidates(resource_dir_hint: Option<PathBuf>) -> Vec<ResourceRootCandidate> {
@@ -438,8 +691,8 @@ fn select_resource_root(candidates: &[ResourceRootCandidate]) -> Option<Resource
 fn score_resource_root(root: &Path) -> usize {
     let interesting_paths = [
         CONFIG_RELATIVE_PATH,
-        ScannerModelVariant::DocAlignerFastViTSA24.spec().relative_path,
-        ScannerModelVariant::YoloPose4PointPlanned.spec().relative_path,
+        "models/docaligner-fastvit_sa24.onnx",
+        "models/document-boundary-yolo-pose.onnx",
         WINDOWS_ORT_RELATIVE_PATH,
         WINDOWS_ORT_SHARED_RELATIVE_PATH,
         WINDOWS_DIRECTML_RELATIVE_PATH,
@@ -454,54 +707,55 @@ fn score_resource_root(root: &Path) -> usize {
         .count()
 }
 
-fn resource_specs_for_current_platform() -> Vec<ResourceSpec> {
+fn resource_specs_for_current_platform(config: Option<&ScannerYoloConfig>) -> Vec<ResourceSpec> {
     let mut specs = vec![ResourceSpec {
-        key: "config",
-        relative_path: CONFIG_RELATIVE_PATH,
+        key: "config".to_string(),
+        relative_path: CONFIG_RELATIVE_PATH.to_string(),
         required: true,
     }];
 
-    for model in candidate_model_variants() {
-        let spec = model.spec();
-        specs.push(ResourceSpec {
-            key: spec.resource_key,
-            relative_path: spec.relative_path,
-            required: spec.required,
-        });
+    if let Some(config) = config {
+        for model in candidate_model_variants(config) {
+            specs.push(ResourceSpec {
+                key: model.variant.resource_key().to_string(),
+                relative_path: model.config.model_path.clone(),
+                required: model.variant.detection_implemented(),
+            });
+        }
     }
 
     match std::env::consts::OS {
         "windows" => {
             specs.push(ResourceSpec {
-                key: "windows-ort-core",
-                relative_path: WINDOWS_ORT_RELATIVE_PATH,
+                key: "windows-ort-core".to_string(),
+                relative_path: WINDOWS_ORT_RELATIVE_PATH.to_string(),
                 required: true,
             });
             specs.push(ResourceSpec {
-                key: "windows-ort-shared",
-                relative_path: WINDOWS_ORT_SHARED_RELATIVE_PATH,
+                key: "windows-ort-shared".to_string(),
+                relative_path: WINDOWS_ORT_SHARED_RELATIVE_PATH.to_string(),
                 required: true,
             });
             specs.push(ResourceSpec {
-                key: "windows-directml",
-                relative_path: WINDOWS_DIRECTML_RELATIVE_PATH,
+                key: "windows-directml".to_string(),
+                relative_path: WINDOWS_DIRECTML_RELATIVE_PATH.to_string(),
                 required: false,
             });
         }
         "linux" => {
             specs.push(ResourceSpec {
-                key: "linux-ort-core",
-                relative_path: LINUX_ORT_RELATIVE_PATH,
+                key: "linux-ort-core".to_string(),
+                relative_path: LINUX_ORT_RELATIVE_PATH.to_string(),
                 required: true,
             });
             specs.push(ResourceSpec {
-                key: "linux-tensorrt-provider",
-                relative_path: LINUX_TENSORRT_RELATIVE_PATH,
+                key: "linux-tensorrt-provider".to_string(),
+                relative_path: LINUX_TENSORRT_RELATIVE_PATH.to_string(),
                 required: false,
             });
             specs.push(ResourceSpec {
-                key: "linux-cuda-provider",
-                relative_path: LINUX_CUDA_RELATIVE_PATH,
+                key: "linux-cuda-provider".to_string(),
+                relative_path: LINUX_CUDA_RELATIVE_PATH.to_string(),
                 required: false,
             });
         }
@@ -518,15 +772,15 @@ fn build_resource_statuses(
     specs
         .iter()
         .map(|spec| {
-            let resolved_path = resource_base_dir.map(|base_dir| base_dir.join(spec.relative_path));
+            let resolved_path = resource_base_dir.map(|base_dir| base_dir.join(&spec.relative_path));
             let exists = resolved_path
                 .as_ref()
                 .map(|path| path.exists())
                 .unwrap_or(false);
 
             ScannerYoloResourceStatus {
-                key: spec.key,
-                relative_path: spec.relative_path,
+                key: spec.key.clone(),
+                relative_path: spec.relative_path.clone(),
                 resolved_path: resolved_path.as_deref().map(path_to_string),
                 exists,
                 required: spec.required,
@@ -559,57 +813,67 @@ fn provider_candidates_for_current_platform() -> Vec<&'static str> {
     }
 }
 
-fn provider_selection_for_current_platform(runtime_snapshot: &OrtRuntimeSnapshot) -> (&'static str, bool) {
+fn default_preferred_provider_for_current_platform() -> &'static str {
     match std::env::consts::OS {
-        "windows" => {
-            if runtime_snapshot
-                .available_providers
-                .iter()
-                .any(|provider| provider == "DirectML")
-            {
-                ("DirectML", true)
-            } else {
-                ("CPU", runtime_snapshot.ready)
-            }
-        }
-        "linux" => {
-            if runtime_snapshot
-                .available_providers
-                .iter()
-                .any(|provider| provider == "TensorRT")
-            {
-                ("TensorRT", true)
-            } else if runtime_snapshot
-                .available_providers
-                .iter()
-                .any(|provider| provider == "CUDA")
-            {
-                ("CUDA", true)
-            } else {
-                ("CPU", runtime_snapshot.ready)
-            }
-        }
-        _ => ("CPU", runtime_snapshot.ready),
+        "windows" => "DirectML",
+        "linux" => "TensorRT",
+        _ => "CPU",
     }
 }
 
-fn candidate_model_variants() -> Vec<ScannerModelVariant> {
+fn preferred_provider_from_config(config: &ScannerYoloConfig) -> String {
+    match std::env::consts::OS {
+        "windows" => config
+            .windows
+            .as_ref()
+            .map(|windows| windows.preferred_provider.clone())
+            .unwrap_or_else(|| default_preferred_provider_for_current_platform().to_string()),
+        "linux" => config
+            .linux
+            .as_ref()
+            .and_then(|linux| linux.preferred_providers.first().cloned())
+            .unwrap_or_else(|| default_preferred_provider_for_current_platform().to_string()),
+        _ => default_preferred_provider_for_current_platform().to_string(),
+    }
+}
+
+fn normalize_provider_name(provider: &str) -> String {
+    match provider.trim().to_ascii_lowercase().as_str() {
+        "directml" => "DirectML".to_string(),
+        "tensorrt" => "TensorRT".to_string(),
+        "cuda" => "CUDA".to_string(),
+        "cpu" => "CPU".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn is_provider_available(preferred_provider: &str, available_providers: &[String]) -> bool {
+    let normalized = normalize_provider_name(preferred_provider);
+    available_providers
+        .iter()
+        .any(|provider| normalize_provider_name(provider) == normalized)
+}
+
+fn candidate_model_variants(config: &ScannerYoloConfig) -> Vec<ResolvedScannerModel> {
     vec![
-        ScannerModelVariant::DocAlignerFastViTSA24,
-        ScannerModelVariant::YoloPose4PointPlanned,
+        ResolvedScannerModel {
+            variant: ScannerModelVariant::IntendedPrimaryModel,
+            config: config.intended_primary_model.clone(),
+        },
+        ResolvedScannerModel {
+            variant: ScannerModelVariant::ActivePublicBaseline,
+            config: config.active_public_baseline.clone(),
+        },
     ]
 }
 
-fn select_model_variant(resources: &[ScannerYoloResourceStatus]) -> Option<ScannerModelVariant> {
-    candidate_model_variants()
+fn select_model_variant(
+    handle: &ScannerYoloConfigHandle,
+    resources: &[ScannerYoloResourceStatus],
+) -> Option<ResolvedScannerModel> {
+    candidate_model_variants(&handle.config)
         .into_iter()
-        .find(|model| resource_exists(resources, model.spec().resource_key))
-}
-
-fn scanner_model_variant_from_id(id: &str) -> Option<ScannerModelVariant> {
-    candidate_model_variants()
-        .into_iter()
-        .find(|model| model.spec().id == id)
+        .find(|model| resource_exists(resources, model.variant.resource_key()))
 }
 
 fn runtime_state() -> &'static Mutex<OrtRuntimeState> {
@@ -688,7 +952,8 @@ fn probe_ort_runtime(resource_base_dir: Option<&Path>) -> OrtRuntimeSnapshot {
 
 fn ensure_ort_session(
     resource_base_dir: Option<&Path>,
-    model: ScannerModelVariant,
+    model: &ResolvedScannerModel,
+    preferred_provider: &str,
 ) -> OrtSessionSnapshot {
     let Some(resource_base_dir) = resource_base_dir else {
         return OrtSessionSnapshot {
@@ -697,7 +962,7 @@ fn ensure_ort_session(
         };
     };
 
-    let model_path = resource_base_dir.join(model.spec().relative_path);
+    let model_path = resource_base_dir.join(model.config.model_path.as_str());
     if !model_path.exists() {
         return OrtSessionSnapshot {
             ready: false,
@@ -740,7 +1005,7 @@ fn ensure_ort_session(
         .and_then(|builder| {
             let mut builder = configure_session_builder_for_current_platform(builder)?;
             builder = builder
-                .with_execution_providers(build_execution_providers())
+                .with_execution_providers(build_execution_providers(preferred_provider))
                 .map_err(|error| format!("Failed to configure execution providers: {error}"))?;
 
             builder
@@ -785,26 +1050,42 @@ fn configure_session_builder_for_current_platform(
 }
 
 fn run_selected_model_inference(
-    model: ScannerModelVariant,
+    model: &ResolvedScannerModel,
     image: &DynamicImage,
 ) -> Result<Vec<ScannerPoint>, String> {
-    match model {
-        ScannerModelVariant::DocAlignerFastViTSA24 => run_docaligner_fastvit_sa24(image),
-        ScannerModelVariant::YoloPose4PointPlanned => Err(
+    match model.variant {
+        ScannerModelVariant::ActivePublicBaseline => run_docaligner_fastvit_sa24(model, image),
+        ScannerModelVariant::IntendedPrimaryModel => Err(
             "The planned YOLO pose model can be loaded, but Rust-side output decoding for it is not implemented yet."
                 .to_string(),
         ),
     }
 }
 
-fn run_docaligner_fastvit_sa24(image: &DynamicImage) -> Result<Vec<ScannerPoint>, String> {
+fn run_docaligner_fastvit_sa24(
+    model: &ResolvedScannerModel,
+    image: &DynamicImage,
+) -> Result<Vec<ScannerPoint>, String> {
     let original = image.to_rgb8();
     let (original_width, original_height) = original.dimensions();
-    let spec = ScannerModelVariant::DocAlignerFastViTSA24.spec();
+    let input_size = model
+        .config
+        .input_size
+        .ok_or_else(|| "activePublicBaseline.inputSize must be configured.".to_string())?;
+    let input_name = model
+        .config
+        .input_name
+        .as_deref()
+        .ok_or_else(|| "activePublicBaseline.inputName must be configured.".to_string())?;
+    let output_name = model
+        .config
+        .output_name
+        .as_deref()
+        .ok_or_else(|| "activePublicBaseline.outputName must be configured.".to_string())?;
     let resized = image::imageops::resize(
         &original,
-        spec.input_width,
-        spec.input_height,
+        input_size[0],
+        input_size[1],
         FilterType::Triangle,
     );
     let input = build_docaligner_input(&resized);
@@ -812,8 +1093,8 @@ fn run_docaligner_fastvit_sa24(image: &DynamicImage) -> Result<Vec<ScannerPoint>
         vec![
             1_i64,
             3_i64,
-            i64::from(spec.input_height),
-            i64::from(spec.input_width),
+            i64::from(input_size[1]),
+            i64::from(input_size[0]),
         ],
         input,
     ))
@@ -827,9 +1108,9 @@ fn run_docaligner_fastvit_sa24(image: &DynamicImage) -> Result<Vec<ScannerPoint>
         .as_mut()
         .ok_or_else(|| "ORT session is not initialized for the selected model.".to_string())?;
     let outputs = session
-        .run(ort::inputs![spec.input_name => input_tensor])
+        .run(ort::inputs![input_name => input_tensor])
         .map_err(|error| format!("Failed to run ORT inference: {error}"))?;
-    let output_value = outputs.get(spec.output_name).unwrap_or(&outputs[0]);
+    let output_value = outputs.get(output_name).unwrap_or(&outputs[0]);
     let (shape, heatmap) = output_value
         .try_extract_tensor::<f32>()
         .map_err(|error| format!("Failed to extract heatmap tensor: {error}"))?;
@@ -1046,14 +1327,44 @@ fn available_providers_for_current_platform() -> Vec<String> {
     providers
 }
 
-fn build_execution_providers() -> Vec<ort::execution_providers::ExecutionProviderDispatch> {
+fn build_execution_providers(
+    preferred_provider: &str,
+) -> Vec<ort::execution_providers::ExecutionProviderDispatch> {
+    let normalized = normalize_provider_name(preferred_provider);
+
     match std::env::consts::OS {
-        "windows" => vec![ep::DirectML::default().build(), ep::CPU::default().build()],
-        "linux" => vec![
-            ep::TensorRT::default().build(),
-            ep::CUDA::default().build(),
-            ep::CPU::default().build(),
-        ],
+        "windows" => {
+            if normalized == "CPU" {
+                vec![ep::CPU::default().build()]
+            } else {
+                vec![ep::DirectML::default().build(), ep::CPU::default().build()]
+            }
+        }
+        "linux" => {
+            let mut order = Vec::new();
+            match normalized.as_str() {
+                "CUDA" => {
+                    order.push("CUDA");
+                    order.push("TensorRT");
+                }
+                "CPU" => {}
+                _ => {
+                    order.push("TensorRT");
+                    order.push("CUDA");
+                }
+            }
+
+            let mut providers = Vec::new();
+            for provider in order {
+                match provider {
+                    "TensorRT" => providers.push(ep::TensorRT::default().build()),
+                    "CUDA" => providers.push(ep::CUDA::default().build()),
+                    _ => {}
+                }
+            }
+            providers.push(ep::CPU::default().build());
+            providers
+        }
         _ => vec![ep::CPU::default().build()],
     }
 }
@@ -1066,6 +1377,47 @@ fn path_to_string(path: &Path) -> String {
 mod tests {
     use super::*;
 
+    fn sample_scanner_yolo_config() -> ScannerYoloConfig {
+        ScannerYoloConfig {
+            stage: "runtime-plus-public-baseline".to_string(),
+            task: "document-boundary-stage1".to_string(),
+            intended_primary_model: ScannerYoloModelConfig {
+                id: "document-boundary-yolo-pose-4pt".to_string(),
+                kind: "planned-primary".to_string(),
+                task: "document-corner-keypoints".to_string(),
+                model_path: "models/document-boundary-yolo-pose.onnx".to_string(),
+                input_name: None,
+                output_name: None,
+                input_size: None,
+            },
+            active_public_baseline: ScannerYoloModelConfig {
+                id: "docaligner-fastvit-sa24".to_string(),
+                kind: "public-baseline".to_string(),
+                task: "document-corner-heatmap".to_string(),
+                model_path: "models/docaligner-fastvit_sa24.onnx".to_string(),
+                input_name: Some("img".to_string()),
+                output_name: Some("heatmap".to_string()),
+                input_size: Some([256, 256]),
+            },
+            windows: Some(ScannerYoloWindowsConfig {
+                preferred_provider: "directml".to_string(),
+                runtime_library: WINDOWS_ORT_RELATIVE_PATH.to_string(),
+                shared_library: WINDOWS_ORT_SHARED_RELATIVE_PATH.to_string(),
+                provider_library: WINDOWS_DIRECTML_RELATIVE_PATH.to_string(),
+            }),
+            linux: Some(ScannerYoloLinuxConfig {
+                preferred_providers: vec!["tensorrt".to_string(), "cuda".to_string()],
+                runtime_library: LINUX_ORT_RELATIVE_PATH.to_string(),
+                provider_libraries: vec![
+                    LINUX_TENSORRT_RELATIVE_PATH.to_string(),
+                    LINUX_CUDA_RELATIVE_PATH.to_string(),
+                ],
+                official_gpu_release_artifact: "onnxruntime-linux-x64-gpu-1.24.4.tgz".to_string(),
+            }),
+            notes: Vec::new(),
+        }
+    }
+
     #[test]
     fn current_platform_has_expected_provider_candidates() {
         let providers = provider_candidates_for_current_platform();
@@ -1075,10 +1427,29 @@ mod tests {
 
     #[test]
     fn current_platform_has_config_and_model_specs() {
-        let specs = resource_specs_for_current_platform();
+        let config = sample_scanner_yolo_config();
+        let specs = resource_specs_for_current_platform(Some(&config));
         assert!(specs.iter().any(|spec| spec.key == "config" && spec.required));
-        assert!(specs.iter().any(|spec| spec.key == "model-docaligner-fastvit-sa24"));
-        assert!(specs.iter().any(|spec| spec.key == "model-yolo-pose-4pt"));
+        assert!(specs.iter().any(|spec| spec.key == "model-active-public-baseline"));
+        assert!(specs.iter().any(|spec| spec.key == "model-intended-primary"));
+    }
+
+    #[test]
+    fn build_execution_providers_always_keeps_cpu_fallback() {
+        let providers = build_execution_providers("TensorRT");
+        assert!(!providers.is_empty());
+    }
+
+    #[test]
+    fn validate_scanner_yolo_config_rejects_empty_linux_provider_entries() {
+        let mut config = sample_scanner_yolo_config();
+        if let Some(linux) = config.linux.as_mut() {
+            linux.preferred_providers = vec!["cuda".to_string(), "".to_string()];
+        }
+
+        let error = validate_scanner_yolo_config(&config)
+            .expect_err("config with empty provider should fail");
+        assert!(error.contains("linux.preferredProviders"));
     }
 
     #[test]

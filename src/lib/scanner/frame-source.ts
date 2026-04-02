@@ -1614,9 +1614,14 @@ export class TauriNativeFrameSource implements FrameSource {
       this.benchmark.totalPolls += 1;
       this.state.metrics.pollCount = this.benchmark.totalPolls;
       this.state.metrics.emptyPollCount = this.benchmark.totalEmptyPolls;
+      const imageDataRgba = new Uint8ClampedArray(
+        rgba.buffer as ArrayBuffer,
+        rgba.byteOffset,
+        rgba.byteLength,
+      );
 
       this.handlePreviewFrame(
-        new ImageData(rgba, width, height),
+        new ImageData(imageDataRgba, width, height),
         width,
         height,
         payloadBytes,

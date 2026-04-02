@@ -23,6 +23,8 @@ pub fn run() {
       adb_plugin::tauri_adb_stop_server,
       png_bridge::tauri_scanner_encode_png_rgba,
       scanner_detect::tauri_scanner_probe_yolo,
+      scanner_detect::tauri_scanner_read_yolo_config,
+      scanner_detect::tauri_scanner_write_yolo_config,
       scanner_detect::tauri_scanner_detect_document,
       scanner_postprocess::tauri_scanner_postprocess_image,
       stream_decoder::tauri_scanner_start_stream,

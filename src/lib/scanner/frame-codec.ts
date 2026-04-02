@@ -12,7 +12,7 @@ export const FRAME_PACKET_TELEMETRY_SIZE = 12;
 export interface NormalizedFramePayload { buffer: ArrayBuffer; byteOffset: number; byteLength: number; }
 export interface FramePacketTelemetry { sentAtEpochMs: number; sequence: number; }
 export interface ParsedFramePacket { codec: number; width: number; height: number; payload: Uint8Array; telemetry: FramePacketTelemetry | null; }
-export interface DecodedRgbaFrame { width: number; height: number; rgba: Uint8ClampedArray<ArrayBuffer>; telemetry: FramePacketTelemetry | null; }
+export interface DecodedRgbaFrame { width: number; height: number; rgba: Uint8ClampedArray; telemetry: FramePacketTelemetry | null; }
 
 
 const QOI_MAGIC = [0x71, 0x6f, 0x69, 0x66];
@@ -123,10 +123,10 @@ export const parseFramePacket = (data: Uint8Array | ArrayBuffer | number[]): Par
  * Decode a codec-tagged frame packet to RGBA pixels.
  *
  * @param {Uint8Array | ArrayBuffer | number[]} data
- * @param {Uint8ClampedArray<ArrayBufferLike>=} targetRgba
+ * @param {Uint8ClampedArray=} targetRgba
  * @returns {{ width: number, height: number, rgba: Uint8ClampedArray }}
  */
-export const decodeFramePacketToRgba = (data: Uint8Array | ArrayBuffer | number[], targetRgba?: Uint8ClampedArray<ArrayBufferLike>): DecodedRgbaFrame => {
+export const decodeFramePacketToRgba = (data: Uint8Array | ArrayBuffer | number[], targetRgba?: Uint8ClampedArray): DecodedRgbaFrame => {
   const { codec, width, height, payload, telemetry } = parseFramePacket(data);
 
   if (codec === FRAME_CODEC_QOI) {
@@ -167,7 +167,7 @@ export const decodeFramePacketToRgba = (data: Uint8Array | ArrayBuffer | number[
  * @param {number} expectedHeight
  * @returns {Uint8ClampedArray}
  */
-export const decodeQoiToRgba = (payload: Uint8Array, expectedWidth: number, expectedHeight: number): Uint8ClampedArray<ArrayBuffer> => {
+export const decodeQoiToRgba = (payload: Uint8Array, expectedWidth: number, expectedHeight: number): Uint8ClampedArray => {
   if (payload.length < QOI_HEADER_SIZE + QOI_END_MARKER_SIZE) {
     throw new Error("QOI payload is too short.");
   }
@@ -192,7 +192,7 @@ export const decodeQoiToRgba = (payload: Uint8Array, expectedWidth: number, expe
   }
 
   const pixelCount = width * height;
-  const rgba = new Uint8ClampedArray(pixelCount * 4) as Uint8ClampedArray<ArrayBuffer>;
+  const rgba = new Uint8ClampedArray(pixelCount * 4);
   const index = new Uint8Array(64 * 4);
 
   let cursor = QOI_HEADER_SIZE;
@@ -298,10 +298,10 @@ export const decodeQoiToRgba = (payload: Uint8Array, expectedWidth: number, expe
  * @param {Uint8Array} payload
  * @param {number} width
  * @param {number} height
- * @param {Uint8ClampedArray<ArrayBufferLike>=} targetRgba
- * @returns {Uint8ClampedArray<ArrayBuffer>}
+ * @param {Uint8ClampedArray=} targetRgba
+ * @returns {Uint8ClampedArray}
  */
-export const decodeLuma8ToRgba = (payload: Uint8Array, width: number, height: number, targetRgba?: Uint8ClampedArray<ArrayBufferLike>): Uint8ClampedArray<ArrayBuffer> => {
+export const decodeLuma8ToRgba = (payload: Uint8Array, width: number, height: number, targetRgba?: Uint8ClampedArray): Uint8ClampedArray => {
   const pixelCount = width * height;
 
   if (payload.length !== pixelCount) {
@@ -323,10 +323,10 @@ export const decodeLuma8ToRgba = (payload: Uint8Array, width: number, height: nu
  * @param {Uint8Array} payload
  * @param {number} width
  * @param {number} height
- * @param {Uint8ClampedArray<ArrayBufferLike>=} targetRgba
- * @returns {Uint8ClampedArray<ArrayBuffer>}
+ * @param {Uint8ClampedArray=} targetRgba
+ * @returns {Uint8ClampedArray}
  */
-export const decodeI420ToRgba = (payload: Uint8Array, width: number, height: number, targetRgba?: Uint8ClampedArray<ArrayBufferLike>): Uint8ClampedArray<ArrayBuffer> => {
+export const decodeI420ToRgba = (payload: Uint8Array, width: number, height: number, targetRgba?: Uint8ClampedArray): Uint8ClampedArray => {
   if ((width & 1) !== 0 || (height & 1) !== 0) {
     throw new Error(`I420 preview frames require even dimensions, got ${width}x${height}.`);
   }
@@ -396,10 +396,10 @@ export const decodeI420ToRgba = (payload: Uint8Array, width: number, height: num
  * Resolve a reusable RGBA target buffer for decoder hot paths.
  *
  * @param {number} pixelCount
- * @param {Uint8ClampedArray<ArrayBufferLike>=} targetRgba
- * @returns {{ rgba: Uint8ClampedArray<ArrayBufferLike>, rgba32: Uint32Array<ArrayBufferLike> }}
+ * @param {Uint8ClampedArray=} targetRgba
+ * @returns {{ rgba: Uint8ClampedArray, rgba32: Uint32Array }}
  */
-const resolveRgbaTarget = (pixelCount: number, targetRgba?: Uint8ClampedArray<ArrayBufferLike>): { rgba: Uint8ClampedArray<ArrayBuffer>, rgba32: Uint32Array<ArrayBuffer> } => {
+const resolveRgbaTarget = (pixelCount: number, targetRgba?: Uint8ClampedArray): { rgba: Uint8ClampedArray, rgba32: Uint32Array } => {
   const byteLength = pixelCount * 4;
 
   if (
@@ -408,15 +408,15 @@ const resolveRgbaTarget = (pixelCount: number, targetRgba?: Uint8ClampedArray<Ar
     (targetRgba.byteOffset & 0x03) === 0
   ) {
     return {
-      rgba: targetRgba as Uint8ClampedArray<ArrayBuffer>,
-      rgba32: new Uint32Array(targetRgba.buffer, targetRgba.byteOffset, pixelCount) as Uint32Array<ArrayBuffer>,
+      rgba: targetRgba,
+      rgba32: new Uint32Array(targetRgba.buffer, targetRgba.byteOffset, pixelCount),
     };
   }
 
-  const rgba = new Uint8ClampedArray(byteLength) as Uint8ClampedArray<ArrayBuffer>;
+  const rgba = new Uint8ClampedArray(byteLength);
   return {
     rgba,
-    rgba32: new Uint32Array(rgba.buffer, rgba.byteOffset, pixelCount) as Uint32Array<ArrayBuffer>,
+    rgba32: new Uint32Array(rgba.buffer, rgba.byteOffset, pixelCount),
   };
 };
 

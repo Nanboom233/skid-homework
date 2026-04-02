@@ -825,6 +825,56 @@
         "label": "原生运行时严格模式",
         "desc": "启用后，如果原生桌面运行时不可用，扫描检测将不会回退到 OpenCV。"
       },
+      "scanner-native-yolo-config": {
+        "title": "原生桌面运行时配置",
+        "desc": "仅桌面端可用。读取内置扫描 YOLO 配置，并将覆盖配置写入可写的应用配置目录。",
+        "actions": {
+          "reload": "重新加载配置",
+          "save": "保存配置",
+          "saving": "保存中..."
+        },
+        "state": {
+          "ready": "已就绪",
+          "not-ready": "未就绪"
+        },
+        "status": {
+          "config-source": "配置来源",
+          "resolved-path": "当前配置路径",
+          "writable-path": "可写覆盖路径",
+          "runtime-ready": "运行时状态",
+          "session-ready": "会话状态",
+          "provider": "首选 Provider",
+          "model": "当前模型",
+          "message": "探测消息"
+        },
+        "fields": {
+          "stage": "阶段",
+          "task": "任务",
+          "id": "模型 ID",
+          "kind": "模型类型",
+          "model-task": "模型任务",
+          "model-path": "模型路径",
+          "input-name": "输入名称",
+          "output-name": "输出名称",
+          "input-width": "输入宽度",
+          "input-height": "输入高度",
+          "windows-provider": "Windows 首选 Provider",
+          "linux-providers": "Linux 首选 Provider 列表",
+          "notes": "备注",
+          "intended-primary": {
+            "title": "目标主模型"
+          },
+          "active-public-baseline": {
+            "title": "当前公共基线模型"
+          }
+        },
+        "toasts": {
+          "load-error": "加载原生运行时配置失败：{{error}}",
+          "save-success": "原生运行时配置已保存。",
+          "save-error": "保存原生运行时配置失败：{{error}}"
+        },
+        "empty": "桌面运行时配置尚未加载。"
+      },
       "ui": {
         "title": "界面",
         "clear-dialog-on-submit": "提交后清空输入框"

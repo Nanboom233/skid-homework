@@ -10,10 +10,53 @@ export interface TauriScannerYoloResourceStatus {
   required: boolean;
 }
 
+export interface TauriScannerYoloModelConfig {
+  id: string;
+  kind: string;
+  task: string;
+  modelPath: string;
+  inputName?: string | null;
+  outputName?: string | null;
+  inputSize?: [number, number] | null;
+}
+
+export interface TauriScannerYoloWindowsConfig {
+  preferredProvider: string;
+  runtimeLibrary: string;
+  sharedLibrary: string;
+  providerLibrary: string;
+}
+
+export interface TauriScannerYoloLinuxConfig {
+  preferredProviders: string[];
+  runtimeLibrary: string;
+  providerLibraries: string[];
+  officialGpuReleaseArtifact: string;
+}
+
+export interface TauriScannerYoloConfig {
+  stage: string;
+  task: string;
+  intendedPrimaryModel: TauriScannerYoloModelConfig;
+  activePublicBaseline: TauriScannerYoloModelConfig;
+  windows?: TauriScannerYoloWindowsConfig | null;
+  linux?: TauriScannerYoloLinuxConfig | null;
+  notes: string[];
+}
+
+export interface TauriScannerYoloConfigResponse {
+  config: TauriScannerYoloConfig;
+  source: string;
+  resolvedPath: string;
+  writablePath: string;
+}
+
 export interface TauriScannerYoloProbeResult {
   stage: string;
   platform: string;
   platformTarget: string;
+  configSource: string;
+  configPath: string | null;
   preferredProvider: string;
   providerCandidates: string[];
   selectedModelId: string | null;
@@ -76,6 +119,28 @@ export const probeTauriScannerYolo = async (): Promise<TauriScannerYoloProbeResu
 
   const {invoke} = await import("@tauri-apps/api/core");
   return await invoke<TauriScannerYoloProbeResult>("tauri_scanner_probe_yolo");
+};
+
+export const readTauriScannerYoloConfig = async (): Promise<TauriScannerYoloConfigResponse> => {
+  if (!isTauri()) {
+    throw new Error("Scanner YOLO config is only available in Tauri desktop builds.");
+  }
+
+  const {invoke} = await import("@tauri-apps/api/core");
+  return await invoke<TauriScannerYoloConfigResponse>("tauri_scanner_read_yolo_config");
+};
+
+export const writeTauriScannerYoloConfig = async (
+  config: TauriScannerYoloConfig,
+): Promise<TauriScannerYoloConfigResponse> => {
+  if (!isTauri()) {
+    throw new Error("Scanner YOLO config is only available in Tauri desktop builds.");
+  }
+
+  const {invoke} = await import("@tauri-apps/api/core");
+  return await invoke<TauriScannerYoloConfigResponse>("tauri_scanner_write_yolo_config", {
+    config,
+  });
 };
 
 export const detectDocumentWithTauriNativeYolo = async (

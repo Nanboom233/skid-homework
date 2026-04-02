@@ -66,6 +66,7 @@ docs/zh/*
 !docs/zh/scanner/
 docs/zh/scanner/*
 !docs/zh/scanner/2026-04-02-scanner-yolo-pose-data-pipeline-summary.md
+!docs/zh/scanner/2026-04-02-scanner-yolo-settings-page-binding-summary.md
 
 #scripts
 scripts
@@ -75,6 +76,7 @@ scripts/*
 scripts/scanner_yolo/*
 !scripts/scanner_yolo/*.py
 !scripts/test-scanner-yolo-data-pipeline.ps1
+!scripts/test-scanner-yolo-settings-binding.ps1
 
 # local AI Agent Settings
 .claude

@@ -18,6 +18,7 @@ fn main() {
             max_height: None,
         },
         None,
+        None,
     )
     .expect("smoke inference should succeed");
 

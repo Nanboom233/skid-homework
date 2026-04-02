@@ -20,6 +20,19 @@ import { useHotkeys } from "react-hotkeys-hook";
 import { useTranslation } from "react-i18next";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { useAvailableModels } from "@/hooks/use-available-models";
+import {
+  probeTauriScannerYolo,
+  readTauriScannerYoloConfig,
+  type TauriScannerYoloConfig,
+  type TauriScannerYoloConfigResponse,
+  type TauriScannerYoloLinuxConfig,
+  type TauriScannerYoloModelConfig,
+  type TauriScannerYoloProbeResult,
+  type TauriScannerYoloWindowsConfig,
+  writeTauriScannerYoloConfig,
+} from "@/lib/tauri/scanner-detect";
+import { isTauri } from "@/lib/tauri/platform";
+import { toast } from "sonner";
 import ShortcutRecorder from "./ShortcutRecorder";
 import { useTheme } from "../theme-provider";
 import { Button } from "../ui/button";
@@ -41,6 +54,23 @@ export const DEFAULT_BASE_BY_PROVIDER: Record<AiProvider, string> = {
   gemini: DEFAULT_GEMINI_BASE_URL,
   openai: DEFAULT_OPENAI_BASE_URL
 };
+
+const createDefaultScannerYoloWindowsConfig = (): TauriScannerYoloWindowsConfig => ({
+  preferredProvider: "directml",
+  runtimeLibrary: "onnxruntime/windows/onnxruntime.dll",
+  sharedLibrary: "onnxruntime/windows/onnxruntime_providers_shared.dll",
+  providerLibrary: "onnxruntime/windows/DirectML.dll",
+});
+
+const createDefaultScannerYoloLinuxConfig = (): TauriScannerYoloLinuxConfig => ({
+  preferredProviders: ["tensorrt", "cuda"],
+  runtimeLibrary: "onnxruntime/linux/libonnxruntime.so",
+  providerLibraries: [
+    "onnxruntime/linux/libonnxruntime_providers_tensorrt.so",
+    "onnxruntime/linux/libonnxruntime_providers_cuda.so",
+  ],
+  officialGpuReleaseArtifact: "onnxruntime-linux-x64-gpu-1.24.4.tgz",
+});
 
 type BackButtonProps = {
   href?: string | null;
@@ -122,10 +152,18 @@ export default function SettingsPage() {
   } = useSettingsStore((s) => s);
 
   const { theme: activeTheme, setTheme } = useTheme();
+  const isDesktopTauri = isTauri();
 
   const [recordingAction, setRecordingAction] = useState<ShortcutAction | null>(
     null
   );
+  const [scannerYoloConfig, setScannerYoloConfig] = useState<TauriScannerYoloConfig | null>(null);
+  const [scannerYoloConfigMeta, setScannerYoloConfigMeta] =
+    useState<Omit<TauriScannerYoloConfigResponse, "config"> | null>(null);
+  const [scannerYoloProbe, setScannerYoloProbe] = useState<TauriScannerYoloProbeResult | null>(null);
+  const [scannerYoloLoading, setScannerYoloLoading] = useState(false);
+  const [scannerYoloSaving, setScannerYoloSaving] = useState(false);
+  const [scannerYoloError, setScannerYoloError] = useState<string | null>(null);
 
   const activeSource = useMemo(
     () => sources.find((source) => source.id === activeSourceId) ?? sources[0],
@@ -323,6 +361,158 @@ export default function SettingsPage() {
     if (!activeSource) return;
     updateSource(activeSource.id, { thinkingBudget: value });
   };
+
+  const applyScannerYoloConfigResponse = useCallback(
+    (response: TauriScannerYoloConfigResponse) => {
+      setScannerYoloConfig(response.config);
+      setScannerYoloConfigMeta({
+        source: response.source,
+        resolvedPath: response.resolvedPath,
+        writablePath: response.writablePath,
+      });
+    },
+    []
+  );
+
+  const loadScannerYoloDesktopState = useCallback(
+    async (options?: { silent?: boolean }) => {
+      if (!isDesktopTauri) {
+        return;
+      }
+
+      const silent = options?.silent ?? false;
+      if (!silent) {
+        setScannerYoloLoading(true);
+      }
+
+      try {
+        const [configResponse, probeResponse] = await Promise.all([
+          readTauriScannerYoloConfig(),
+          probeTauriScannerYolo(),
+        ]);
+        applyScannerYoloConfigResponse(configResponse);
+        setScannerYoloProbe(probeResponse);
+        setScannerYoloError(null);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setScannerYoloError(message);
+        if (!silent) {
+          toast.error(
+            t("advanced.scanner-native-yolo-config.toasts.load-error", {
+              error: message,
+            })
+          );
+        }
+      } finally {
+        if (!silent) {
+          setScannerYoloLoading(false);
+        }
+      }
+    },
+    [applyScannerYoloConfigResponse, isDesktopTauri, t]
+  );
+
+  useEffect(() => {
+    if (!isDesktopTauri) {
+      return;
+    }
+
+    void loadScannerYoloDesktopState({ silent: true });
+  }, [isDesktopTauri, loadScannerYoloDesktopState]);
+
+  const updateScannerYoloConfig = useCallback(
+    (updater: (current: TauriScannerYoloConfig) => TauriScannerYoloConfig) => {
+      setScannerYoloConfig((current) => (current ? updater(current) : current));
+    },
+    []
+  );
+
+  const updateScannerYoloModel = useCallback(
+    (
+      target: "intendedPrimaryModel" | "activePublicBaseline",
+      patch: Partial<TauriScannerYoloModelConfig>
+    ) => {
+      updateScannerYoloConfig((current) => ({
+        ...current,
+        [target]: {
+          ...current[target],
+          ...patch,
+        },
+      }));
+    },
+    [updateScannerYoloConfig]
+  );
+
+  const updateScannerYoloWindows = useCallback(
+    (patch: Partial<TauriScannerYoloWindowsConfig>) => {
+      updateScannerYoloConfig((current) => ({
+        ...current,
+        windows: {
+          ...(current.windows ?? createDefaultScannerYoloWindowsConfig()),
+          ...patch,
+        },
+      }));
+    },
+    [updateScannerYoloConfig]
+  );
+
+  const updateScannerYoloLinux = useCallback(
+    (patch: Partial<TauriScannerYoloLinuxConfig>) => {
+      updateScannerYoloConfig((current) => ({
+        ...current,
+        linux: {
+          ...(current.linux ?? createDefaultScannerYoloLinuxConfig()),
+          ...patch,
+        },
+      }));
+    },
+    [updateScannerYoloConfig]
+  );
+
+  const handleBaselineInputSizeChange = (index: 0 | 1, rawValue: string) => {
+    const parsed = Number.parseInt(rawValue, 10);
+    updateScannerYoloConfig((current) => {
+      const currentSize = current.activePublicBaseline.inputSize ?? [256, 256];
+      const nextSize: [number, number] = [...currentSize] as [number, number];
+      nextSize[index] = Number.isFinite(parsed) ? parsed : 0;
+
+      return {
+        ...current,
+        activePublicBaseline: {
+          ...current.activePublicBaseline,
+          inputSize: nextSize,
+        },
+      };
+    });
+  };
+
+  const handleScannerYoloSave = useCallback(async () => {
+    if (!scannerYoloConfig) {
+      return;
+    }
+
+    setScannerYoloSaving(true);
+    try {
+      const response = await writeTauriScannerYoloConfig(scannerYoloConfig);
+      applyScannerYoloConfigResponse(response);
+      setScannerYoloProbe(await probeTauriScannerYolo());
+      setScannerYoloError(null);
+      toast.success(t("advanced.scanner-native-yolo-config.toasts.save-success"));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setScannerYoloError(message);
+      toast.error(
+        t("advanced.scanner-native-yolo-config.toasts.save-error", {
+          error: message,
+        })
+      );
+    } finally {
+      setScannerYoloSaving(false);
+    }
+  }, [applyScannerYoloConfigResponse, scannerYoloConfig, t]);
+
+  const scannerYoloLinuxProviders = scannerYoloConfig?.linux?.preferredProviders.join(", ") ?? "";
+  const scannerYoloNotes = scannerYoloConfig?.notes.join("\n") ?? "";
 
   return (
     <>
@@ -813,6 +1003,384 @@ export default function SettingsPage() {
             </div>
           </CardContent>
         </Card>
+
+        {isDesktopTauri ? (
+          <Card>
+            <CardHeader>
+              <CardTitle>{t("advanced.scanner-native-yolo-config.title")}</CardTitle>
+              <CardDescription>{t("advanced.scanner-native-yolo-config.desc")}</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              <div className="flex flex-wrap gap-3">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => void loadScannerYoloDesktopState()}
+                  disabled={scannerYoloLoading || scannerYoloSaving}
+                >
+                  <RefreshCw
+                    className={`mr-2 h-4 w-4 ${(scannerYoloLoading || scannerYoloSaving) ? "animate-spin" : ""}`}
+                  />
+                  {t("advanced.scanner-native-yolo-config.actions.reload")}
+                </Button>
+                <Button
+                  type="button"
+                  onClick={() => void handleScannerYoloSave()}
+                  disabled={!scannerYoloConfig || scannerYoloLoading || scannerYoloSaving}
+                >
+                  {scannerYoloSaving
+                    ? t("advanced.scanner-native-yolo-config.actions.saving")
+                    : t("advanced.scanner-native-yolo-config.actions.save")}
+                </Button>
+              </div>
+
+              {scannerYoloError ? (
+                <p className="text-sm text-destructive">{scannerYoloError}</p>
+              ) : null}
+
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="space-y-2">
+                  <Label>{t("advanced.scanner-native-yolo-config.status.config-source")}</Label>
+                  <p className="break-all rounded-md border bg-muted/40 px-3 py-2 text-xs font-mono">
+                    {scannerYoloConfigMeta?.source ?? scannerYoloProbe?.configSource ?? "—"}
+                  </p>
+                </div>
+                <div className="space-y-2">
+                  <Label>{t("advanced.scanner-native-yolo-config.status.resolved-path")}</Label>
+                  <p className="break-all rounded-md border bg-muted/40 px-3 py-2 text-xs font-mono">
+                    {scannerYoloConfigMeta?.resolvedPath ?? scannerYoloProbe?.configPath ?? "—"}
+                  </p>
+                </div>
+                <div className="space-y-2 md:col-span-2">
+                  <Label>{t("advanced.scanner-native-yolo-config.status.writable-path")}</Label>
+                  <p className="break-all rounded-md border bg-muted/40 px-3 py-2 text-xs font-mono">
+                    {scannerYoloConfigMeta?.writablePath ?? "—"}
+                  </p>
+                </div>
+              </div>
+
+              {scannerYoloProbe ? (
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label>{t("advanced.scanner-native-yolo-config.status.runtime-ready")}</Label>
+                    <p className="rounded-md border bg-muted/40 px-3 py-2 text-sm">
+                      {scannerYoloProbe.runtimeReady
+                        ? t("advanced.scanner-native-yolo-config.state.ready")
+                        : t("advanced.scanner-native-yolo-config.state.not-ready")}
+                    </p>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>{t("advanced.scanner-native-yolo-config.status.session-ready")}</Label>
+                    <p className="rounded-md border bg-muted/40 px-3 py-2 text-sm">
+                      {scannerYoloProbe.sessionReady
+                        ? t("advanced.scanner-native-yolo-config.state.ready")
+                        : t("advanced.scanner-native-yolo-config.state.not-ready")}
+                    </p>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>{t("advanced.scanner-native-yolo-config.status.provider")}</Label>
+                    <p className="break-all rounded-md border bg-muted/40 px-3 py-2 text-sm">
+                      {scannerYoloProbe.preferredProvider || "—"}
+                    </p>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>{t("advanced.scanner-native-yolo-config.status.model")}</Label>
+                    <p className="break-all rounded-md border bg-muted/40 px-3 py-2 text-sm">
+                      {scannerYoloProbe.selectedModelId || "—"}
+                    </p>
+                  </div>
+                  <div className="space-y-2 md:col-span-2">
+                    <Label>{t("advanced.scanner-native-yolo-config.status.message")}</Label>
+                    <p className="break-all rounded-md border bg-muted/40 px-3 py-2 text-sm">
+                      {scannerYoloProbe.message}
+                    </p>
+                  </div>
+                </div>
+              ) : null}
+
+              {scannerYoloConfig ? (
+                <>
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <div className="space-y-2">
+                      <Label htmlFor="scanner-yolo-stage">
+                        {t("advanced.scanner-native-yolo-config.fields.stage")}
+                      </Label>
+                      <Input
+                        id="scanner-yolo-stage"
+                        value={scannerYoloConfig.stage}
+                        onChange={(event) =>
+                          updateScannerYoloConfig((current) => ({
+                            ...current,
+                            stage: event.target.value,
+                          }))
+                        }
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="scanner-yolo-task">
+                        {t("advanced.scanner-native-yolo-config.fields.task")}
+                      </Label>
+                      <Input
+                        id="scanner-yolo-task"
+                        value={scannerYoloConfig.task}
+                        onChange={(event) =>
+                          updateScannerYoloConfig((current) => ({
+                            ...current,
+                            task: event.target.value,
+                          }))
+                        }
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid gap-6 lg:grid-cols-2">
+                    <div className="space-y-3 rounded-lg border p-4">
+                      <h3 className="text-sm font-semibold">
+                        {t("advanced.scanner-native-yolo-config.fields.intended-primary.title")}
+                      </h3>
+                      <div className="space-y-2">
+                        <Label htmlFor="scanner-yolo-intended-id">
+                          {t("advanced.scanner-native-yolo-config.fields.id")}
+                        </Label>
+                        <Input
+                          id="scanner-yolo-intended-id"
+                          value={scannerYoloConfig.intendedPrimaryModel.id}
+                          onChange={(event) =>
+                            updateScannerYoloModel("intendedPrimaryModel", {
+                              id: event.target.value,
+                            })
+                          }
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="scanner-yolo-intended-kind">
+                          {t("advanced.scanner-native-yolo-config.fields.kind")}
+                        </Label>
+                        <Input
+                          id="scanner-yolo-intended-kind"
+                          value={scannerYoloConfig.intendedPrimaryModel.kind}
+                          onChange={(event) =>
+                            updateScannerYoloModel("intendedPrimaryModel", {
+                              kind: event.target.value,
+                            })
+                          }
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="scanner-yolo-intended-task">
+                          {t("advanced.scanner-native-yolo-config.fields.model-task")}
+                        </Label>
+                        <Input
+                          id="scanner-yolo-intended-task"
+                          value={scannerYoloConfig.intendedPrimaryModel.task}
+                          onChange={(event) =>
+                            updateScannerYoloModel("intendedPrimaryModel", {
+                              task: event.target.value,
+                            })
+                          }
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="scanner-yolo-intended-path">
+                          {t("advanced.scanner-native-yolo-config.fields.model-path")}
+                        </Label>
+                        <Input
+                          id="scanner-yolo-intended-path"
+                          value={scannerYoloConfig.intendedPrimaryModel.modelPath}
+                          onChange={(event) =>
+                            updateScannerYoloModel("intendedPrimaryModel", {
+                              modelPath: event.target.value,
+                            })
+                          }
+                        />
+                      </div>
+                    </div>
+
+                    <div className="space-y-3 rounded-lg border p-4">
+                      <h3 className="text-sm font-semibold">
+                        {t("advanced.scanner-native-yolo-config.fields.active-public-baseline.title")}
+                      </h3>
+                      <div className="space-y-2">
+                        <Label htmlFor="scanner-yolo-baseline-id">
+                          {t("advanced.scanner-native-yolo-config.fields.id")}
+                        </Label>
+                        <Input
+                          id="scanner-yolo-baseline-id"
+                          value={scannerYoloConfig.activePublicBaseline.id}
+                          onChange={(event) =>
+                            updateScannerYoloModel("activePublicBaseline", {
+                              id: event.target.value,
+                            })
+                          }
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="scanner-yolo-baseline-kind">
+                          {t("advanced.scanner-native-yolo-config.fields.kind")}
+                        </Label>
+                        <Input
+                          id="scanner-yolo-baseline-kind"
+                          value={scannerYoloConfig.activePublicBaseline.kind}
+                          onChange={(event) =>
+                            updateScannerYoloModel("activePublicBaseline", {
+                              kind: event.target.value,
+                            })
+                          }
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="scanner-yolo-baseline-task">
+                          {t("advanced.scanner-native-yolo-config.fields.model-task")}
+                        </Label>
+                        <Input
+                          id="scanner-yolo-baseline-task"
+                          value={scannerYoloConfig.activePublicBaseline.task}
+                          onChange={(event) =>
+                            updateScannerYoloModel("activePublicBaseline", {
+                              task: event.target.value,
+                            })
+                          }
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="scanner-yolo-baseline-path">
+                          {t("advanced.scanner-native-yolo-config.fields.model-path")}
+                        </Label>
+                        <Input
+                          id="scanner-yolo-baseline-path"
+                          value={scannerYoloConfig.activePublicBaseline.modelPath}
+                          onChange={(event) =>
+                            updateScannerYoloModel("activePublicBaseline", {
+                              modelPath: event.target.value,
+                            })
+                          }
+                        />
+                      </div>
+                      <div className="grid gap-3 md:grid-cols-2">
+                        <div className="space-y-2">
+                          <Label htmlFor="scanner-yolo-baseline-input-name">
+                            {t("advanced.scanner-native-yolo-config.fields.input-name")}
+                          </Label>
+                          <Input
+                            id="scanner-yolo-baseline-input-name"
+                            value={scannerYoloConfig.activePublicBaseline.inputName ?? ""}
+                            onChange={(event) =>
+                              updateScannerYoloModel("activePublicBaseline", {
+                                inputName: event.target.value || null,
+                              })
+                            }
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor="scanner-yolo-baseline-output-name">
+                            {t("advanced.scanner-native-yolo-config.fields.output-name")}
+                          </Label>
+                          <Input
+                            id="scanner-yolo-baseline-output-name"
+                            value={scannerYoloConfig.activePublicBaseline.outputName ?? ""}
+                            onChange={(event) =>
+                              updateScannerYoloModel("activePublicBaseline", {
+                                outputName: event.target.value || null,
+                              })
+                            }
+                          />
+                        </div>
+                      </div>
+                      <div className="grid gap-3 md:grid-cols-2">
+                        <div className="space-y-2">
+                          <Label htmlFor="scanner-yolo-baseline-input-width">
+                            {t("advanced.scanner-native-yolo-config.fields.input-width")}
+                          </Label>
+                          <Input
+                            id="scanner-yolo-baseline-input-width"
+                            type="number"
+                            inputMode="numeric"
+                            value={scannerYoloConfig.activePublicBaseline.inputSize?.[0] ?? 0}
+                            onChange={(event) =>
+                              handleBaselineInputSizeChange(0, event.target.value)
+                            }
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor="scanner-yolo-baseline-input-height">
+                            {t("advanced.scanner-native-yolo-config.fields.input-height")}
+                          </Label>
+                          <Input
+                            id="scanner-yolo-baseline-input-height"
+                            type="number"
+                            inputMode="numeric"
+                            value={scannerYoloConfig.activePublicBaseline.inputSize?.[1] ?? 0}
+                            onChange={(event) =>
+                              handleBaselineInputSizeChange(1, event.target.value)
+                            }
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <div className="space-y-2">
+                      <Label htmlFor="scanner-yolo-windows-provider">
+                        {t("advanced.scanner-native-yolo-config.fields.windows-provider")}
+                      </Label>
+                      <Input
+                        id="scanner-yolo-windows-provider"
+                        value={scannerYoloConfig.windows?.preferredProvider ?? ""}
+                        onChange={(event) =>
+                          updateScannerYoloWindows({
+                            preferredProvider: event.target.value,
+                          })
+                        }
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="scanner-yolo-linux-providers">
+                        {t("advanced.scanner-native-yolo-config.fields.linux-providers")}
+                      </Label>
+                      <Input
+                        id="scanner-yolo-linux-providers"
+                        value={scannerYoloLinuxProviders}
+                        onChange={(event) =>
+                          updateScannerYoloLinux({
+                            preferredProviders: event.target.value
+                              .split(",")
+                              .map((provider) => provider.trim())
+                              .filter(Boolean),
+                          })
+                        }
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="scanner-yolo-notes">
+                      {t("advanced.scanner-native-yolo-config.fields.notes")}
+                    </Label>
+                    <Textarea
+                      id="scanner-yolo-notes"
+                      className="min-h-28"
+                      value={scannerYoloNotes}
+                      onChange={(event) =>
+                        updateScannerYoloConfig((current) => ({
+                          ...current,
+                          notes: event.target.value
+                            .split("\n")
+                            .map((line) => line.trim())
+                            .filter(Boolean),
+                        }))
+                      }
+                    />
+                  </div>
+                </>
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  {t("advanced.scanner-native-yolo-config.empty")}
+                </p>
+              )}
+            </CardContent>
+          </Card>
+        ) : null}
 
         <BackButton href={navTargetPath} />
       </div>

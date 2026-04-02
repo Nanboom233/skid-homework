@@ -10,6 +10,12 @@ const nextConfig = {
   output: isTauri ? "export" : "standalone",
   // Disable Next.js Image Optimization for Tauri SSG (requires a server)
   ...(isTauri && { images: { unoptimized: true } }),
+  // The project runs an explicit `tsc --noEmit` step before `next build`.
+  // Keeping Next's own worker-based typecheck enabled currently fails on
+  // Windows in this repo with `spawn EPERM`, so builds skip the duplicate pass.
+  typescript: {
+    ignoreBuildErrors: true,
+  },
   async headers() {
     return [
       {
