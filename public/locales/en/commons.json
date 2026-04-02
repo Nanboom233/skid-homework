@@ -381,6 +381,30 @@
         "preview-resolution": "Preview Resolution",
         "reconnect-state": "Reconnect State"
       },
+      "detection-backend": {
+        "label": "Detection Backend",
+        "active": "Active Detector",
+        "stage1-model": "Stage-1 Model",
+        "no-status": "No detector status is available yet.",
+        "model-missing": "No model selected",
+        "options": {
+          "opencv": "OpenCV Contours",
+          "native-yolo": "Native ORT Runtime"
+        },
+        "model-kind": {
+          "public-baseline": "Public baseline",
+          "planned-primary": "Planned primary"
+        },
+        "status": {
+          "ready": "Ready",
+          "not-ready": "Not Ready"
+        },
+        "strict-mode": {
+          "label": "Strict Native Mode",
+          "description": "Do not fall back to OpenCV when the native desktop runtime is unavailable.",
+          "disabled-hint": "Enable the native backend first to control fallback behavior."
+        }
+      },
       "actions": {
         "connecting": "Connecting...",
         "start": "Start Preview",
@@ -429,8 +453,10 @@
         "title": "CV Debug",
         "description": "Contour detection, stability, corner points, and processing resolution.",
         "badges": {
-          "ready": "OpenCV ready",
-          "unavailable": "OpenCV unavailable",
+          "ready-opencv": "OpenCV ready",
+          "ready-native-yolo": "Native runtime ready",
+          "unavailable": "Detector unavailable",
+          "requested": "Requested: {{backend}}",
           "document-detected": "Document detected",
           "no-document": "No document",
           "stable": "Stable",
@@ -438,16 +464,32 @@
           "processing": "Processing",
           "idle": "Idle"
         },
+        "backends": {
+          "opencv": "OpenCV",
+          "native-yolo": "Native ORT"
+        },
+        "model-kind": {
+          "public-baseline": "Public baseline",
+          "planned-primary": "Planned primary"
+        },
         "metrics": {
+          "active-backend": "Active Backend",
+          "requested-backend": "Requested Backend",
+          "strict-mode-on": "Strict fallback mode enabled",
+          "strict-mode-off": "OpenCV fallback allowed",
           "corner-count": "Corner Count",
           "processing-resolution": "Processing Resolution",
           "auto-capture": "Auto-Capture",
           "enabled": "Enabled",
           "disabled": "Disabled",
+          "stage1-model": "Stage-1 Model",
+          "provider": "Preferred Provider",
+          "provider-ready": "Preferred provider loaded",
+          "provider-not-ready": "Preferred provider unavailable",
           "last-update": "Last CV Update",
           "corner-label": "Corner {{corner}}"
         },
-        "empty": "No active contour points are available yet. Keep the document inside the preview frame and ensure OpenCV has loaded."
+        "empty": "No active contour points are available yet. Keep the document inside the preview frame and ensure the selected detector is ready."
       },
       "capture": {
         "title": "Post-Process Timing",
@@ -772,6 +814,18 @@
       "image-post-processing": {
         "title": "Image Post-processing",
         "enhancement": "Enable Image Enhancement"
+      },
+      "scanner-detection-backend": {
+        "label": "Scanner Detection Backend",
+        "desc": "Choose whether desktop scanning uses OpenCV contours or the native Rust/ORT runtime.",
+        "options": {
+          "opencv": "OpenCV contour detector",
+          "native-yolo": "Native desktop runtime"
+        }
+      },
+      "scanner-native-yolo-strict-mode": {
+        "label": "Strict native runtime mode",
+        "desc": "When enabled, scanner detection will not fall back to OpenCV if the native desktop runtime is unavailable."
       },
       "ui": {
         "title": "UI",

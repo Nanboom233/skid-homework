@@ -1,6 +1,7 @@
 import {create} from "zustand";
 import type {FrameSource, Point, ScannerConfig} from "@/lib/scanner";
 import type {OrthogonalRotation} from "@/lib/scanner/image-data";
+import type {ScannerDetectionBackend} from "@/store/settings-store";
 
 /**
  * Scanner state management for the ADB camera document scanner.
@@ -56,8 +57,26 @@ export interface ScannerPreviewDebugState {
 export interface ScannerCvDebugState {
   /** Current CV pipeline stage. */
   pipeline: ScannerCvPipeline;
-  /** Whether OpenCV appears to be ready. */
+  /** Whether the currently active detector runtime appears to be ready. */
   cvReady: boolean;
+  /** Requested detector backend preference. */
+  requestedBackend: ScannerDetectionBackend;
+  /** Detector backend that is currently handling inference. */
+  activeBackend: ScannerDetectionBackend;
+  /** Whether strict native mode disables OpenCV fallback. */
+  strictMode: boolean;
+  /** Preferred acceleration provider for the native runtime, when applicable. */
+  preferredProvider: string | null;
+  /** Whether the native runtime loaded its preferred provider successfully. */
+  preferredProviderReady: boolean;
+  /** Selected stage-1 model id for the native runtime, when applicable. */
+  selectedModelId: string | null;
+  /** Selected stage-1 model kind for the native runtime, when applicable. */
+  selectedModelKind: string | null;
+  /** Selected stage-1 model task for the native runtime, when applicable. */
+  selectedModelTask: string | null;
+  /** Backend/runtime status message surfaced to the debug UI. */
+  backendMessage: string | null;
   /** Whether a document contour is currently detected. */
   documentDetected: boolean;
   /** Number of detected corners in the active contour. */
@@ -284,6 +303,15 @@ const createInitialPreviewDebugState = (): ScannerPreviewDebugState => ({
 const createInitialCvDebugState = (): ScannerCvDebugState => ({
   pipeline: "idle",
   cvReady: false,
+  requestedBackend: "opencv",
+  activeBackend: "opencv",
+  strictMode: false,
+  preferredProvider: null,
+  preferredProviderReady: false,
+  selectedModelId: null,
+  selectedModelKind: null,
+  selectedModelTask: null,
+  backendMessage: null,
   documentDetected: false,
   cornerCount: 0,
   cornerPoints: [],

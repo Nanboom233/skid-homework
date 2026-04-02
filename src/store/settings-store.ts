@@ -16,6 +16,7 @@ export type ShortcutAction =
 export type ShortcutMap = Record<ShortcutAction, string>;
 
 export type ExplanationMode = "explanation" | "steps";
+export type ScannerDetectionBackend = "opencv" | "native-yolo";
 
 const DEFAULT_SHORTCUTS: ShortcutMap = {
   upload: "ctrl+1",
@@ -65,6 +66,12 @@ export interface SettingsState {
 
   showOnlineSearchInScanner: boolean;
   setShowOnlineSearchInScanner: (state: boolean) => void;
+
+  scannerDetectionBackend: ScannerDetectionBackend;
+  setScannerDetectionBackend: (backend: ScannerDetectionBackend) => void;
+
+  scannerNativeYoloStrictMode: boolean;
+  setScannerNativeYoloStrictMode: (state: boolean) => void;
 }
 
 export const useSettingsStore = create<SettingsState>()(
@@ -82,6 +89,8 @@ export const useSettingsStore = create<SettingsState>()(
       onlineSearchEnabled: false,
       showModelSelectorInScanner: false,
       showOnlineSearchInScanner: false,
+      scannerDetectionBackend: "opencv",
+      scannerNativeYoloStrictMode: false,
 
       setImageEnhancement: (state) => set({ imageEnhancement: state }),
       setThemePreference: (theme) => set({ theme }),
@@ -120,6 +129,10 @@ export const useSettingsStore = create<SettingsState>()(
         set({ showModelSelectorInScanner: state }),
       setShowOnlineSearchInScanner: (state) =>
         set({ showOnlineSearchInScanner: state }),
+      setScannerDetectionBackend: (backend) =>
+        set({ scannerDetectionBackend: backend }),
+      setScannerNativeYoloStrictMode: (state) =>
+        set({ scannerNativeYoloStrictMode: state }),
     }),
     {
       name: "skidhw-storage",
@@ -137,8 +150,10 @@ export const useSettingsStore = create<SettingsState>()(
         onlineSearchEnabled: state.onlineSearchEnabled,
         showModelSelectorInScanner: state.showModelSelectorInScanner,
         showOnlineSearchInScanner: state.showOnlineSearchInScanner,
+        scannerDetectionBackend: state.scannerDetectionBackend,
+        scannerNativeYoloStrictMode: state.scannerNativeYoloStrictMode,
       }),
-      version: 8,
+      version: 9,
       migrate: (persistedState, version) => {
         const data: Partial<SettingsState> & Record<string, unknown> =
           persistedState && typeof persistedState === "object"
@@ -172,6 +187,12 @@ export const useSettingsStore = create<SettingsState>()(
           showOnlineSearchInScanner:
             (data as { showOnlineSearchInScanner?: boolean })
               .showOnlineSearchInScanner ?? false,
+          scannerDetectionBackend:
+            (data as { scannerDetectionBackend?: ScannerDetectionBackend })
+              .scannerDetectionBackend ?? "opencv",
+          scannerNativeYoloStrictMode:
+            (data as { scannerNativeYoloStrictMode?: boolean })
+              .scannerNativeYoloStrictMode ?? false,
           devtoolsEnabled:
             (data as { devtoolsEnabled?: boolean }).devtoolsEnabled ??
             legacyDevtools ??

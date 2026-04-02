@@ -36,7 +36,9 @@
       "icons/icon.ico"
     ],
     "resources": [
-      "resources/*"
+      "resources/*",
+      "resources/models/**/*",
+      "resources/onnxruntime/**/*"
     ]
   }
 }

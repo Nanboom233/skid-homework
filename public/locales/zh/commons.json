@@ -379,6 +379,30 @@
         "preview-resolution": "预览分辨率",
         "reconnect-state": "重连状态"
       },
+      "detection-backend": {
+        "label": "检测后端",
+        "active": "当前生效检测器",
+        "stage1-model": "Stage-1 模型",
+        "no-status": "当前还没有检测器状态。",
+        "model-missing": "尚未选择模型",
+        "options": {
+          "opencv": "OpenCV 轮廓检测",
+          "native-yolo": "原生 ORT 运行时"
+        },
+        "model-kind": {
+          "public-baseline": "公共 baseline",
+          "planned-primary": "规划中的主模型"
+        },
+        "status": {
+          "ready": "已就绪",
+          "not-ready": "未就绪"
+        },
+        "strict-mode": {
+          "label": "原生严格模式",
+          "description": "当桌面原生运行时不可用时，不再回退到 OpenCV。",
+          "disabled-hint": "先启用原生后端，才能控制回退行为。"
+        }
+      },
       "actions": {
         "connecting": "连接中...",
         "start": "启动预览",
@@ -427,8 +451,10 @@
         "title": "CV 调试",
         "description": "轮廓检测、稳定性、角点信息与处理分辨率。",
         "badges": {
-          "ready": "OpenCV 已就绪",
-          "unavailable": "OpenCV 不可用",
+          "ready-opencv": "OpenCV 已就绪",
+          "ready-native-yolo": "原生运行时已就绪",
+          "unavailable": "检测器不可用",
+          "requested": "期望: {{backend}}",
           "document-detected": "已检测到文档",
           "no-document": "未检测到文档",
           "stable": "稳定",
@@ -436,16 +462,32 @@
           "processing": "处理中",
           "idle": "空闲"
         },
+        "backends": {
+          "opencv": "OpenCV",
+          "native-yolo": "原生 ORT"
+        },
+        "model-kind": {
+          "public-baseline": "公共 baseline",
+          "planned-primary": "规划中的主模型"
+        },
         "metrics": {
+          "active-backend": "当前生效后端",
+          "requested-backend": "期望后端",
+          "strict-mode-on": "严格模式已开启",
+          "strict-mode-off": "允许回退到 OpenCV",
           "corner-count": "角点数量",
           "processing-resolution": "处理分辨率",
           "auto-capture": "自动采集",
           "enabled": "已启用",
           "disabled": "已禁用",
+          "stage1-model": "Stage-1 模型",
+          "provider": "首选 Provider",
+          "provider-ready": "首选 Provider 已加载",
+          "provider-not-ready": "首选 Provider 不可用",
           "last-update": "最近 CV 更新时间",
           "corner-label": "角点 {{corner}}"
         },
-        "empty": "当前还没有可用的轮廓点。请将文档保持在预览区域内，并确认 OpenCV 已加载完成。"
+        "empty": "当前还没有可用的轮廓点。请将文档保持在预览区域内，并确认所选检测器已经就绪。"
       },
       "capture": {
         "title": "后处理计时",
@@ -770,6 +812,18 @@
       "image-post-processing": {
         "title": "图像后处理",
         "enhancement": "开启二值化"
+      },
+      "scanner-detection-backend": {
+        "label": "扫描检测后端",
+        "desc": "选择桌面扫描使用 OpenCV 轮廓检测，还是原生 Rust/ORT 运行时。",
+        "options": {
+          "opencv": "OpenCV 轮廓检测",
+          "native-yolo": "原生桌面运行时"
+        }
+      },
+      "scanner-native-yolo-strict-mode": {
+        "label": "原生运行时严格模式",
+        "desc": "启用后，如果原生桌面运行时不可用，扫描检测将不会回退到 OpenCV。"
       },
       "ui": {
         "title": "界面",

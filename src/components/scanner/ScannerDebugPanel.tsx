@@ -106,6 +106,19 @@ const getPostProcessVariant = (
   }
 };
 
+const getBackendVariant = (
+  backend: string,
+): "default" | "secondary" | "destructive" | "outline" => {
+  switch (backend) {
+    case "native-yolo":
+      return "secondary";
+    case "opencv":
+      return "outline";
+    default:
+      return "outline";
+  }
+};
+
 interface MetricItemProps {
   label: string;
   value: string;
@@ -173,6 +186,24 @@ const useScannerDebugModel = () => {
         return value;
     }
   };
+  const translateBackendState = (value: string): string => {
+    switch (value) {
+      case "opencv":
+      case "native-yolo":
+        return t(`debug.cv.backends.${value}`);
+      default:
+        return value;
+    }
+  };
+  const translateModelKind = (value: string | null): string => {
+    switch (value) {
+      case "public-baseline":
+      case "planned-primary":
+        return t(`debug.cv.model-kind.${value}`);
+      default:
+        return value ?? "—";
+    }
+  };
 
   return {
     t,
@@ -188,6 +219,8 @@ const useScannerDebugModel = () => {
     translateStatusState,
     translateReconnectState,
     translatePipelineState,
+    translateBackendState,
+    translateModelKind,
   };
 };
 
@@ -340,6 +373,8 @@ export function ScannerCvDebugCard() {
     t,
     cvDebug,
     translatePipelineState,
+    translateBackendState,
+    translateModelKind,
   } = useScannerDebugModel();
 
   return (
@@ -356,7 +391,17 @@ export function ScannerCvDebugCard() {
       <CardContent className="space-y-4">
         <div className="flex flex-wrap items-center gap-2">
           <Badge variant={cvDebug.cvReady ? "default" : "destructive"}>
-            {cvDebug.cvReady ? t("debug.cv.badges.ready") : t("debug.cv.badges.unavailable")}
+            {cvDebug.cvReady
+              ? t(`debug.cv.badges.ready-${cvDebug.activeBackend}`)
+              : t("debug.cv.badges.unavailable")}
+          </Badge>
+          <Badge variant={getBackendVariant(cvDebug.activeBackend)}>
+            {translateBackendState(cvDebug.activeBackend)}
+          </Badge>
+          <Badge variant="outline">
+            {t("debug.cv.badges.requested", {
+              backend: translateBackendState(cvDebug.requestedBackend),
+            })}
           </Badge>
           <Badge variant={cvDebug.documentDetected ? "default" : "outline"}>
             {cvDebug.documentDetected ? t("debug.cv.badges.document-detected") : t("debug.cv.badges.no-document")}
@@ -376,6 +421,18 @@ export function ScannerCvDebugCard() {
 
         <div className="grid gap-3 sm:grid-cols-2">
           <MetricItem
+            label={t("debug.cv.metrics.active-backend")}
+            value={translateBackendState(cvDebug.activeBackend)}
+            hint={cvDebug.backendMessage ?? undefined}
+          />
+          <MetricItem
+            label={t("debug.cv.metrics.requested-backend")}
+            value={translateBackendState(cvDebug.requestedBackend)}
+            hint={cvDebug.strictMode
+              ? t("debug.cv.metrics.strict-mode-on")
+              : t("debug.cv.metrics.strict-mode-off")}
+          />
+          <MetricItem
             label={t("debug.cv.metrics.corner-count")}
             value={String(cvDebug.cornerCount)}
           />
@@ -389,6 +446,22 @@ export function ScannerCvDebugCard() {
           <MetricItem
             label={t("debug.cv.metrics.auto-capture")}
             value={cvDebug.autoCaptureEnabled ? t("debug.cv.metrics.enabled") : t("debug.cv.metrics.disabled")}
+          />
+          <MetricItem
+            label={t("debug.cv.metrics.stage1-model")}
+            value={cvDebug.selectedModelId ?? "—"}
+            hint={translateModelKind(cvDebug.selectedModelKind)}
+          />
+          <MetricItem
+            label={t("debug.cv.metrics.provider")}
+            value={cvDebug.preferredProvider ?? "—"}
+            hint={cvDebug.preferredProvider
+              ? (
+                cvDebug.preferredProviderReady
+                  ? t("debug.cv.metrics.provider-ready")
+                  : t("debug.cv.metrics.provider-not-ready")
+              )
+              : undefined}
           />
           <MetricItem
             label={t("debug.cv.metrics.last-update")}

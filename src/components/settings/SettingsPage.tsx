@@ -8,6 +8,7 @@ import {
 } from "@/store/ai-store";
 import {
   type LanguagePreference,
+  type ScannerDetectionBackend,
   type ShortcutAction,
   type ThemePreference,
   useSettingsStore
@@ -103,6 +104,10 @@ export default function SettingsPage() {
     setShowModelSelectorInScanner,
     showOnlineSearchInScanner,
     setShowOnlineSearchInScanner,
+    scannerDetectionBackend,
+    setScannerDetectionBackend,
+    scannerNativeYoloStrictMode,
+    setScannerNativeYoloStrictMode,
     theme: themePreference,
     setThemePreference,
     language,
@@ -732,6 +737,51 @@ export default function SettingsPage() {
               <Label htmlFor="image-enhancement">
                 {t("advanced.image-post-processing.enhancement")}
               </Label>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="scanner-detection-backend">
+                {t("advanced.scanner-detection-backend.label")}
+              </Label>
+              <Select
+                value={scannerDetectionBackend}
+                onValueChange={(value) =>
+                  setScannerDetectionBackend(value as ScannerDetectionBackend)
+                }
+              >
+                <SelectTrigger id="scanner-detection-backend">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="opencv">
+                    {t("advanced.scanner-detection-backend.options.opencv")}
+                  </SelectItem>
+                  <SelectItem value="native-yolo">
+                    {t("advanced.scanner-detection-backend.options.native-yolo")}
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-sm text-muted-foreground">
+                {t("advanced.scanner-detection-backend.desc")}
+              </p>
+            </div>
+
+            <div className="flex items-center gap-3">
+              <Checkbox
+                id="scanner-native-yolo-strict-mode"
+                checked={scannerNativeYoloStrictMode}
+                onCheckedChange={(state) =>
+                  setScannerNativeYoloStrictMode(state === true)
+                }
+              />
+              <div className="space-y-1">
+                <Label htmlFor="scanner-native-yolo-strict-mode">
+                  {t("advanced.scanner-native-yolo-strict-mode.label")}
+                </Label>
+                <p className="text-sm text-muted-foreground">
+                  {t("advanced.scanner-native-yolo-strict-mode.desc")}
+                </p>
+              </div>
             </div>
 
             <div className="flex items-center gap-3">

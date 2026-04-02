@@ -40,6 +40,7 @@ tokio = { version = "1", features = ["net", "io-util", "sync", "macros", "rt", "
 png = "0.17.16"
 image = { version = "0.25.5", default-features = false, features = ["jpeg", "png"] }
 imageproc = "0.25.0"
+ort = { version = "2.0.0-rc.12", default-features = false, features = ["std", "load-dynamic", "api-24", "directml", "cuda", "tensorrt"] }
 
 # Optimize all dependencies even in dev builds.
 # Without this, CPU-heavy crates like openh264 run ~50x slower

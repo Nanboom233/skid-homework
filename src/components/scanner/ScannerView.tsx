@@ -39,11 +39,21 @@ import {
   type ScannerPostProcessWorkerClient,
 } from "@/lib/scanner/scanner-postprocess-worker-client";
 import {shellTauriAdbCommand} from "@/lib/tauri/adb";
+import {
+  detectDocumentWithTauriNativeYolo,
+  probeTauriScannerYolo,
+  type TauriScannerYoloProbeResult,
+} from "@/lib/tauri/scanner-detect";
+import {isTauri} from "@/lib/tauri/platform";
 import {processTauriScannerPostProcessSourceFile} from "@/lib/tauri/scanner";
 import {getSelectedDesktopAdbSerial} from "@/lib/webadb/screenshot";
 import {useBlobDataUrl} from "@/hooks/use-blob-data-url";
-import {useSettingsStore} from "@/store/settings-store";
-import {type ScannerCapturedDocument, useScannerStore} from "@/store/scanner-store";
+import {type ScannerDetectionBackend, useSettingsStore} from "@/store/settings-store";
+import {
+  type ScannerCapturedDocument,
+  type ScannerCvDebugState,
+  useScannerStore,
+} from "@/store/scanner-store";
 import {cn} from "@/lib/utils";
 
 import OpenCVLoader from "../OpenCVLoader";
@@ -101,6 +111,19 @@ interface ProcessedDocumentRenderResult {
   encodeMs: number;
 }
 
+interface DetectionBackendState {
+  requestedBackend: ScannerDetectionBackend;
+  activeBackend: ScannerDetectionBackend;
+  ready: boolean;
+  strictMode: boolean;
+  message: string;
+  preferredProvider: string | null;
+  preferredProviderReady: boolean;
+  selectedModelId: string | null;
+  selectedModelKind: string | null;
+  selectedModelTask: string | null;
+}
+
 type OptionalDebugFrameSource = FrameSource & {
   onDebugState?: (callback: (payload: unknown) => void) => void;
   onConnectionState?: (callback: (payload: unknown) => void) => void;
@@ -124,6 +147,87 @@ const CV_DETECTION_MISS_GRACE_MS = 360;
 const CV_EFFECTIVE_POINTS_SMOOTHING_THRESHOLD_PX = 18;
 const CV_EFFECTIVE_POINTS_SMOOTHING_FACTOR = 0.35;
 const STILL_CAPTURE_ROTATION_CANDIDATES: readonly OrthogonalRotation[] = [0, 90, 270, 180] as const;
+
+const resolveDetectionBackendState = (
+  requestedBackend: ScannerDetectionBackend,
+  strictMode: boolean,
+  openCvReady: boolean,
+  nativeSupported: boolean,
+  nativeProbe: TauriScannerYoloProbeResult | null,
+): DetectionBackendState => {
+  const nativeReady = Boolean(
+    nativeProbe?.runtimeReady
+    && nativeProbe?.sessionReady
+    && nativeProbe?.detectionImplemented,
+  );
+
+  if (requestedBackend === "native-yolo") {
+    if (nativeSupported && nativeReady) {
+      return {
+        requestedBackend,
+        activeBackend: "native-yolo",
+        ready: true,
+        strictMode,
+        message: nativeProbe?.message
+          ?? "Native runtime is active for stage-1 document detection.",
+        preferredProvider: nativeProbe?.preferredProvider ?? null,
+        preferredProviderReady: nativeProbe?.preferredProviderReady ?? false,
+        selectedModelId: nativeProbe?.selectedModelId ?? null,
+        selectedModelKind: nativeProbe?.selectedModelKind ?? null,
+        selectedModelTask: nativeProbe?.selectedModelTask ?? null,
+      };
+    }
+
+    if (strictMode) {
+      return {
+        requestedBackend,
+        activeBackend: "native-yolo",
+        ready: false,
+        strictMode,
+        message: nativeProbe?.message
+          ?? nativeProbe?.runtimeError
+          ?? nativeProbe?.sessionError
+          ?? (nativeSupported
+            ? "Native runtime is not ready, and strict mode blocks OpenCV fallback."
+            : "Native runtime is only available in Tauri desktop builds, and strict mode blocks OpenCV fallback."),
+        preferredProvider: nativeProbe?.preferredProvider ?? null,
+        preferredProviderReady: nativeProbe?.preferredProviderReady ?? false,
+        selectedModelId: nativeProbe?.selectedModelId ?? null,
+        selectedModelKind: nativeProbe?.selectedModelKind ?? null,
+        selectedModelTask: nativeProbe?.selectedModelTask ?? null,
+      };
+    }
+
+    return {
+      requestedBackend,
+      activeBackend: "opencv",
+      ready: openCvReady,
+      strictMode,
+      message: nativeProbe?.message
+        ?? (nativeSupported
+          ? "Native runtime is not ready yet. Falling back to OpenCV."
+          : "Native runtime is only available in Tauri desktop builds. Falling back to OpenCV."),
+      preferredProvider: nativeProbe?.preferredProvider ?? null,
+      preferredProviderReady: nativeProbe?.preferredProviderReady ?? false,
+      selectedModelId: nativeProbe?.selectedModelId ?? null,
+      selectedModelKind: nativeProbe?.selectedModelKind ?? null,
+      selectedModelTask: nativeProbe?.selectedModelTask ?? null,
+    };
+  }
+
+  return {
+    requestedBackend,
+    activeBackend: "opencv",
+    ready: openCvReady,
+    strictMode,
+    message: "OpenCV contour detection is active.",
+    preferredProvider: nativeProbe?.preferredProvider ?? null,
+    preferredProviderReady: nativeProbe?.preferredProviderReady ?? false,
+    selectedModelId: nativeProbe?.selectedModelId ?? null,
+    selectedModelKind: nativeProbe?.selectedModelKind ?? null,
+    selectedModelTask: nativeProbe?.selectedModelTask ?? null,
+  };
+};
 
 const cloneFrame = (frame: ImageData): ImageData => {
   return new ImageData(new Uint8ClampedArray(frame.data), frame.width, frame.height);
@@ -530,10 +634,12 @@ export default function ScannerView({
   const processingCooldownRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastRecoverableSignalRef = useRef<{ key: string; at: number } | null>(null);
   const lastFatalErrorToastRef = useRef<string | null>(null);
+  const lastDetectionBackendRef = useRef<ScannerDetectionBackend>("opencv");
   const dialogOpenRef = useRef(isOpen);
   const unmountedRef = useRef(false);
   const stopScannerRef = useRef<((options?: { skipComponentState?: boolean }) => Promise<void>) | null>(null);
   const latestCvSnapshotRef = useRef<PreviewCaptureSnapshot | null>(null);
+  const nativeYoloProbeRef = useRef<TauriScannerYoloProbeResult | null>(null);
   const captureCommitGenerationRef = useRef(0);
   const captureCommitPendingRef = useRef(false);
   const stableSinceRef = useRef<number | null>(null);
@@ -563,10 +669,15 @@ export default function ScannerView({
   const [previewOrientation, setPreviewOrientation] = useState<"landscape" | "portrait">("landscape");
   const { t } = useTranslation("commons", { keyPrefix: "document-scanner" });
   const imageEnhancement = useSettingsStore((state) => state.imageEnhancement);
+  const scannerDetectionBackend = useSettingsStore((state) => state.scannerDetectionBackend);
+  const setScannerDetectionBackend = useSettingsStore((state) => state.setScannerDetectionBackend);
+  const scannerNativeYoloStrictMode = useSettingsStore((state) => state.scannerNativeYoloStrictMode);
+  const setScannerNativeYoloStrictMode = useSettingsStore((state) => state.setScannerNativeYoloStrictMode);
 
   const status = useScannerStore((state) => state.status);
   const errorMessage = useScannerStore((state) => state.errorMessage);
   const capturedDocuments = useScannerStore((state) => state.capturedDocuments);
+  const cvDebug = useScannerStore((state) => state.cvDebug);
   const previewWidth = useScannerStore((state) => state.previewDebug.previewWidth);
   const previewHeight = useScannerStore((state) => state.previewDebug.previewHeight);
   const reconnectState = useScannerStore((state) => state.connectionDebug.reconnectState);
@@ -600,6 +711,7 @@ export default function ScannerView({
 
     return capturedDocuments.find((document) => document.id === editingCapturedDocumentId) ?? null;
   }, [capturedDocuments, editingCapturedDocumentId]);
+  const nativeBackendSupported = isTauri();
 
   useEffect(() => {
     if (
@@ -609,6 +721,103 @@ export default function ScannerView({
       setEditingCapturedDocumentId(null);
     }
   }, [capturedDocuments, editingCapturedDocumentId]);
+
+  const isOpenCvRuntimeReady = useCallback((): boolean => {
+    return isOpenCvReady() || cvWorkerReadyRef.current;
+  }, []);
+
+  const getDetectionBackendState = useCallback((): DetectionBackendState => {
+    return resolveDetectionBackendState(
+      scannerDetectionBackend,
+      scannerNativeYoloStrictMode,
+      isOpenCvRuntimeReady(),
+      nativeBackendSupported,
+      nativeYoloProbeRef.current,
+    );
+  }, [
+    isOpenCvRuntimeReady,
+    nativeBackendSupported,
+    scannerDetectionBackend,
+    scannerNativeYoloStrictMode,
+  ]);
+
+  const syncDetectionBackendDebug = useCallback((patch: Partial<ScannerCvDebugState> = {}) => {
+    const backendState = getDetectionBackendState();
+    setCvDebug({
+      cvReady: backendState.ready,
+      requestedBackend: backendState.requestedBackend,
+      activeBackend: backendState.activeBackend,
+      strictMode: backendState.strictMode,
+      preferredProvider: backendState.preferredProvider,
+      preferredProviderReady: backendState.preferredProviderReady,
+      selectedModelId: backendState.selectedModelId,
+      selectedModelKind: backendState.selectedModelKind,
+      selectedModelTask: backendState.selectedModelTask,
+      backendMessage: backendState.message,
+      ...patch,
+      updatedAt: Date.now(),
+    });
+  }, [getDetectionBackendState, setCvDebug]);
+
+  const applyNativeYoloProbe = useCallback((probe: TauriScannerYoloProbeResult | null) => {
+    nativeYoloProbeRef.current = probe;
+    syncDetectionBackendDebug();
+  }, [syncDetectionBackendDebug]);
+
+  const clearNativeYoloProbe = useCallback((message?: string) => {
+    nativeYoloProbeRef.current = null;
+    syncDetectionBackendDebug(
+      message
+        ? {
+          backendMessage: message,
+        }
+        : {},
+    );
+  }, [syncDetectionBackendDebug]);
+
+  const refreshNativeYoloProbe = useCallback(async (): Promise<TauriScannerYoloProbeResult | null> => {
+    if (!nativeBackendSupported) {
+      clearNativeYoloProbe();
+      return null;
+    }
+
+    try {
+      const probe = await probeTauriScannerYolo();
+      applyNativeYoloProbe(probe);
+      return probe;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      clearNativeYoloProbe(message);
+      return null;
+    }
+  }, [applyNativeYoloProbe, clearNativeYoloProbe, nativeBackendSupported]);
+
+  useEffect(() => {
+    if (!isOpen) {
+      clearNativeYoloProbe();
+      return;
+    }
+
+    let cancelled = false;
+
+    void (async () => {
+      const probe = await refreshNativeYoloProbe();
+      if (!cancelled && !probe && scannerDetectionBackend === "native-yolo" && scannerNativeYoloStrictMode) {
+        syncDetectionBackendDebug();
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    clearNativeYoloProbe,
+    isOpen,
+    refreshNativeYoloProbe,
+    scannerDetectionBackend,
+    scannerNativeYoloStrictMode,
+    syncDetectionBackendDebug,
+  ]);
 
   const clearProcessingCooldown = useCallback(() => {
     if (processingCooldownRef.current) {
@@ -708,18 +917,13 @@ export default function ScannerView({
     return null;
   }, [terminatePostProcessWorker]);
 
-  const isCvRuntimeReady = useCallback((): boolean => {
-    return isOpenCvReady() || cvWorkerReadyRef.current;
-  }, []);
-
   const setProcessingState = useCallback((next: boolean) => {
     processingRef.current = next;
     setIsProcessing(next);
-    setCvDebug({
+    syncDetectionBackendDebug({
       isProcessing: next,
-      updatedAt: Date.now(),
     });
-  }, [setCvDebug]);
+  }, [syncDetectionBackendDebug]);
 
   const setCaptureCommitPendingState = useCallback((next: boolean) => {
     captureCommitPendingRef.current = next;
@@ -751,9 +955,9 @@ export default function ScannerView({
     processing: boolean,
     processingDimensions?: { width: number; height: number },
   ) => {
-    setCvDebug({
+    syncDetectionBackendDebug({
+      activeBackend: lastDetectionBackendRef.current,
       pipeline,
-      cvReady: isCvRuntimeReady(),
       documentDetected: Boolean(detectedPoints && detectedPoints.length === 4),
       cornerCount: detectedPoints?.length ?? 0,
       cornerPoints: detectedPoints ?? [],
@@ -762,15 +966,74 @@ export default function ScannerView({
       processingHeight: processingDimensions?.height ?? frame?.height ?? null,
       autoCaptureEnabled: autoCapture,
       isProcessing: processing,
-      updatedAt: Date.now(),
     });
-  }, [autoCapture, isCvRuntimeReady, setCvDebug]);
+  }, [autoCapture, syncDetectionBackendDebug]);
 
   const detectDocumentContourWithFallback = useCallback(async (
     frame: ImageData,
     frameVersion: number,
     processingSize: { width: number; height: number },
   ): Promise<Point[] | null> => {
+    const backendState = getDetectionBackendState();
+    if (backendState.activeBackend === "native-yolo") {
+      try {
+        const sourceBlob = await imageDataToPngBlob(frame);
+        const nativeResult = await detectDocumentWithTauriNativeYolo(sourceBlob, {
+          maxWidth: processingSize.width,
+          maxHeight: processingSize.height,
+        });
+        const nativeReady = Boolean(
+          nativeResult.runtimeReady
+          && nativeResult.sessionReady
+          && nativeResult.detectionImplemented,
+        );
+
+        lastDetectionBackendRef.current = nativeReady || backendState.strictMode
+          ? "native-yolo"
+          : "opencv";
+        syncDetectionBackendDebug({
+          activeBackend: lastDetectionBackendRef.current,
+          cvReady: nativeReady || (!backendState.strictMode && isOpenCvRuntimeReady()),
+          preferredProvider: nativeResult.preferredProvider,
+          preferredProviderReady: nativeResult.preferredProviderReady,
+          selectedModelId: nativeResult.selectedModelId,
+          selectedModelKind: nativeResult.selectedModelKind,
+          selectedModelTask: nativeResult.selectedModelTask,
+          backendMessage: nativeResult.message,
+        });
+
+        if (nativeReady) {
+          return nativeResult.points;
+        }
+
+        if (backendState.strictMode) {
+          return null;
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn("[Scanner] Native detector failed, falling back to OpenCV:", error);
+
+        const refreshedProbe = await refreshNativeYoloProbe();
+        lastDetectionBackendRef.current = backendState.strictMode ? "native-yolo" : "opencv";
+        syncDetectionBackendDebug({
+          activeBackend: lastDetectionBackendRef.current,
+          backendMessage: backendState.strictMode
+            ? message
+            : `${message} Falling back to OpenCV.`,
+          preferredProvider: refreshedProbe?.preferredProvider ?? null,
+          preferredProviderReady: refreshedProbe?.preferredProviderReady ?? false,
+          selectedModelId: refreshedProbe?.selectedModelId ?? null,
+          selectedModelKind: refreshedProbe?.selectedModelKind ?? null,
+          selectedModelTask: refreshedProbe?.selectedModelTask ?? null,
+        });
+
+        if (backendState.strictMode) {
+          return null;
+        }
+      }
+    }
+
+    lastDetectionBackendRef.current = "opencv";
     const worker = cvWorkerRef.current;
     if (worker?.isReady()) {
       try {
@@ -791,7 +1054,13 @@ export default function ScannerView({
       maxWidth: processingSize.width,
       maxHeight: processingSize.height,
     });
-  }, [terminateCvWorker]);
+  }, [
+    getDetectionBackendState,
+    isOpenCvRuntimeReady,
+    refreshNativeYoloProbe,
+    syncDetectionBackendDebug,
+    terminateCvWorker,
+  ]);
 
   const applyPerfSample = useCallback((sample: FrontendPerfSample) => {
     setPreviewDebug({
@@ -2405,12 +2674,13 @@ export default function ScannerView({
 
   useEffect(() => {
     autoCaptureRef.current = autoCapture;
-    setCvDebug({
+    lastDetectionBackendRef.current = getDetectionBackendState().activeBackend;
+    syncDetectionBackendDebug({
+      activeBackend: lastDetectionBackendRef.current,
       autoCaptureEnabled: autoCapture,
       isProcessing,
-      updatedAt: Date.now(),
     });
-  }, [autoCapture, isProcessing, setCvDebug]);
+  }, [autoCapture, getDetectionBackendState, isProcessing, syncDetectionBackendDebug]);
 
   useEffect(() => {
     dialogOpenRef.current = isOpen;
@@ -2534,9 +2804,21 @@ export default function ScannerView({
       isProcessing={isProcessing}
       autoCapture={autoCapture}
       isStable={isStable}
+      requestedBackend={scannerDetectionBackend}
+      activeBackend={cvDebug.activeBackend}
+      backendReady={cvDebug.cvReady}
+      nativeBackendSupported={nativeBackendSupported}
+      nativeStrictMode={scannerNativeYoloStrictMode}
+      backendStatusMessage={cvDebug.backendMessage}
+      preferredProvider={cvDebug.preferredProvider}
+      preferredProviderReady={cvDebug.preferredProviderReady}
+      selectedModelKind={cvDebug.selectedModelKind}
+      selectedModelId={cvDebug.selectedModelId}
       previewOrientation={previewOrientation}
       previewResolution={previewResolution}
       reconnectState={reconnectState}
+      onDetectionBackendChange={setScannerDetectionBackend}
+      onNativeStrictModeChange={setScannerNativeYoloStrictMode}
       onAutoCaptureChange={setAutoCapture}
       onPreviewOrientationToggle={handlePreviewOrientationToggle}
       onStart={handleStart}
