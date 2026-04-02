@@ -614,11 +614,14 @@ export default function ScannerView({
   onDocumentsCaptured,
 }: ScannerViewProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const canvasContextRef = useRef<CanvasRenderingContext2D | null>(null);
   const frameBufferCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const frameBufferContextRef = useRef<CanvasRenderingContext2D | null>(null);
   const animationFrameRef = useRef<number | null>(null);
   const latestFrameRef = useRef<ImageData | null>(null);
   const latestFrameVersionRef = useRef(0);
   const renderedFrameVersionRef = useRef(0);
+  const lastCanvasMetricEmitAtRef = useRef(0);
   const previewOrientationRef = useRef<"landscape" | "portrait">("landscape");
   const frameSourceRef = useRef<ReturnType<typeof createFrameSource> | null>(null);
   const frameSourceUnsubscribeRef = useRef<(() => void) | null>(null);
@@ -2170,6 +2173,34 @@ export default function ScannerView({
     publishCvDebug,
   ]);
 
+  const resolvePreviewCanvasContext = useCallback((canvas: HTMLCanvasElement) => {
+    const cached = canvasContextRef.current;
+    if (cached && cached.canvas === canvas) {
+      return cached;
+    }
+
+    const context = canvas.getContext("2d", {
+      alpha: false,
+      desynchronized: true,
+    });
+    canvasContextRef.current = context;
+    return context;
+  }, []);
+
+  const resolveFrameBufferContext = useCallback((canvas: HTMLCanvasElement) => {
+    const cached = frameBufferContextRef.current;
+    if (cached && cached.canvas === canvas) {
+      return cached;
+    }
+
+    const context = canvas.getContext("2d", {
+      alpha: false,
+      desynchronized: true,
+    });
+    frameBufferContextRef.current = context;
+    return context;
+  }, []);
+
   const drawLatestFrameToCanvas = useCallback(() => {
     const canvas = canvasRef.current;
     const frame = latestFrameRef.current;
@@ -2180,7 +2211,8 @@ export default function ScannerView({
       && renderedFrameVersionRef.current !== latestFrameVersionRef.current
     ) {
       renderedFrameVersionRef.current = latestFrameVersionRef.current;
-      const ctx = canvas.getContext("2d");
+      const drawStartedAt = performance.now();
+      const ctx = resolvePreviewCanvasContext(canvas);
       if (ctx) {
         const isPortrait = previewOrientationRef.current === "portrait";
         const targetWidth = isPortrait ? frame.height : frame.width;
@@ -2204,22 +2236,35 @@ export default function ScannerView({
             frameBufferCanvas.height = frame.height;
           }
 
-          const frameBufferContext = frameBufferCanvas.getContext("2d");
+          const frameBufferContext = resolveFrameBufferContext(frameBufferCanvas);
           if (!frameBufferContext) {
             return;
           }
 
           frameBufferContext.putImageData(frame, 0, 0);
-          ctx.clearRect(0, 0, canvas.width, canvas.height);
           ctx.save();
           ctx.translate(canvas.width, 0);
           ctx.rotate(Math.PI / 2);
           ctx.drawImage(frameBufferCanvas, 0, 0);
           ctx.restore();
         }
+
+        const drawMs = performance.now() - drawStartedAt;
+        const metricUpdatedAt = Date.now();
+        if (metricUpdatedAt - lastCanvasMetricEmitAtRef.current >= 250) {
+          lastCanvasMetricEmitAtRef.current = metricUpdatedAt;
+          setPreviewDebug({
+            canvasDrawMs: Number(drawMs.toFixed(1)),
+            updatedAt: metricUpdatedAt,
+          });
+        }
       }
     }
-  }, []);
+  }, [
+    resolveFrameBufferContext,
+    resolvePreviewCanvasContext,
+    setPreviewDebug,
+  ]);
 
   const schedulePreviewRender = useCallback(() => {
     if (animationFrameRef.current !== null) {
@@ -2305,6 +2350,7 @@ export default function ScannerView({
     latestFrameVersionRef.current = 0;
     renderedFrameVersionRef.current = 0;
     lastCvFrameVersionRef.current = 0;
+    lastCanvasMetricEmitAtRef.current = 0;
 
     setPreviewDebug({
       transport: "live-preview",
@@ -2507,6 +2553,7 @@ export default function ScannerView({
     latestFrameVersionRef.current = 0;
     renderedFrameVersionRef.current = 0;
     lastCvFrameVersionRef.current = 0;
+    lastCanvasMetricEmitAtRef.current = 0;
     trackerRef.current.reset();
     detectionPresenceTrackerRef.current.reset();
     latestCvSnapshotRef.current = null;

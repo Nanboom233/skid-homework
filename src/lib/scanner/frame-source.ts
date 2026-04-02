@@ -1018,6 +1018,9 @@ export class TauriNativeFrameSource implements FrameSource {
   private streamStartedAt: number | null = null;
   private decodeTargetRgba: Uint8ClampedArray | null = null;
   private stillLocalPort: number;
+  private queuedStreamPacket: ArrayBuffer | Uint8Array | null = null;
+  private streamPacketDrainScheduled = false;
+  private streamPacketDrainTimerId: ReturnType<typeof setTimeout> | null = null;
 
   constructor(config: ScannerConfig) {
     this.config = config;
@@ -1413,7 +1416,7 @@ export class TauriNativeFrameSource implements FrameSource {
     this.decoderStreamHandle = await startTauriDecodeStream(
       this.config.localPort,
       (framePacket) => {
-        void this.handleStreamPacket(framePacket);
+        this.enqueueLatestStreamPacket(framePacket);
       },
       (event) => {
         void this.handleDecoderLifecycleEvent(event);
@@ -1576,6 +1579,60 @@ export class TauriNativeFrameSource implements FrameSource {
         }
         this.emitRecoverableError(message);
       }
+    }
+  }
+
+  private enqueueLatestStreamPacket(framePacket: ArrayBuffer | Uint8Array): void {
+    if (!this.desiredRunning) {
+      return;
+    }
+
+    this.queuedStreamPacket = framePacket;
+    this.scheduleQueuedStreamPacketDrain();
+  }
+
+  private scheduleQueuedStreamPacketDrain(): void {
+    if (this.streamPacketDrainScheduled || !this.desiredRunning) {
+      return;
+    }
+
+    // Yield one macrotask before decode so queued channel callbacks can collapse
+    // to the freshest preview packet instead of decoding every stale frame in order.
+    this.streamPacketDrainScheduled = true;
+    this.streamPacketDrainTimerId = setTimeout(() => {
+      this.streamPacketDrainTimerId = null;
+      void this.drainQueuedStreamPacket();
+    }, 0);
+  }
+
+  private async drainQueuedStreamPacket(): Promise<void> {
+    this.streamPacketDrainScheduled = false;
+
+    if (!this.desiredRunning) {
+      this.queuedStreamPacket = null;
+      return;
+    }
+
+    const framePacket = this.queuedStreamPacket;
+    this.queuedStreamPacket = null;
+    if (!framePacket) {
+      return;
+    }
+
+    await this.handleStreamPacket(framePacket);
+
+    if (this.queuedStreamPacket !== null) {
+      this.scheduleQueuedStreamPacketDrain();
+    }
+  }
+
+  private clearQueuedStreamPacket(): void {
+    this.queuedStreamPacket = null;
+    this.streamPacketDrainScheduled = false;
+
+    if (this.streamPacketDrainTimerId !== null) {
+      clearTimeout(this.streamPacketDrainTimerId);
+      this.streamPacketDrainTimerId = null;
     }
   }
 
@@ -1893,6 +1950,7 @@ export class TauriNativeFrameSource implements FrameSource {
   }
 
   private clearTimers(): void {
+    this.clearQueuedStreamPacket();
     this.clearWatchdog();
   }
 
@@ -1973,6 +2031,7 @@ export class TauriNativeFrameSource implements FrameSource {
     this.streamStartedAt = null;
     this.previewPauseStartedAt = null;
     this.decodeTargetRgba = null;
+    this.clearQueuedStreamPacket();
     this.releaseDecodeStreamHandle();
     this.streamActive = false;
     this.forwardActive = false;
