@@ -5,7 +5,7 @@
 /// downscaled I420 preview frame, and pushes the newest frame packet to the
 /// frontend over a Tauri IPC channel.
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use openh264::decoder::Decoder;
@@ -27,6 +27,8 @@ static STREAM_SESSION_ID: AtomicU64 = AtomicU64::new(0);
 
 /// Frame counter for periodic perf logging.
 static FRAME_SEQ: AtomicU64 = AtomicU64::new(0);
+/// The most recent preview frame packet, retained for Rust-side live preview consumers.
+static LATEST_PREVIEW_FRAME_PACKET: OnceLock<Mutex<Option<Vec<u8>>>> = OnceLock::new();
 
 /// Emit the aggregate throughput log every N seconds.
 const OVERALL_LOG_INTERVAL_SECS: u64 = 5;
@@ -61,6 +63,24 @@ struct PreviewFrame {
     preview_pack_ms: f64,
 }
 
+fn latest_preview_frame_packet_state() -> &'static Mutex<Option<Vec<u8>>> {
+    LATEST_PREVIEW_FRAME_PACKET.get_or_init(|| Mutex::new(None))
+}
+
+pub(crate) fn replace_latest_preview_frame_packet(packet: Option<Vec<u8>>) {
+    let mut state = latest_preview_frame_packet_state()
+        .lock()
+        .expect("latest preview frame packet mutex should not be poisoned");
+    *state = packet;
+}
+
+pub(crate) fn get_latest_preview_frame_packet() -> Option<Vec<u8>> {
+    latest_preview_frame_packet_state()
+        .lock()
+        .expect("latest preview frame packet mutex should not be poisoned")
+        .clone()
+}
+
 /// Structured decoder lifecycle event for diagnostics and future UI hooks.
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -91,6 +111,7 @@ pub async fn tauri_scanner_start_stream(
     let session_id = STREAM_SESSION_ID.fetch_add(1, Ordering::SeqCst) + 1;
 
     FRAME_SEQ.store(0, Ordering::Relaxed);
+    replace_latest_preview_frame_packet(None);
     send_decoder_status(
         &status_channel,
         "starting",
@@ -100,7 +121,8 @@ pub async fn tauri_scanner_start_stream(
     );
 
     tauri::async_runtime::spawn(async move {
-        let result = decode_stream_loop(port, frame_channel, status_channel.clone(), session_id).await;
+        let result =
+            decode_stream_loop(port, frame_channel, status_channel.clone(), session_id).await;
         let is_current_session = STREAM_SESSION_ID.load(Ordering::SeqCst) == session_id;
 
         if is_current_session {
@@ -126,6 +148,7 @@ pub async fn tauri_scanner_start_stream(
 
         if is_current_session {
             STREAMING.store(false, Ordering::SeqCst);
+            replace_latest_preview_frame_packet(None);
         }
     });
 
@@ -139,6 +162,7 @@ pub async fn tauri_scanner_stop_stream() -> Result<(), String> {
         return Err("No stream decoder is currently running.".to_string());
     }
     STREAM_SESSION_ID.fetch_add(1, Ordering::SeqCst);
+    replace_latest_preview_frame_packet(None);
     Ok(())
 }
 
@@ -290,7 +314,9 @@ async fn decode_stream_loop(
                 continue;
             }
 
-            return Err(format!("Failed to read NAL data ({nal_length} bytes): {error}"));
+            return Err(format!(
+                "Failed to read NAL data ({nal_length} bytes): {error}"
+            ));
         }
 
         let tcp_read_ms = iter_start.elapsed().as_secs_f64() * 1000.0;
@@ -313,6 +339,7 @@ async fn decode_stream_loop(
                     .map_err(|error| format!("System clock drifted before unix epoch: {error}"))?
                     .as_millis() as u64;
                 write_frame_telemetry(&mut preview_packet, sent_at_epoch_ms, seq as u32)?;
+                replace_latest_preview_frame_packet(Some(preview_packet.clone()));
 
                 if seq % 15 == 0 {
                     log::info!(
@@ -338,9 +365,7 @@ async fn decode_stream_loop(
                     send_decoder_status(
                         &status_channel,
                         "ready",
-                        format!(
-                            "Decoder published the first preview frame from tcp://{address}."
-                        ),
+                        format!("Decoder published the first preview frame from tcp://{address}."),
                         false,
                         0,
                     );
@@ -360,7 +385,6 @@ async fn decode_stream_loop(
             log::info!("[perf] overall: {total} frames in {elapsed}s = {fps:.1} fps");
         }
     }
-
 }
 
 /// Decode a single H.264 NAL unit to a downscaled contiguous I420 preview frame.
@@ -435,11 +459,7 @@ fn select_preview_dimensions(width: usize, height: usize) -> (usize, usize, usiz
         preview_height = clamp_even_dimension(height / factor);
     }
 
-    (
-        preview_width,
-        preview_height,
-        factor.max(1),
-    )
+    (preview_width, preview_height, factor.max(1))
 }
 
 /// Compute the payload length for a tightly packed I420 frame.
@@ -477,7 +497,13 @@ fn pack_i420_preview_packet(
     packet.resize(FRAME_PACKET_HEADER_SIZE + FRAME_PACKET_TELEMETRY_SIZE, 0);
 
     if factor == 1 {
-        append_plane_contiguous(&mut packet, y_plane, preview_width, preview_height, y_stride);
+        append_plane_contiguous(
+            &mut packet,
+            y_plane,
+            preview_width,
+            preview_height,
+            y_stride,
+        );
         append_plane_contiguous(
             &mut packet,
             u_plane,
@@ -546,8 +572,7 @@ fn write_frame_telemetry(
 
     packet[FRAME_PACKET_HEADER_SIZE..FRAME_PACKET_HEADER_SIZE + 8]
         .copy_from_slice(&sent_at_epoch_ms.to_be_bytes());
-    packet[FRAME_PACKET_HEADER_SIZE + 8..telemetry_end]
-        .copy_from_slice(&sequence.to_be_bytes());
+    packet[FRAME_PACKET_HEADER_SIZE + 8..telemetry_end].copy_from_slice(&sequence.to_be_bytes());
     Ok(())
 }
 
@@ -603,27 +628,6 @@ fn append_downsampled_plane_by_factor(
 }
 
 /// Copy a strided image plane into a tightly packed buffer.
-#[cfg(test)]
-fn copy_plane_contiguous(plane: &[u8], width: usize, height: usize, stride: usize) -> Vec<u8> {
-    let mut packed = Vec::with_capacity(width * height);
-    append_plane_contiguous(&mut packed, plane, width, height, stride);
-    packed
-}
-
-/// Downscale a strided image plane by sampling every `factor`th pixel.
-#[cfg(test)]
-fn downsample_plane_by_factor(
-    plane: &[u8],
-    width: usize,
-    height: usize,
-    stride: usize,
-    factor: usize,
-) -> Vec<u8> {
-    let mut packed = Vec::with_capacity(width * height);
-    append_downsampled_plane_by_factor(&mut packed, plane, width, height, stride, factor);
-    packed
-}
-
 /// Emit a structured decoder lifecycle event over the scanner status channel.
 fn send_decoder_status(
     channel: &Channel<DecoderLifecycleEvent>,
@@ -642,9 +646,9 @@ fn send_decoder_status(
 
 /// Build a fresh H.264 decoder instance for a new preview stream session.
 fn create_decoder() -> Result<Arc<Mutex<Decoder>>, String> {
-    Ok(Arc::new(Mutex::new(
-        Decoder::new().map_err(|error| format!("Failed to create H.264 decoder: {error}"))?,
-    )))
+    Ok(Arc::new(Mutex::new(Decoder::new().map_err(|error| {
+        format!("Failed to create H.264 decoder: {error}")
+    })?)))
 }
 
 /// Determine whether a TCP stream error is transient enough to warrant reconnecting.
@@ -729,4 +733,3 @@ async fn connect_decoder_stream(
         }
     }
 }
-

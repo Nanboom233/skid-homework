@@ -46,6 +46,7 @@ fn main() {
         ScannerDetectDocumentRequest {
             source_bytes: Vec::new(),
             rgba_bytes: rgba.into_raw(),
+            use_latest_preview_frame: false,
             rgba_width: Some(width),
             rgba_height: Some(height),
             max_width,
@@ -55,6 +56,7 @@ fn main() {
         ScannerDetectDocumentRequest {
             source_bytes: image_bytes,
             rgba_bytes: Vec::new(),
+            use_latest_preview_frame: false,
             rgba_width: None,
             rgba_height: None,
             max_width,

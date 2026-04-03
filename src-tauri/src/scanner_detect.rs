@@ -15,6 +15,8 @@ use ort::{
 use serde::{Deserialize, Serialize};
 use tauri::{command, AppHandle, Manager};
 
+use crate::stream_decoder::get_latest_preview_frame_packet;
+
 const STAGE: &str = "ort-runtime";
 const CONFIG_RELATIVE_PATH: &str = "scanner-yolo-config.json";
 const WINDOWS_ORT_RELATIVE_PATH: &str = "onnxruntime/windows/onnxruntime.dll";
@@ -24,6 +26,11 @@ const WINDOWS_DIRECTML_RELATIVE_PATH: &str = "onnxruntime/windows/DirectML.dll";
 const LINUX_ORT_RELATIVE_PATH: &str = "onnxruntime/linux/libonnxruntime.so";
 const LINUX_TENSORRT_RELATIVE_PATH: &str = "onnxruntime/linux/libonnxruntime_providers_tensorrt.so";
 const LINUX_CUDA_RELATIVE_PATH: &str = "onnxruntime/linux/libonnxruntime_providers_cuda.so";
+// Must stay in sync with the preview packet protocol emitted from stream_decoder.rs.
+const FRAME_PACKET_HEADER_SIZE: usize = 9;
+const FRAME_PACKET_TELEMETRY_SIZE: usize = 12;
+const FRAME_CODEC_I420: u8 = 3;
+const FRAME_CODEC_I420_TELEMETRY: u8 = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ScannerModelVariant {
@@ -207,6 +214,8 @@ pub struct ScannerDetectDocumentRequest {
     #[serde(default)]
     pub rgba_bytes: Vec<u8>,
     #[serde(default)]
+    pub use_latest_preview_frame: bool,
+    #[serde(default)]
     pub rgba_width: Option<u32>,
     #[serde(default)]
     pub rgba_height: Option<u32>,
@@ -227,6 +236,12 @@ impl PreparedInferenceImage {
     fn working_dimensions(&self) -> (u32, u32) {
         self.working_image.dimensions()
     }
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedDetectInput {
+    prepared_image: Option<PreparedInferenceImage>,
+    input_transport: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -254,6 +269,7 @@ struct DetectionContextCacheState {
 pub struct ScannerDetectDocumentResponse {
     stage: &'static str,
     processing_ms: f64,
+    input_transport: String,
     input_width: Option<u32>,
     input_height: Option<u32>,
     selected_model_id: Option<String>,
@@ -468,7 +484,11 @@ pub fn detect_document_native_yolo(
     app_config_dir_hint: Option<PathBuf>,
 ) -> Result<ScannerDetectDocumentResponse, String> {
     let started_at = Instant::now();
-    let prepared_image = resolve_detect_input_image(&request)?;
+    let ResolvedDetectInput {
+        prepared_image,
+        input_transport: input_transport_kind,
+    } = resolve_detect_input_image(&request)?;
+    let input_transport = input_transport_kind.to_string();
 
     let (input_width, input_height) = prepared_image
         .as_ref()
@@ -554,8 +574,16 @@ pub fn detect_document_native_yolo(
     } else if prepared_image.is_none() {
         (
             None,
-            "The request did not include image bytes or RGBA frame data, so inference was skipped."
-                .to_string(),
+            match input_transport_kind {
+                "latest-preview-cache" => {
+                    "The latest live preview frame was unavailable, so native inference was skipped."
+                        .to_string()
+                }
+                _ => {
+                    "The request did not include image bytes or RGBA frame data, so inference was skipped."
+                        .to_string()
+                }
+            },
         )
     } else if let Some(model) = selected_model.clone() {
         let prepared_image = prepared_image.as_ref().expect("image exists");
@@ -593,11 +621,16 @@ pub fn detect_document_native_yolo(
     Ok(ScannerDetectDocumentResponse {
         stage: STAGE,
         processing_ms: started_at.elapsed().as_secs_f64() * 1000.0,
+        input_transport,
         input_width,
         input_height,
         selected_model_id: selected_model.as_ref().map(|model| model.config.id.clone()),
-        selected_model_kind: selected_model.as_ref().map(|model| model.config.kind.clone()),
-        selected_model_task: selected_model.as_ref().map(|model| model.config.task.clone()),
+        selected_model_kind: selected_model
+            .as_ref()
+            .map(|model| model.config.kind.clone()),
+        selected_model_task: selected_model
+            .as_ref()
+            .map(|model| model.config.task.clone()),
         runtime_ready: runtime_snapshot.ready,
         preferred_provider,
         preferred_provider_ready,
@@ -614,21 +647,39 @@ pub fn detect_document_native_yolo(
 
 fn resolve_detect_input_image(
     request: &ScannerDetectDocumentRequest,
-) -> Result<Option<PreparedInferenceImage>, String> {
-    let decoded_image = if !request.rgba_bytes.is_empty() {
-        Some(build_dynamic_image_from_rgba_request(request)?)
+) -> Result<ResolvedDetectInput, String> {
+    let (decoded_image, input_transport) = if request.use_latest_preview_frame {
+        let cached_preview_packet = get_latest_preview_frame_packet();
+        (
+            cached_preview_packet
+                .as_deref()
+                .map(build_dynamic_image_from_preview_frame_packet)
+                .transpose()?,
+            "latest-preview-cache",
+        )
+    } else if !request.rgba_bytes.is_empty() {
+        (
+            Some(build_dynamic_image_from_rgba_request(request)?),
+            "rgba-ipc",
+        )
     } else if !request.source_bytes.is_empty() {
-        Some(
-            image::load_from_memory(&request.source_bytes).map_err(|error| {
-                format!("Failed to decode source image for native scanner inference: {error}")
-            })?,
+        (
+            Some(
+                image::load_from_memory(&request.source_bytes).map_err(|error| {
+                    format!("Failed to decode source image for native scanner inference: {error}")
+                })?,
+            ),
+            "source-bytes",
         )
     } else {
-        None
+        (None, "none")
     };
 
-    Ok(decoded_image
-        .map(|image| prepare_inference_image(image, request.max_width, request.max_height)))
+    Ok(ResolvedDetectInput {
+        prepared_image: decoded_image
+            .map(|image| prepare_inference_image(image, request.max_width, request.max_height)),
+        input_transport,
+    })
 }
 
 fn build_dynamic_image_from_rgba_request(
@@ -662,6 +713,99 @@ fn build_dynamic_image_from_rgba_request(
             "Failed to materialize RGBA source frame for native scanner inference.".to_string()
         })?;
     Ok(DynamicImage::ImageRgba8(image))
+}
+
+fn build_dynamic_image_from_preview_frame_packet(packet: &[u8]) -> Result<DynamicImage, String> {
+    let (width, height, payload) = parse_preview_frame_packet(packet)?;
+    let rgb = decode_i420_payload_to_rgb_image(payload, width, height)?;
+    Ok(DynamicImage::ImageRgb8(rgb))
+}
+
+fn parse_preview_frame_packet(packet: &[u8]) -> Result<(u32, u32, &[u8]), String> {
+    if packet.len() < FRAME_PACKET_HEADER_SIZE {
+        return Err("Preview frame packet is shorter than the protocol header.".to_string());
+    }
+
+    let codec = packet[0];
+    if codec != FRAME_CODEC_I420 && codec != FRAME_CODEC_I420_TELEMETRY {
+        return Err(format!(
+            "Native YOLO preview detect expected an I420 preview packet, got codec {codec}."
+        ));
+    }
+
+    let width = u32::from_be_bytes([packet[1], packet[2], packet[3], packet[4]]);
+    let height = u32::from_be_bytes([packet[5], packet[6], packet[7], packet[8]]);
+    let payload_offset = if codec == FRAME_CODEC_I420_TELEMETRY {
+        FRAME_PACKET_HEADER_SIZE + FRAME_PACKET_TELEMETRY_SIZE
+    } else {
+        FRAME_PACKET_HEADER_SIZE
+    };
+
+    if packet.len() < payload_offset {
+        return Err("Preview frame packet telemetry header is truncated.".to_string());
+    }
+
+    Ok((width, height, &packet[payload_offset..]))
+}
+
+fn decode_i420_payload_to_rgb_image(
+    payload: &[u8],
+    width: u32,
+    height: u32,
+) -> Result<RgbImage, String> {
+    if width == 0 || height == 0 {
+        return Err("Preview frame dimensions must be greater than zero.".to_string());
+    }
+
+    if width % 2 != 0 || height % 2 != 0 {
+        return Err(format!(
+            "I420 preview frames require even dimensions, got {}x{}.",
+            width, height
+        ));
+    }
+
+    let width_usize = width as usize;
+    let height_usize = height as usize;
+    let luma_len = width_usize * height_usize;
+    let chroma_width = width_usize / 2;
+    let chroma_height = height_usize / 2;
+    let chroma_len = chroma_width * chroma_height;
+    let expected_len = luma_len + (2 * chroma_len);
+
+    if payload.len() != expected_len {
+        return Err(format!(
+            "Invalid I420 preview payload size: expected {expected_len}, got {}.",
+            payload.len()
+        ));
+    }
+
+    let y_plane = &payload[..luma_len];
+    let u_plane = &payload[luma_len..luma_len + chroma_len];
+    let v_plane = &payload[luma_len + chroma_len..];
+    let mut image = RgbImage::new(width, height);
+    let output = image.as_mut();
+
+    for row in 0..height_usize {
+        let y_row = row * width_usize;
+        let uv_row = (row / 2) * chroma_width;
+        for col in 0..width_usize {
+            let y = i32::from(y_plane[y_row + col]);
+            let u = i32::from(u_plane[uv_row + (col / 2)]);
+            let v = i32::from(v_plane[uv_row + (col / 2)]);
+            let c = (y - 16).max(0);
+            let d = u - 128;
+            let e = v - 128;
+            let r = ((298 * c + 409 * e + 128) >> 8).clamp(0, 255) as u8;
+            let g = ((298 * c - 100 * d - 208 * e + 128) >> 8).clamp(0, 255) as u8;
+            let b = ((298 * c + 516 * d + 128) >> 8).clamp(0, 255) as u8;
+            let offset = (y_row + col) * 3;
+            output[offset] = r;
+            output[offset + 1] = g;
+            output[offset + 2] = b;
+        }
+    }
+
+    Ok(image)
 }
 
 fn prepare_inference_image(
@@ -1688,6 +1832,7 @@ fn path_to_string(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::stream_decoder::replace_latest_preview_frame_packet;
 
     fn sample_scanner_yolo_config() -> ScannerYoloConfig {
         ScannerYoloConfig {
@@ -1728,6 +1873,25 @@ mod tests {
             }),
             notes: Vec::new(),
         }
+    }
+
+    fn sample_preview_frame_packet() -> Vec<u8> {
+        let width = 2_u32;
+        let height = 2_u32;
+        let y_plane = [16_u8, 64, 128, 235];
+        let u_plane = [128_u8];
+        let v_plane = [128_u8];
+
+        let mut packet = Vec::new();
+        packet.push(FRAME_CODEC_I420_TELEMETRY);
+        packet.extend_from_slice(&width.to_be_bytes());
+        packet.extend_from_slice(&height.to_be_bytes());
+        packet.extend_from_slice(&0_u64.to_be_bytes());
+        packet.extend_from_slice(&1_u32.to_be_bytes());
+        packet.extend_from_slice(&y_plane);
+        packet.extend_from_slice(&u_plane);
+        packet.extend_from_slice(&v_plane);
+        packet
     }
 
     #[test]
@@ -1821,5 +1985,56 @@ mod tests {
             .expect("centroid should exist");
         assert!(centroid.0 < 1.0);
         assert!(centroid.1 < 1.0);
+    }
+
+    #[test]
+    fn build_dynamic_image_from_preview_frame_packet_decodes_i420() {
+        let image = build_dynamic_image_from_preview_frame_packet(&sample_preview_frame_packet())
+            .expect("preview frame packet should decode");
+        let rgb = image.to_rgb8();
+        assert_eq!(rgb.dimensions(), (2, 2));
+        assert!(rgb.get_pixel(0, 0).0[0] <= rgb.get_pixel(1, 1).0[0]);
+    }
+
+    #[test]
+    fn resolve_detect_input_image_uses_latest_preview_frame_cache() {
+        replace_latest_preview_frame_packet(Some(sample_preview_frame_packet()));
+        let request = ScannerDetectDocumentRequest {
+            source_bytes: Vec::new(),
+            rgba_bytes: Vec::new(),
+            use_latest_preview_frame: true,
+            rgba_width: None,
+            rgba_height: None,
+            max_width: Some(2),
+            max_height: Some(2),
+        };
+
+        let resolved =
+            resolve_detect_input_image(&request).expect("latest preview cache should resolve");
+        assert_eq!(resolved.input_transport, "latest-preview-cache");
+        let image = resolved
+            .prepared_image
+            .expect("cached preview frame should provide an image");
+        assert_eq!(image.working_dimensions(), (2, 2));
+        replace_latest_preview_frame_packet(None);
+    }
+
+    #[test]
+    fn resolve_detect_input_image_handles_missing_latest_preview_frame() {
+        replace_latest_preview_frame_packet(None);
+        let request = ScannerDetectDocumentRequest {
+            source_bytes: Vec::new(),
+            rgba_bytes: Vec::new(),
+            use_latest_preview_frame: true,
+            rgba_width: None,
+            rgba_height: None,
+            max_width: None,
+            max_height: None,
+        };
+
+        let resolved = resolve_detect_input_image(&request)
+            .expect("missing latest preview frame should not error");
+        assert_eq!(resolved.input_transport, "latest-preview-cache");
+        assert!(resolved.prepared_image.is_none());
     }
 }

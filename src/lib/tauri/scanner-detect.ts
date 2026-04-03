@@ -80,6 +80,7 @@ export interface TauriScannerYoloProbeResult {
 export interface TauriScannerNativeYoloDetectResult {
   stage: string;
   processingMs: number;
+  inputTransport: string;
   inputWidth: number | null;
   inputHeight: number | null;
   selectedModelId: string | null;
@@ -192,8 +193,32 @@ export const detectDocumentWithTauriNativeYoloRgba = async (
     {
       request: {
         rgbaBytes,
+        useLatestPreviewFrame: false,
         rgbaWidth: frame.width,
         rgbaHeight: frame.height,
+        maxWidth: options?.maxWidth,
+        maxHeight: options?.maxHeight,
+      },
+    },
+  );
+};
+
+export const detectDocumentWithTauriNativeYoloLatestPreview = async (
+  options?: {
+    maxWidth?: number;
+    maxHeight?: number;
+  },
+): Promise<TauriScannerNativeYoloDetectResult> => {
+  if (!isTauri()) {
+    throw new Error("Native YOLO detection is only available in Tauri desktop builds.");
+  }
+
+  const {invoke} = await import("@tauri-apps/api/core");
+  return await invoke<TauriScannerNativeYoloDetectResult>(
+    "tauri_scanner_detect_document",
+    {
+      request: {
+        useLatestPreviewFrame: true,
         maxWidth: options?.maxWidth,
         maxHeight: options?.maxHeight,
       },

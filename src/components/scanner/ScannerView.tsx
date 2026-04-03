@@ -40,6 +40,7 @@ import {
 } from "@/lib/scanner/scanner-postprocess-worker-client";
 import {shellTauriAdbCommand} from "@/lib/tauri/adb";
 import {
+  detectDocumentWithTauriNativeYoloLatestPreview,
   detectDocumentWithTauriNativeYoloRgba,
   probeTauriScannerYolo,
   type TauriScannerYoloProbeResult,
@@ -976,19 +977,34 @@ export default function ScannerView({
     frame: ImageData,
     frameVersion: number,
     processingSize: { width: number; height: number },
+    options?: {
+      useNativePreviewFrameCache?: boolean;
+    },
   ): Promise<Point[] | null> => {
     const backendState = getDetectionBackendState();
     if (backendState.activeBackend === "native-yolo") {
       try {
-        const nativeResult = await detectDocumentWithTauriNativeYoloRgba(frame, {
+        const nativeOptions = {
           maxWidth: processingSize.width,
           maxHeight: processingSize.height,
-        });
+        };
+        const nativeResult = options?.useNativePreviewFrameCache
+          ? await detectDocumentWithTauriNativeYoloLatestPreview(nativeOptions).catch(async (error) => {
+            console.warn(
+              "[Scanner] Cached preview native detect path failed, retrying this tick via RGBA invoke:",
+              error,
+            );
+            return await detectDocumentWithTauriNativeYoloRgba(frame, nativeOptions);
+          })
+          : await detectDocumentWithTauriNativeYoloRgba(frame, nativeOptions);
         const nativeReady = Boolean(
           nativeResult.runtimeReady
           && nativeResult.sessionReady
           && nativeResult.detectionImplemented,
         );
+        const nativeBackendMessage = nativeResult.inputTransport
+          ? `${nativeResult.message} [input=${nativeResult.inputTransport}]`
+          : nativeResult.message;
 
         lastDetectionBackendRef.current = nativeReady || backendState.strictMode
           ? "native-yolo"
@@ -1001,7 +1017,7 @@ export default function ScannerView({
           selectedModelId: nativeResult.selectedModelId,
           selectedModelKind: nativeResult.selectedModelKind,
           selectedModelTask: nativeResult.selectedModelTask,
-          backendMessage: nativeResult.message,
+          backendMessage: nativeBackendMessage,
         });
 
         if (nativeReady) {
@@ -1724,6 +1740,7 @@ export default function ScannerView({
             processingFrame,
             nextVersion,
             processingSize,
+            { useNativePreviewFrameCache: false },
           );
           redetectMs = performance.now() - redetectStartedAt;
           if (detectedPoints && detectedPoints.length === 4) {
@@ -2088,6 +2105,7 @@ export default function ScannerView({
               frameForDetection,
               frameVersion,
               processingSize,
+              { useNativePreviewFrameCache: true },
             );
             if (
               !dialogOpenRef.current

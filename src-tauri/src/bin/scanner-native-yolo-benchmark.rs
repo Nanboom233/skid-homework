@@ -62,6 +62,7 @@ fn main() {
                 ScannerDetectDocumentRequest {
                     source_bytes: image_bytes.clone(),
                     rgba_bytes: Vec::new(),
+                    use_latest_preview_frame: false,
                     rgba_width: None,
                     rgba_height: None,
                     max_width: None,
@@ -75,6 +76,7 @@ fn main() {
                 ScannerDetectDocumentRequest {
                     source_bytes: Vec::new(),
                     rgba_bytes: rgba_bytes.clone(),
+                    use_latest_preview_frame: false,
                     rgba_width: Some(rgba_width),
                     rgba_height: Some(rgba_height),
                     max_width: Some(320),
@@ -88,6 +90,7 @@ fn main() {
                 ScannerDetectDocumentRequest {
                     source_bytes: Vec::new(),
                     rgba_bytes,
+                    use_latest_preview_frame: false,
                     rgba_width: Some(rgba_width),
                     rgba_height: Some(rgba_height),
                     max_width: Some(320),
