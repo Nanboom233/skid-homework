@@ -17,7 +17,10 @@ interface ProcessRequestOptions {
 export interface ScannerPostProcessWorkerResult {
   processingMs: number;
   decodeMs: number | null;
+  refineMs: number | null;
   perspectiveMs: number | null;
+  flattenMs: number | null;
+  cropMs: number | null;
   enhanceMs: number | null;
   rotateMs: number | null;
   encodeMs: number;
@@ -26,6 +29,10 @@ export interface ScannerPostProcessWorkerResult {
   outputWidth: number;
   outputHeight: number;
   encodedMimeType: "image/png";
+  effectiveDocumentPoints: Point[] | null;
+  refinementApplied: boolean;
+  localFlatteningApplied: boolean;
+  paperCropApplied: boolean;
   encodedBytes: ArrayBuffer;
 }
 
@@ -212,7 +219,10 @@ export class ScannerPostProcessWorkerClient {
         pending.resolve({
           processingMs: message.processingMs,
           decodeMs: message.decodeMs,
+          refineMs: message.refineMs,
           perspectiveMs: message.perspectiveMs,
+          flattenMs: message.flattenMs,
+          cropMs: message.cropMs,
           enhanceMs: message.enhanceMs,
           rotateMs: message.rotateMs,
           encodeMs: message.encodeMs,
@@ -221,6 +231,10 @@ export class ScannerPostProcessWorkerClient {
           outputWidth: message.outputWidth,
           outputHeight: message.outputHeight,
           encodedMimeType: message.encodedMimeType,
+          effectiveDocumentPoints: message.effectiveDocumentPoints,
+          refinementApplied: message.refinementApplied,
+          localFlatteningApplied: message.localFlatteningApplied,
+          paperCropApplied: message.paperCropApplied,
           encodedBytes: message.encodedBytes,
         });
         return;

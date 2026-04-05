@@ -11,7 +11,10 @@ const NATIVE_POST_PROCESS_PARTIAL_TIMEOUT_MS = 1_500;
 export interface TauriScannerPostProcessResult {
   processingMs: number;
   decodeMs: number;
+  refineMs: number | null;
   perspectiveMs: number | null;
+  flattenMs: number | null;
+  cropMs: number | null;
   enhanceMs: number | null;
   rotateMs: number | null;
   encodeMs: number;
@@ -20,6 +23,10 @@ export interface TauriScannerPostProcessResult {
   outputWidth: number;
   outputHeight: number;
   encodedMimeType: "image/png";
+  effectiveDocumentPoints: Point[] | null;
+  refinementApplied: boolean;
+  localFlatteningApplied: boolean;
+  paperCropApplied: boolean;
   encodedBytes: ArrayBuffer;
 }
 

@@ -31,7 +31,10 @@ export interface ScannerPostProcessWorkerResultResponse {
   requestId: number;
   processingMs: number;
   decodeMs: number | null;
+  refineMs: number | null;
   perspectiveMs: number | null;
+  flattenMs: number | null;
+  cropMs: number | null;
   enhanceMs: number | null;
   rotateMs: number | null;
   encodeMs: number;
@@ -40,6 +43,10 @@ export interface ScannerPostProcessWorkerResultResponse {
   outputWidth: number;
   outputHeight: number;
   encodedMimeType: "image/png";
+  effectiveDocumentPoints: Point[] | null;
+  refinementApplied: boolean;
+  localFlatteningApplied: boolean;
+  paperCropApplied: boolean;
   encodedBytes: ArrayBuffer;
 }
 

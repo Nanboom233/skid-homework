@@ -203,6 +203,9 @@ const runEnhancementPipeline = (
   cv: any,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   src: any,
+  options?: {
+    preferSoftTone?: boolean;
+  },
 ): ImageData => {
   const backgroundKernelSize = toOddKernelSize(
     Math.round(Math.min(src.cols, src.rows) * ENHANCER_BACKGROUND_KERNEL_RATIO),
@@ -255,12 +258,16 @@ const runEnhancementPipeline = (
     cv.morphologyEx(otsuBinary, otsuBinary, cv.MORPH_OPEN, cleanupKernel);
     cv.morphologyEx(adaptiveBinary, adaptiveBinary, cv.MORPH_CLOSE, cleanupKernel);
 
-    const otsuScore = computeBinaryCandidateScore(cv, otsuBinary);
-    const adaptiveScore = computeBinaryCandidateScore(cv, adaptiveBinary);
-    const bestBinaryScore = Math.max(otsuScore, adaptiveScore);
-    const finalGray = Number.isFinite(bestBinaryScore)
-      ? (adaptiveScore > otsuScore ? adaptiveBinary : otsuBinary)
-      : normalized;
+    const finalGray = options?.preferSoftTone
+      ? normalized
+      : (() => {
+          const otsuScore = computeBinaryCandidateScore(cv, otsuBinary);
+          const adaptiveScore = computeBinaryCandidateScore(cv, adaptiveBinary);
+          const bestBinaryScore = Math.max(otsuScore, adaptiveScore);
+          return Number.isFinite(bestBinaryScore)
+            ? (adaptiveScore > otsuScore ? adaptiveBinary : otsuBinary)
+            : normalized;
+        })();
 
     cv.cvtColor(finalGray, display, cv.COLOR_GRAY2RGBA);
     return new ImageData(new Uint8ClampedArray(display.data), display.cols, display.rows);
@@ -273,6 +280,9 @@ const runEnhancementPipeline = (
 export const enhanceDocumentRgbaMatToImageData = async (
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   documentMat: any,
+  options?: {
+    preferSoftTone?: boolean;
+  },
 ): Promise<ImageData> => {
   const cv = getOpenCvRuntime();
 
@@ -280,18 +290,21 @@ export const enhanceDocumentRgbaMatToImageData = async (
     throw new Error("Invalid OpenCV mat supplied for document enhancement.");
   }
 
-  return runEnhancementPipeline(cv, documentMat);
+  return runEnhancementPipeline(cv, documentMat, options);
 };
 
 export const enhanceDocumentImageData = async (
   documentImage: ImageData,
+  options?: {
+    preferSoftTone?: boolean;
+  },
 ): Promise<ImageData> => {
   const cv = getOpenCvRuntime();
   const src = new cv.Mat(documentImage.height, documentImage.width, cv.CV_8UC4);
 
   try {
     src.data.set(documentImage.data);
-    return runEnhancementPipeline(cv, src);
+    return runEnhancementPipeline(cv, src, options);
   } catch (error) {
     console.error("[Scanner] Document enhancement failed:", error);
     throw error;

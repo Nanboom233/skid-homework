@@ -199,11 +199,21 @@ pub struct ScannerYoloConfigResponse {
     writable_path: String,
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScannerPoint {
     x: f32,
     y: f32,
+}
+
+impl ScannerPoint {
+    pub fn x(&self) -> f32 {
+        self.x
+    }
+
+    pub fn y(&self) -> f32 {
+        self.y
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -286,6 +296,12 @@ pub struct ScannerDetectDocumentResponse {
     session_error: Option<String>,
     points: Option<Vec<ScannerPoint>>,
     message: String,
+}
+
+impl ScannerDetectDocumentResponse {
+    pub fn detected_points(&self) -> Option<&[ScannerPoint]> {
+        self.points.as_deref()
+    }
 }
 
 #[command]

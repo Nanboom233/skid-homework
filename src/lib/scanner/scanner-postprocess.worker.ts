@@ -1,8 +1,12 @@
 /// <reference lib="webworker" />
 
-import {applyPerspectiveTransformToImageData, applyPerspectiveTransformToMat} from "./perspective-transform";
-import {enhanceDocumentImageData, enhanceDocumentRgbaMatToImageData} from "./document-enhancer";
+import {applyPerspectiveTransformToImageData} from "./perspective-transform";
+import {enhanceDocumentImageData} from "./document-enhancer";
 import type {OrthogonalRotation} from "./image-data";
+import {refineDocumentQuadInImageData} from "./postprocess-corner-refinement";
+import {validateQuadGeometry} from "./document-quad";
+import {applyLocalSpineFlatteningToImageData} from "./postprocess-local-flattening";
+import {cropToPaperRegionInImageData} from "./postprocess-paper-crop";
 import type {
   ScannerPostProcessWorkerErrorResponse,
   ScannerPostProcessWorkerProcessRequest,
@@ -331,39 +335,65 @@ const handleProcess = async (message: ScannerPostProcessWorkerProcessRequest): P
         })();
     let processedImage = imageData;
     let perspectiveMs: number | null = null;
+    let refineMs: number | null = null;
+    let flattenMs: number | null = null;
+    let cropMs: number | null = null;
     let enhanceMs: number | null = null;
     let rotateMs: number | null = null;
+    let effectiveDocumentPoints = message.documentPoints;
+    let refinementApplied = false;
+    let localFlatteningApplied = false;
+    let paperCropApplied = false;
 
-    if (message.imageEnhancement && message.documentPoints && message.documentPoints.length === 4) {
+    if (message.documentPoints && message.documentPoints.length === 4) {
+      const refineStartedAt = performance.now();
+      const refinedQuad = refineDocumentQuadInImageData(imageData, message.documentPoints);
+      refineMs = performance.now() - refineStartedAt;
+      effectiveDocumentPoints = refinedQuad.points;
+      refinementApplied = refinedQuad.applied;
+    }
+
+    if (effectiveDocumentPoints && effectiveDocumentPoints.length === 4) {
+      const geometryCheck = validateQuadGeometry(effectiveDocumentPoints, imageData.width, imageData.height);
+      if (!geometryCheck.valid) {
+        effectiveDocumentPoints = null;
+      }
+    }
+
+    if (effectiveDocumentPoints && effectiveDocumentPoints.length === 4) {
       const perspectiveStartedAt = performance.now();
-      const croppedMat = applyPerspectiveTransformToMat(imageData, message.documentPoints);
+      processedImage = applyPerspectiveTransformToImageData(imageData, effectiveDocumentPoints);
       perspectiveMs = performance.now() - perspectiveStartedAt;
-
-      try {
-        const enhanceStartedAt = performance.now();
-        processedImage = await enhanceDocumentRgbaMatToImageData(croppedMat);
-        enhanceMs = performance.now() - enhanceStartedAt;
-      } finally {
-        croppedMat.delete();
-      }
-    } else {
-      if (message.documentPoints && message.documentPoints.length === 4) {
-        const perspectiveStartedAt = performance.now();
-        processedImage = applyPerspectiveTransformToImageData(imageData, message.documentPoints);
-        perspectiveMs = performance.now() - perspectiveStartedAt;
-      }
-
-      if (message.imageEnhancement) {
-        const enhanceStartedAt = performance.now();
-        processedImage = await enhanceDocumentImageData(processedImage);
-        enhanceMs = performance.now() - enhanceStartedAt;
-      }
     }
 
     if (message.outputRotation !== 0) {
       const rotateStartedAt = performance.now();
       processedImage = rotateImageDataInWorker(processedImage, message.outputRotation);
       rotateMs = performance.now() - rotateStartedAt;
+    }
+
+    if (effectiveDocumentPoints && effectiveDocumentPoints.length === 4) {
+      const flattenStartedAt = performance.now();
+      const flattenResult = applyLocalSpineFlatteningToImageData(processedImage);
+      flattenMs = performance.now() - flattenStartedAt;
+      processedImage = flattenResult.imageData;
+      localFlatteningApplied = flattenResult.applied;
+    }
+
+    if (effectiveDocumentPoints && effectiveDocumentPoints.length === 4 && !localFlatteningApplied) {
+      const cropStartedAt = performance.now();
+      const cropResult = cropToPaperRegionInImageData(processedImage);
+      cropMs = performance.now() - cropStartedAt;
+      processedImage = cropResult.imageData;
+      paperCropApplied = cropResult.applied;
+    }
+
+    if (message.imageEnhancement) {
+      const enhanceStartedAt = performance.now();
+      processedImage = await enhanceDocumentImageData(processedImage, {
+        preferSoftTone: localFlatteningApplied,
+      });
+      enhanceMs = performance.now() - enhanceStartedAt;
     }
 
     const encodeStartedAt = performance.now();
@@ -375,7 +405,10 @@ const handleProcess = async (message: ScannerPostProcessWorkerProcessRequest): P
       requestId: message.requestId,
       processingMs: performance.now() - startedAt,
       decodeMs,
+      refineMs,
       perspectiveMs,
+      flattenMs,
+      cropMs,
       enhanceMs,
       rotateMs,
       encodeMs,
@@ -384,6 +417,10 @@ const handleProcess = async (message: ScannerPostProcessWorkerProcessRequest): P
       outputWidth: processedImage.width,
       outputHeight: processedImage.height,
       encodedMimeType: "image/png",
+      effectiveDocumentPoints,
+      refinementApplied,
+      localFlatteningApplied,
+      paperCropApplied,
       encodedBytes,
     }, [encodedBytes]);
   } catch (error) {
