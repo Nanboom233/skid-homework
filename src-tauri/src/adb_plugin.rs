@@ -465,27 +465,26 @@ fn capture_still_via_device_file(
 }
 
 fn capture_still_via_forwarded_socket(port: u16) -> Result<Vec<u8>, String> {
-    let address: SocketAddr = format!("127.0.0.1:{port}")
-        .parse()
-        .map_err(|error| format!("Invalid still-stream forward address for port {port}: {error}"))?;
+    let address: SocketAddr = format!("127.0.0.1:{port}").parse().map_err(|error| {
+        format!("Invalid still-stream forward address for port {port}: {error}")
+    })?;
     let started_at = Instant::now();
-    let stream = StdTcpStream::connect_timeout(&address, STILL_STREAM_CONNECT_TIMEOUT)
-        .map_err(|error| format!("Failed to connect to forwarded still stream at {address}: {error}"))?;
+    let stream =
+        StdTcpStream::connect_timeout(&address, STILL_STREAM_CONNECT_TIMEOUT).map_err(|error| {
+            format!("Failed to connect to forwarded still stream at {address}: {error}")
+        })?;
     let _ = stream.set_nodelay(true);
     let _ = stream.set_read_timeout(Some(STILL_STREAM_READ_TIMEOUT));
 
     let mut payload = Vec::with_capacity(2 * 1024 * 1024);
     let mut reader = BufReader::with_capacity(256 * 1024, stream);
-    reader
-        .read_to_end(&mut payload)
-        .map_err(|error| format!("Failed to read forwarded still stream from {address}: {error}"))?;
+    reader.read_to_end(&mut payload).map_err(|error| {
+        format!("Failed to read forwarded still stream from {address}: {error}")
+    })?;
 
     let address_label = format!("tcp://{address}");
-    let payload = validate_still_capture_payload(
-        &address_label,
-        payload,
-        "Forwarded still stream payload",
-    )?;
+    let payload =
+        validate_still_capture_payload(&address_label, payload, "Forwarded still stream payload")?;
     if payload.len() < 2 || payload[payload.len() - 2] != 0xff || payload[payload.len() - 1] != 0xd9
     {
         return Err(format!(

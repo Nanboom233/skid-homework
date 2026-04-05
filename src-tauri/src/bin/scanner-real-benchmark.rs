@@ -229,7 +229,9 @@ where
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--port" => {
-                let value = iter.next().ok_or_else(|| "Missing value for --port.".to_string())?;
+                let value = iter
+                    .next()
+                    .ok_or_else(|| "Missing value for --port.".to_string())?;
                 port = Some(
                     value
                         .parse::<u16>()
@@ -240,14 +242,14 @@ where
                 let value = iter
                     .next()
                     .ok_or_else(|| "Missing value for --duration-secs.".to_string())?;
-                duration_secs = value.parse::<u64>().map_err(|error| {
-                    format!("Invalid --duration-secs value {value:?}: {error}")
-                })?;
+                duration_secs = value
+                    .parse::<u64>()
+                    .map_err(|error| format!("Invalid --duration-secs value {value:?}: {error}"))?;
             }
             "--connect-timeout-secs" => {
-                let value = iter.next().ok_or_else(|| {
-                    "Missing value for --connect-timeout-secs.".to_string()
-                })?;
+                let value = iter
+                    .next()
+                    .ok_or_else(|| "Missing value for --connect-timeout-secs.".to_string())?;
                 connect_timeout_secs = value.parse::<u64>().map_err(|error| {
                     format!("Invalid --connect-timeout-secs value {value:?}: {error}")
                 })?;
@@ -269,9 +271,9 @@ where
                 })?;
             }
             "--frontend-address" => {
-                let value = iter.next().ok_or_else(|| {
-                    "Missing value for --frontend-address.".to_string()
-                })?;
+                let value = iter
+                    .next()
+                    .ok_or_else(|| "Missing value for --frontend-address.".to_string())?;
                 frontend_address = Some(value);
             }
             "--help" | "-h" => {
@@ -295,7 +297,9 @@ where
         return Err("--stall-timeout-ms must be at least 500.".to_string());
     }
     if startup_timeout_ms < stall_timeout_ms {
-        return Err("--startup-timeout-ms must be greater than or equal to --stall-timeout-ms.".to_string());
+        return Err(
+            "--startup-timeout-ms must be greater than or equal to --stall-timeout-ms.".to_string(),
+        );
     }
 
     Ok(Args {
@@ -427,12 +431,10 @@ fn send_frontend_packet(stream: &mut TcpStream, packet: &[u8]) -> Result<(), Str
 }
 
 fn current_epoch_ms() -> Result<u64, String> {
-    Ok(
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|error| format!("System clock drifted before unix epoch: {error}"))?
-            .as_millis() as u64,
-    )
+    Ok(SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| format!("System clock drifted before unix epoch: {error}"))?
+        .as_millis() as u64)
 }
 
 fn summarize_nal_packet(nal_data: &[u8]) -> String {
@@ -496,7 +498,8 @@ fn find_start_code(nal_data: &[u8], offset: usize) -> Option<usize> {
     }
 
     for index in offset..nal_data.len().saturating_sub(2) {
-        if nal_data[index..].starts_with(&[0, 0, 1]) || nal_data[index..].starts_with(&[0, 0, 0, 1]) {
+        if nal_data[index..].starts_with(&[0, 0, 1]) || nal_data[index..].starts_with(&[0, 0, 0, 1])
+        {
             return Some(index);
         }
     }
@@ -592,7 +595,13 @@ fn pack_i420_preview(
     let mut payload = Vec::with_capacity(expected_payload_len);
 
     if factor == 1 {
-        append_plane_contiguous(&mut payload, y_plane, preview_width, preview_height, y_stride);
+        append_plane_contiguous(
+            &mut payload,
+            y_plane,
+            preview_width,
+            preview_height,
+            y_stride,
+        );
         append_plane_contiguous(
             &mut payload,
             u_plane,
