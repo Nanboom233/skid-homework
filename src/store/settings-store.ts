@@ -77,7 +77,7 @@ export interface SettingsState {
 export const useSettingsStore = create<SettingsState>()(
   persist(
     (set) => ({
-      imageEnhancement: false,
+      imageEnhancement: true,
       theme: "system",
       language: DEFAULT_LANGUAGE,
       languageInitialized: false,

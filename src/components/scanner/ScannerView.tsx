@@ -9,13 +9,11 @@ import {Button} from "@/components/ui/button";
 import {Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,} from "@/components/ui/dialog";
 import {
   applyPerspectiveTransformToImageData,
-  applyPerspectiveTransformToMat,
   createFrameSource,
   DEFAULT_SCANNER_CONFIG,
   detectDocumentContour,
   DetectionPresenceTracker,
   enhanceDocumentImageData,
-  enhanceDocumentRgbaMatToImageData,
   evaluateFrameMappingCompatibility,
   type FrameSource,
   type FrameSourceState,
@@ -38,6 +36,10 @@ import {
   createScannerPostProcessWorkerClient,
   type ScannerPostProcessWorkerClient,
 } from "@/lib/scanner/scanner-postprocess-worker-client";
+import {assessDocumentQuad, validateQuadGeometry} from "@/lib/scanner/document-quad";
+import {refineDocumentQuadInImageData} from "@/lib/scanner/postprocess-corner-refinement";
+import {applyLocalSpineFlatteningToImageData} from "@/lib/scanner/postprocess-local-flattening";
+import {cropToPaperRegionInImageData} from "@/lib/scanner/postprocess-paper-crop";
 import {shellTauriAdbCommand} from "@/lib/tauri/adb";
 import {
   detectDocumentWithTauriNativeYoloLatestPreview,
@@ -102,14 +104,21 @@ interface PreparedCaptureArtifact {
 interface ProcessedDocumentRenderResult {
   blob: Blob;
   decodeMs: number | null;
+  refineMs: number | null;
   inputWidth: number;
   inputHeight: number;
   outputWidth: number;
   outputHeight: number;
   perspectiveMs: number | null;
+  flattenMs: number | null;
+  cropMs: number | null;
   enhanceMs: number | null;
   rotateMs: number | null;
   encodeMs: number;
+  effectiveDocumentPoints: Point[] | null;
+  refinementApplied: boolean;
+  localFlatteningApplied: boolean;
+  paperCropApplied: boolean;
 }
 
 interface DetectionBackendState {
@@ -1021,7 +1030,38 @@ export default function ScannerView({
         });
 
         if (nativeReady) {
-          return nativeResult.points;
+          const nativeQuadAssessment = assessDocumentQuad(
+            nativeResult.points,
+            frame.width,
+            frame.height,
+          );
+          if (nativeQuadAssessment.trustworthy) {
+            return nativeResult.points;
+          }
+
+          const nativeQuadReason = nativeQuadAssessment.reason
+            ?? "Native detector produced an untrustworthy document quad.";
+          console.warn(
+            `[Scanner] ${nativeQuadReason} `
+            + `${backendState.strictMode ? "Native strict mode will reject this frame." : "Falling back to OpenCV."}`,
+            nativeResult.points,
+          );
+          lastDetectionBackendRef.current = backendState.strictMode ? "native-yolo" : "opencv";
+          syncDetectionBackendDebug({
+            activeBackend: lastDetectionBackendRef.current,
+            cvReady: backendState.strictMode ? nativeReady : isOpenCvRuntimeReady(),
+            preferredProvider: nativeResult.preferredProvider,
+            preferredProviderReady: nativeResult.preferredProviderReady,
+            selectedModelId: nativeResult.selectedModelId,
+            selectedModelKind: nativeResult.selectedModelKind,
+            selectedModelTask: nativeResult.selectedModelTask,
+            backendMessage: backendState.strictMode
+              ? nativeQuadReason
+              : `${nativeQuadReason} Falling back to OpenCV.`,
+          });
+          if (backendState.strictMode) {
+            return null;
+          }
         }
 
         if (backendState.strictMode) {
@@ -1336,7 +1376,7 @@ export default function ScannerView({
       sourceBlob: await imageDataToPngBlob(exportFrame),
       sourceWidth: exportFrame.width,
       sourceHeight: exportFrame.height,
-      initialFrame: exportFrame,
+      initialFrame: isTauri() ? null : exportFrame,
       points: exportPoints,
       outputRotation: 0,
     };
@@ -1348,54 +1388,82 @@ export default function ScannerView({
     outputRotation: OrthogonalRotation = 0,
   ): Promise<ProcessedDocumentRenderResult> => {
     let baseImage = frame;
+    let refineMs: number | null = null;
     let perspectiveMs: number | null = null;
+    let flattenMs: number | null = null;
+    let cropMs: number | null = null;
     let enhanceMs: number | null = null;
     let rotateMs: number | null = null;
+    let effectiveDocumentPoints = clonePoints(documentPoints);
+    let refinementApplied = false;
+    let localFlatteningApplied = false;
+    let paperCropApplied = false;
+
+    if (documentPoints && documentPoints.length === 4) {
+      const refineStartedAt = performance.now();
+      const refinedQuad = refineDocumentQuadInImageData(frame, documentPoints);
+      refineMs = performance.now() - refineStartedAt;
+      effectiveDocumentPoints = refinedQuad.points;
+      refinementApplied = refinedQuad.applied;
+    }
 
     const finalizeOutputBlob = async (resultImage: ImageData): Promise<ProcessedDocumentRenderResult> => {
-      const outputImage = outputRotation === 0
-        ? resultImage
-        : (() => {
-            const rotateStartedAt = performance.now();
-            const rotatedImage = rotateImageData(resultImage, outputRotation);
-            rotateMs = performance.now() - rotateStartedAt;
-            return rotatedImage;
-          })();
       const encodeStartedAt = performance.now();
-      const blob = await imageDataToPngBlob(outputImage);
+      const blob = await imageDataToPngBlob(resultImage);
       return {
         blob,
         decodeMs: null,
+        refineMs,
         inputWidth: frame.width,
         inputHeight: frame.height,
-        outputWidth: outputImage.width,
-        outputHeight: outputImage.height,
+        outputWidth: resultImage.width,
+        outputHeight: resultImage.height,
         perspectiveMs,
+        flattenMs,
+        cropMs,
         enhanceMs,
         rotateMs,
         encodeMs: performance.now() - encodeStartedAt,
+        effectiveDocumentPoints,
+        refinementApplied,
+        localFlatteningApplied,
+        paperCropApplied,
       };
     };
 
-    if (imageEnhancement && documentPoints && documentPoints.length === 4) {
-      const perspectiveStartedAt = performance.now();
-      const croppedMat = applyPerspectiveTransformToMat(frame, documentPoints);
-      perspectiveMs = performance.now() - perspectiveStartedAt;
-
-      try {
-        const enhanceStartedAt = performance.now();
-        const enhancedImage = await enhanceDocumentRgbaMatToImageData(croppedMat);
-        enhanceMs = performance.now() - enhanceStartedAt;
-        return await finalizeOutputBlob(enhancedImage);
-      } finally {
-        croppedMat.delete();
+    if (effectiveDocumentPoints && effectiveDocumentPoints.length === 4) {
+      const geometryCheck = validateQuadGeometry(effectiveDocumentPoints, frame.width, frame.height);
+      if (!geometryCheck.valid) {
+        effectiveDocumentPoints = null;
       }
     }
 
-    if (documentPoints && documentPoints.length === 4) {
+    if (effectiveDocumentPoints && effectiveDocumentPoints.length === 4) {
       const perspectiveStartedAt = performance.now();
-      baseImage = applyPerspectiveTransformToImageData(frame, documentPoints);
+      baseImage = applyPerspectiveTransformToImageData(frame, effectiveDocumentPoints);
       perspectiveMs = performance.now() - perspectiveStartedAt;
+    }
+
+    if (outputRotation !== 0) {
+      const rotateStartedAt = performance.now();
+      baseImage = rotateImageData(baseImage, outputRotation);
+      rotateMs = performance.now() - rotateStartedAt;
+    }
+
+    if (effectiveDocumentPoints && effectiveDocumentPoints.length === 4) {
+      const flattenStartedAt = performance.now();
+      const flattenResult = applyLocalSpineFlatteningToImageData(baseImage);
+      flattenMs = performance.now() - flattenStartedAt;
+      baseImage = flattenResult.imageData;
+      localFlatteningApplied = flattenResult.applied;
+    }
+
+    if (effectiveDocumentPoints && effectiveDocumentPoints.length === 4 && !localFlatteningApplied) {
+      const cropStartedAt = performance.now();
+      const cropResult = cropToPaperRegionInImageData(baseImage);
+      cropMs = performance.now() - cropStartedAt;
+      baseImage = cropResult.imageData;
+      paperCropApplied = cropResult.applied;
     }
 
     if (!imageEnhancement) {
@@ -1403,7 +1471,9 @@ export default function ScannerView({
     }
 
     const enhanceStartedAt = performance.now();
-    const enhancedImage = await enhanceDocumentImageData(baseImage);
+    const enhancedImage = await enhanceDocumentImageData(baseImage, {
+      preferSoftTone: localFlatteningApplied,
+    });
     enhanceMs = performance.now() - enhanceStartedAt;
     return await finalizeOutputBlob(enhancedImage);
   }, [imageEnhancement]);
@@ -1425,14 +1495,21 @@ export default function ScannerView({
         return {
           blob,
           decodeMs: workerResult.decodeMs,
+          refineMs: workerResult.refineMs,
           inputWidth: workerResult.inputWidth,
           inputHeight: workerResult.inputHeight,
           outputWidth: workerResult.outputWidth,
           outputHeight: workerResult.outputHeight,
           perspectiveMs: workerResult.perspectiveMs,
+          flattenMs: workerResult.flattenMs,
+          cropMs: workerResult.cropMs,
           enhanceMs: workerResult.enhanceMs,
           rotateMs: workerResult.rotateMs,
           encodeMs: workerResult.encodeMs,
+          effectiveDocumentPoints: workerResult.effectiveDocumentPoints,
+          refinementApplied: workerResult.refinementApplied,
+          localFlatteningApplied: workerResult.localFlatteningApplied,
+          paperCropApplied: workerResult.paperCropApplied,
         };
       } catch (error) {
         console.warn("[Scanner] Post-process worker failed, falling back to main thread:", error);
@@ -1453,9 +1530,7 @@ export default function ScannerView({
     documentPoints: Point[] | null,
     outputRotation: OrthogonalRotation = 0,
   ): Promise<ProcessedDocumentRenderResult> => {
-    // Keep enhancement-enabled flows on the existing OpenCV pipeline until
-    // native output parity is proven against the worker/local path.
-    const shouldTryNativePostProcess = !imageEnhancement && !nativePostProcessUnavailableReasonRef.current;
+    const shouldTryNativePostProcess = !nativePostProcessUnavailableReasonRef.current;
     if (shouldTryNativePostProcess) {
       try {
         const nativeResult = await processTauriScannerPostProcessSourceFile(sourceFile, {
@@ -1467,14 +1542,21 @@ export default function ScannerView({
         return {
           blob,
           decodeMs: nativeResult.decodeMs,
+          refineMs: nativeResult.refineMs,
           inputWidth: nativeResult.inputWidth,
           inputHeight: nativeResult.inputHeight,
           outputWidth: nativeResult.outputWidth,
           outputHeight: nativeResult.outputHeight,
           perspectiveMs: nativeResult.perspectiveMs,
+          flattenMs: nativeResult.flattenMs,
+          cropMs: nativeResult.cropMs,
           enhanceMs: nativeResult.enhanceMs,
           rotateMs: nativeResult.rotateMs,
           encodeMs: nativeResult.encodeMs,
+          effectiveDocumentPoints: nativeResult.effectiveDocumentPoints,
+          refinementApplied: nativeResult.refinementApplied,
+          localFlatteningApplied: nativeResult.localFlatteningApplied,
+          paperCropApplied: nativeResult.paperCropApplied,
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -1497,14 +1579,21 @@ export default function ScannerView({
         return {
           blob,
           decodeMs: workerResult.decodeMs,
+          refineMs: workerResult.refineMs,
           inputWidth: workerResult.inputWidth,
           inputHeight: workerResult.inputHeight,
           outputWidth: workerResult.outputWidth,
           outputHeight: workerResult.outputHeight,
           perspectiveMs: workerResult.perspectiveMs,
+          flattenMs: workerResult.flattenMs,
+          cropMs: workerResult.cropMs,
           enhanceMs: workerResult.enhanceMs,
           rotateMs: workerResult.rotateMs,
           encodeMs: workerResult.encodeMs,
+          effectiveDocumentPoints: workerResult.effectiveDocumentPoints,
+          refinementApplied: workerResult.refinementApplied,
+          localFlatteningApplied: workerResult.localFlatteningApplied,
+          paperCropApplied: workerResult.paperCropApplied,
         };
       } catch (error) {
         console.warn("[Scanner] Post-process worker source decode failed, falling back to main thread:", error);
@@ -1686,10 +1775,7 @@ export default function ScannerView({
   ): void => {
     const queueGeneration = capturedDocumentQueueGenerationRef.current;
     const nextVersion = (capturedDocumentProcessVersionsRef.current.get(documentId) ?? 0) + 1;
-    const shouldAttemptRedetect = Boolean(
-      options?.redetectPoints
-      && (!documentPoints || documentPoints.length !== 4),
-    );
+    const shouldAttemptRedetect = Boolean(options?.redetectPoints);
     capturedDocumentProcessVersionsRef.current.set(documentId, nextVersion);
 
     updateCapturedDocument(documentId, {
@@ -1719,25 +1805,25 @@ export default function ScannerView({
     const runProcessing = async (): Promise<void> => {
       const totalStartedAt = performance.now();
       let decodeMs: number | null = null;
-      let processingFrame = initialFrame ?? null;
+      let redetectFrame = initialFrame ?? null;
       let resolvedPoints = clonePoints(documentPoints);
       let redetectMs: number | null = null;
 
       if (shouldAttemptRedetect) {
-        if (!processingFrame) {
+        if (!redetectFrame) {
           const decodeStartedAt = performance.now();
-          processingFrame = await decodeBlobToImageData(sourceFile);
+          redetectFrame = await decodeBlobToImageData(sourceFile);
           decodeMs = performance.now() - decodeStartedAt;
         }
 
         try {
           const processingSize = getCapturedDocumentProcessingSize(
-            processingFrame.width,
-            processingFrame.height,
+            redetectFrame.width,
+            redetectFrame.height,
           );
           const redetectStartedAt = performance.now();
           const detectedPoints = await detectDocumentContourWithFallback(
-            processingFrame,
+            redetectFrame,
             nextVersion,
             processingSize,
             { useNativePreviewFrameCache: false },
@@ -1751,9 +1837,9 @@ export default function ScannerView({
         }
       }
 
-      const processedDocument = processingFrame
+      const processedDocument = initialFrame
         ? await renderProcessedDocumentBlob(
-            processingFrame as ImageData,
+            initialFrame,
             resolvedPoints,
             outputRotation,
           )
@@ -1763,9 +1849,10 @@ export default function ScannerView({
             outputRotation,
           );
       const effectiveDecodeMs = decodeMs ?? processedDocument.decodeMs;
-      const inputWidth = processingFrame?.width ?? processedDocument.inputWidth;
-      const inputHeight = processingFrame?.height ?? processedDocument.inputHeight;
+      const inputWidth = initialFrame?.width ?? redetectFrame?.width ?? processedDocument.inputWidth;
+      const inputHeight = initialFrame?.height ?? redetectFrame?.height ?? processedDocument.inputHeight;
       const processedFile = buildCaptureFile(processedDocument.blob, outputNameBase);
+      const effectivePoints = clonePoints(processedDocument.effectiveDocumentPoints ?? resolvedPoints);
 
       if (
         queueGeneration !== capturedDocumentQueueGenerationRef.current
@@ -1776,10 +1863,10 @@ export default function ScannerView({
 
       updateCapturedDocument(documentId, {
         file: processedFile,
-        points: clonePoints(resolvedPoints),
+        points: effectivePoints,
         status: "ready",
         error: null,
-        documentDetected: Boolean(resolvedPoints && resolvedPoints.length === 4),
+        documentDetected: Boolean(effectivePoints && effectivePoints.length === 4),
       });
       const totalMs = performance.now() - totalStartedAt;
       setCaptureDebug({
@@ -1792,7 +1879,7 @@ export default function ScannerView({
         postProcessEncodeMs: processedDocument.encodeMs,
         postProcessTotalMs: totalMs,
         postProcessUsedRedetect: shouldAttemptRedetect,
-        postProcessUsedPerspective: Boolean(resolvedPoints && resolvedPoints.length === 4),
+        postProcessUsedPerspective: Boolean(effectivePoints && effectivePoints.length === 4),
         postProcessUsedEnhancement: imageEnhancement,
         postProcessInputWidth: inputWidth,
         postProcessInputHeight: inputHeight,
@@ -1803,12 +1890,18 @@ export default function ScannerView({
       console.info(
         `[perf:postprocess] ${outputNameBase} | total=${totalMs.toFixed(1)}ms`
         + ` decode=${formatPerfMetric(effectiveDecodeMs)}ms`
+        + ` refine=${formatPerfMetric(processedDocument.refineMs)}ms`
         + ` redetect=${formatPerfMetric(redetectMs)}ms`
-        + ` crop=${formatPerfMetric(processedDocument.perspectiveMs)}ms`
+        + ` perspective=${formatPerfMetric(processedDocument.perspectiveMs)}ms`
+        + ` flatten=${formatPerfMetric(processedDocument.flattenMs)}ms`
+        + ` crop=${formatPerfMetric(processedDocument.cropMs)}ms`
         + ` enhance=${formatPerfMetric(processedDocument.enhanceMs)}ms`
         + ` rotate=${formatPerfMetric(processedDocument.rotateMs)}ms`
         + ` encode=${processedDocument.encodeMs.toFixed(1)}ms`
         + ` outputRotation=${outputRotation}`
+        + ` refinementApplied=${processedDocument.refinementApplied}`
+        + ` localFlatteningApplied=${processedDocument.localFlatteningApplied}`
+        + ` paperCropApplied=${processedDocument.paperCropApplied}`
         + ` | ${inputWidth}x${inputHeight}`
         + ` -> ${processedDocument.outputWidth}x${processedDocument.outputHeight}`,
       );
@@ -1863,6 +1956,11 @@ export default function ScannerView({
       type: sourceType,
     });
     const pointsForDocument = clonePoints(artifact.points);
+    const initialQuadAssessment = assessDocumentQuad(
+      pointsForDocument,
+      artifact.sourceWidth,
+      artifact.sourceHeight,
+    );
     const needsPostProcessing = Boolean(
       artifact.outputRotation !== 0
       || imageEnhancement
@@ -1886,6 +1984,18 @@ export default function ScannerView({
     });
 
     if (needsPostProcessing) {
+      if (!initialQuadAssessment.trustworthy) {
+        console.warn(
+          "[Scanner] Captured document points are not trustworthy; forcing source-image redetect before post-process.",
+          {
+            captureSource,
+            reason: initialQuadAssessment.reason,
+            points: pointsForDocument,
+            sourceWidth: artifact.sourceWidth,
+            sourceHeight: artifact.sourceHeight,
+          },
+        );
+      }
       queueCapturedDocumentProcessing(
         documentId,
         sourceFile,
@@ -1894,9 +2004,7 @@ export default function ScannerView({
         artifact.outputRotation,
         artifact.initialFrame ?? undefined,
         {
-          // Preserve preview-mapped corners; automatic HQ re-detect was overriding
-          // already-accurate points with worse source-image contours.
-          redetectPoints: false,
+          redetectPoints: !initialQuadAssessment.trustworthy,
         },
       );
     }
