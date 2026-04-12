@@ -147,6 +147,17 @@ struct OrtRuntimeSnapshot {
 }
 
 #[derive(Debug, Clone)]
+pub(crate) struct SharedScannerOrtContext {
+    pub preferred_provider: String,
+    pub runtime_ready: bool,
+    pub preferred_provider_ready: bool,
+    pub runtime_error: Option<String>,
+    pub context_error: Option<String>,
+    pub ort_build_info: Option<String>,
+    pub available_providers: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
 struct OrtSessionSnapshot {
     ready: bool,
     session_error: Option<String>,
@@ -495,7 +506,7 @@ pub fn probe_native_yolo_runtime_with_hints(
 }
 
 pub fn detect_document_native_yolo(
-    request: ScannerDetectDocumentRequest,
+    mut request: ScannerDetectDocumentRequest,
     resource_dir_hint: Option<PathBuf>,
     app_config_dir_hint: Option<PathBuf>,
 ) -> Result<ScannerDetectDocumentResponse, String> {
@@ -503,7 +514,7 @@ pub fn detect_document_native_yolo(
     let ResolvedDetectInput {
         prepared_image,
         input_transport: input_transport_kind,
-    } = resolve_detect_input_image(&request)?;
+    } = resolve_detect_input_image_owned(&mut request)?;
     let input_transport = input_transport_kind.to_string();
 
     let (input_width, input_height) = prepared_image
@@ -661,6 +672,7 @@ pub fn detect_document_native_yolo(
     })
 }
 
+#[allow(dead_code)] // Retained for unit tests; production code uses resolve_detect_input_image_owned.
 fn resolve_detect_input_image(
     request: &ScannerDetectDocumentRequest,
 ) -> Result<ResolvedDetectInput, String> {
@@ -698,6 +710,74 @@ fn resolve_detect_input_image(
     })
 }
 
+/// Consume `rgba_bytes` from the request to avoid a large clone.
+fn resolve_detect_input_image_owned(
+    request: &mut ScannerDetectDocumentRequest,
+) -> Result<ResolvedDetectInput, String> {
+    let (decoded_image, input_transport) = if request.use_latest_preview_frame {
+        let cached_preview_packet = get_latest_preview_frame_packet();
+        (
+            cached_preview_packet
+                .as_deref()
+                .map(build_dynamic_image_from_preview_frame_packet)
+                .transpose()?,
+            "latest-preview-cache",
+        )
+    } else if !request.rgba_bytes.is_empty() {
+        let width = request
+            .rgba_width
+            .ok_or_else(|| "RGBA native scanner request is missing rgbaWidth.".to_string())?;
+        let height = request
+            .rgba_height
+            .ok_or_else(|| "RGBA native scanner request is missing rgbaHeight.".to_string())?;
+
+        if width == 0 || height == 0 {
+            return Err("RGBA native scanner dimensions must be greater than zero.".to_string());
+        }
+
+        let expected_len = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|pixels| pixels.checked_mul(4))
+            .ok_or_else(|| "RGBA native scanner dimensions overflowed.".to_string())?;
+
+        if request.rgba_bytes.len() != expected_len {
+            return Err(format!(
+                "RGBA native scanner payload length mismatch: expected {expected_len} bytes for {width}x{height}, got {}.",
+                request.rgba_bytes.len()
+            ));
+        }
+
+        // Take ownership to avoid cloning the large pixel buffer.
+        let rgba_bytes = std::mem::take(&mut request.rgba_bytes);
+        let image = RgbaImage::from_raw(width, height, rgba_bytes).ok_or_else(|| {
+            "Failed to materialize RGBA source frame for native scanner inference.".to_string()
+        })?;
+        (Some(DynamicImage::ImageRgba8(image)), "rgba-ipc")
+    } else if !request.source_bytes.is_empty() {
+        let source_bytes = std::mem::take(&mut request.source_bytes);
+        (
+            Some(image::load_from_memory(&source_bytes).map_err(|error| {
+                format!("Failed to decode source image for native scanner inference: {error}")
+            })?),
+            "source-bytes",
+        )
+    } else {
+        (None, "none")
+    };
+
+    Ok(ResolvedDetectInput {
+        // Skip the max_width/max_height pre-shrink for the native YOLO path.
+        // The model function (`run_docaligner_fastvit_sa24`) will resize the
+        // image to the model's input_size (e.g. 256×256) in a single step.
+        // Applying the frontend's processing bounds here would create a wasteful
+        // double-resize chain (e.g. 640×360 → 320×180 → 256×256) that degrades
+        // the heatmap quality through accumulated interpolation blur.
+        prepared_image: decoded_image.map(|image| prepare_inference_image(image, None, None)),
+        input_transport,
+    })
+}
+
+#[allow(dead_code)] // Retained for resolve_detect_input_image (test path).
 fn build_dynamic_image_from_rgba_request(
     request: &ScannerDetectDocumentRequest,
 ) -> Result<DynamicImage, String> {
@@ -836,8 +916,10 @@ fn prepare_inference_image(
     let working_image = if working_width == original_width && working_height == original_height {
         image
     } else {
-        DynamicImage::ImageRgba8(image::imageops::resize(
-            &image.to_rgba8(),
+        // Resize in RGB to avoid unnecessary RGBA roundtrip — the downstream
+        // inference path (`run_docaligner_fastvit_sa24`) converts to RGB anyway.
+        DynamicImage::ImageRgb8(image::imageops::resize(
+            &image.to_rgb8(),
             working_width,
             working_height,
             FilterType::Triangle,
@@ -1344,6 +1426,35 @@ fn build_detection_runtime_context(
     })
 }
 
+pub(crate) fn ensure_shared_scanner_ort_context(
+    resource_dir_hint: Option<PathBuf>,
+    app_config_dir_hint: Option<PathBuf>,
+) -> SharedScannerOrtContext {
+    let context_result = resolve_detection_runtime_context(resource_dir_hint, app_config_dir_hint);
+    let resource_base_dir = context_result
+        .as_ref()
+        .ok()
+        .map(|context| context.resource_base_dir.clone());
+    let preferred_provider = context_result
+        .as_ref()
+        .ok()
+        .map(|context| context.preferred_provider.clone())
+        .unwrap_or_else(|| default_preferred_provider_for_current_platform().to_string());
+    let runtime_snapshot = probe_ort_runtime(resource_base_dir.as_deref());
+    let preferred_provider_ready =
+        is_provider_available(&preferred_provider, &runtime_snapshot.available_providers);
+
+    SharedScannerOrtContext {
+        preferred_provider,
+        runtime_ready: runtime_snapshot.ready,
+        preferred_provider_ready,
+        runtime_error: runtime_snapshot.runtime_error,
+        context_error: context_result.err(),
+        ort_build_info: runtime_snapshot.ort_build_info,
+        available_providers: runtime_snapshot.available_providers,
+    }
+}
+
 fn probe_ort_runtime(resource_base_dir: Option<&Path>) -> OrtRuntimeSnapshot {
     let Some(resource_base_dir) = resource_base_dir else {
         return OrtRuntimeSnapshot {
@@ -1474,9 +1585,9 @@ fn ensure_ort_session(
     let session_result = Session::builder()
         .map_err(|error| format!("Failed to create ORT session builder: {error}"))
         .and_then(|builder| {
-            let mut builder = configure_session_builder_for_current_platform(builder)?;
+            let mut builder = configure_scanner_session_builder_for_current_platform(builder)?;
             builder = builder
-                .with_execution_providers(build_execution_providers(preferred_provider))
+                .with_execution_providers(build_scanner_execution_providers(preferred_provider))
                 .map_err(|error| format!("Failed to configure execution providers: {error}"))?;
 
             builder
@@ -1503,7 +1614,7 @@ fn ensure_ort_session(
     }
 }
 
-fn configure_session_builder_for_current_platform(
+pub(crate) fn configure_scanner_session_builder_for_current_platform(
     builder: SessionBuilder,
 ) -> Result<SessionBuilder, String> {
     match std::env::consts::OS {
@@ -1569,22 +1680,35 @@ fn run_docaligner_fastvit_sa24(
     ))
     .map_err(|error| format!("Failed to build ORT input tensor: {error}"))?;
 
-    let mut state = runtime_state()
-        .lock()
-        .expect("ORT runtime state mutex should not be poisoned");
-    let session = state
-        .session
-        .as_mut()
-        .ok_or_else(|| "ORT session is not initialized for the selected model.".to_string())?;
-    let outputs = session
-        .run(ort::inputs![input_name => input_tensor])
-        .map_err(|error| format!("Failed to run ORT inference: {error}"))?;
-    let output_value = outputs.get(output_name).unwrap_or(&outputs[0]);
-    let (shape, heatmap) = output_value
-        .try_extract_tensor::<f32>()
-        .map_err(|error| format!("Failed to extract heatmap tensor: {error}"))?;
+    // Lock the runtime state, run inference, extract the output tensor data
+    // into owned buffers, and release the lock *before* running the expensive
+    // heatmap post-processing (BFS centroid etc.).
+    let (heatmap_data, heatmap_shape) = {
+        let mut state = runtime_state()
+            .lock()
+            .expect("ORT runtime state mutex should not be poisoned");
+        let session = state
+            .session
+            .as_mut()
+            .ok_or_else(|| "ORT session is not initialized for the selected model.".to_string())?;
+        let outputs = session
+            .run(ort::inputs![input_name => input_tensor])
+            .map_err(|error| format!("Failed to run ORT inference: {error}"))?;
+        let output_value = outputs.get(output_name).unwrap_or(&outputs[0]);
+        let (shape, tensor_view) = output_value
+            .try_extract_tensor::<f32>()
+            .map_err(|error| format!("Failed to extract heatmap tensor: {error}"))?;
+        // Copy tensor data into an owned Vec so we can drop the MutexGuard.
+        (tensor_view.to_vec(), shape.to_vec())
+        // MutexGuard is dropped here — lock is released before post-processing.
+    };
 
-    decode_docaligner_heatmap_output(heatmap, shape, original_width, original_height)
+    decode_docaligner_heatmap_output(
+        &heatmap_data,
+        &heatmap_shape,
+        original_width,
+        original_height,
+    )
 }
 
 fn build_docaligner_input(image: &RgbImage) -> Vec<f32> {
@@ -1799,7 +1923,7 @@ fn available_providers_for_current_platform() -> Vec<String> {
     providers
 }
 
-fn build_execution_providers(
+pub(crate) fn build_scanner_execution_providers(
     preferred_provider: &str,
 ) -> Vec<ort::execution_providers::ExecutionProviderDispatch> {
     let normalized = normalize_provider_name(preferred_provider);
@@ -1934,7 +2058,7 @@ mod tests {
 
     #[test]
     fn build_execution_providers_always_keeps_cpu_fallback() {
-        let providers = build_execution_providers("TensorRT");
+        let providers = build_scanner_execution_providers("TensorRT");
         assert!(!providers.is_empty());
     }
 

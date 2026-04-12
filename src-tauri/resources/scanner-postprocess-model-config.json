@@ -1,0 +1,23 @@
+{
+  "stage": "postprocess-native-ml-stage2",
+  "task": "document-dewarp-stage2",
+  "nativeResidualControlPoints": {
+    "id": "uvdoc-grid-v1",
+    "kind": "planned-primary",
+    "task": "document-grid-unwarping",
+    "modelPath": "models/uvdoc-best-model.onnx",
+    "inputName": "input",
+    "inputSize": [712, 488],
+    "inputTensorShape": [1, 3, 712, 488],
+    "outputNames": ["point_positions_2d", "point_positions_3d"],
+    "controlGridShape": [31, 45],
+    "outputGridShape": [45, 31],
+    "gridCoordinateMode": "absolute-normalized",
+    "warpImplementation": "native-bilinear-grid-sample-compatible"
+  },
+  "notes": [
+    "This stage-2 model is intended to run after perspective warp and before local flattening.",
+    "UVDoc emits absolute normalized 2D point positions on a coarse grid; interpolation and remap stay in native Rust/JS postprocess code.",
+    "A missing model file must never block the existing heuristic postprocess path."
+  ]
+}

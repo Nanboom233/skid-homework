@@ -2,6 +2,7 @@ mod adb_plugin;
 mod png_bridge;
 pub mod scanner_detect;
 pub mod scanner_postprocess;
+pub mod scanner_postprocess_model;
 mod stream_decoder;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -27,6 +28,7 @@ pub fn run() {
             scanner_detect::tauri_scanner_write_yolo_config,
             scanner_detect::tauri_scanner_detect_document,
             scanner_postprocess::tauri_scanner_postprocess_image,
+            scanner_postprocess::tauri_scanner_refine_document_corners,
             stream_decoder::tauri_scanner_start_stream,
             stream_decoder::tauri_scanner_stop_stream,
         ])
