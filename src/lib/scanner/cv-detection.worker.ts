@@ -124,6 +124,7 @@ const handleDetect = async (message: ScannerCvWorkerDetectRequest): Promise<void
     const options = buildDocumentContourDetectionOptions(message.width, message.height, {
       maxWidth: message.maxWidth,
       maxHeight: message.maxHeight,
+      isFinalCapture: message.isFinalCapture,
     });
     const points = detectDocumentContour(imageData, options);
 

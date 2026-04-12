@@ -6,7 +6,6 @@ import type {OrthogonalRotation} from "./image-data";
 import {refineDocumentQuadInImageData} from "./postprocess-corner-refinement";
 import {validateQuadGeometry} from "./document-quad";
 import {applyLocalSpineFlatteningToImageData} from "./postprocess-local-flattening";
-import {cropToPaperRegionInImageData} from "./postprocess-paper-crop";
 import type {
   ScannerPostProcessWorkerErrorResponse,
   ScannerPostProcessWorkerProcessRequest,
@@ -337,13 +336,20 @@ const handleProcess = async (message: ScannerPostProcessWorkerProcessRequest): P
     let perspectiveMs: number | null = null;
     let refineMs: number | null = null;
     let flattenMs: number | null = null;
-    let cropMs: number | null = null;
     let enhanceMs: number | null = null;
+    const modelMs: number | null = null;
+    const residualWarpMs: number | null = null;
     let rotateMs: number | null = null;
     let effectiveDocumentPoints = message.documentPoints;
     let refinementApplied = false;
     let localFlatteningApplied = false;
-    let paperCropApplied = false;
+    const postprocessBackend = "heuristic";
+    const modelId: string | null = null;
+    const controlGridShape: string | null = null;
+    const residualWarpApplied = false;
+    const residualWarpFallbackReason = message.postprocessBackend === "native-ml-v1"
+      ? "Worker fallback keeps the current heuristic stage-2 path; native residual-control-point inference is only attempted in Tauri."
+      : null;
 
     if (message.documentPoints && message.documentPoints.length === 4) {
       const refineStartedAt = performance.now();
@@ -362,8 +368,16 @@ const handleProcess = async (message: ScannerPostProcessWorkerProcessRequest): P
 
     if (effectiveDocumentPoints && effectiveDocumentPoints.length === 4) {
       const perspectiveStartedAt = performance.now();
-      processedImage = applyPerspectiveTransformToImageData(imageData, effectiveDocumentPoints);
+      processedImage = applyPerspectiveTransformToImageData(imageData, effectiveDocumentPoints, 0.01);
       perspectiveMs = performance.now() - perspectiveStartedAt;
+    }
+
+    if (message.spineFlattening && effectiveDocumentPoints && effectiveDocumentPoints.length === 4) {
+      const flattenStartedAt = performance.now();
+      const flattenResult = applyLocalSpineFlatteningToImageData(processedImage);
+      flattenMs = performance.now() - flattenStartedAt;
+      processedImage = flattenResult.imageData;
+      localFlatteningApplied = flattenResult.applied;
     }
 
     if (message.outputRotation !== 0) {
@@ -372,26 +386,11 @@ const handleProcess = async (message: ScannerPostProcessWorkerProcessRequest): P
       rotateMs = performance.now() - rotateStartedAt;
     }
 
-    if (effectiveDocumentPoints && effectiveDocumentPoints.length === 4) {
-      const flattenStartedAt = performance.now();
-      const flattenResult = applyLocalSpineFlatteningToImageData(processedImage);
-      flattenMs = performance.now() - flattenStartedAt;
-      processedImage = flattenResult.imageData;
-      localFlatteningApplied = flattenResult.applied;
-    }
-
-    if (effectiveDocumentPoints && effectiveDocumentPoints.length === 4 && !localFlatteningApplied) {
-      const cropStartedAt = performance.now();
-      const cropResult = cropToPaperRegionInImageData(processedImage);
-      cropMs = performance.now() - cropStartedAt;
-      processedImage = cropResult.imageData;
-      paperCropApplied = cropResult.applied;
-    }
-
     if (message.imageEnhancement) {
       const enhanceStartedAt = performance.now();
       processedImage = await enhanceDocumentImageData(processedImage, {
         preferSoftTone: localFlatteningApplied,
+        colorMode: message.colorMode,
       });
       enhanceMs = performance.now() - enhanceStartedAt;
     }
@@ -408,19 +407,24 @@ const handleProcess = async (message: ScannerPostProcessWorkerProcessRequest): P
       refineMs,
       perspectiveMs,
       flattenMs,
-      cropMs,
       enhanceMs,
+      modelMs,
+      residualWarpMs,
       rotateMs,
       encodeMs,
       inputWidth: imageData.width,
       inputHeight: imageData.height,
       outputWidth: processedImage.width,
       outputHeight: processedImage.height,
-      encodedMimeType: "image/png",
+      encodedMimeType: "image/jpeg",
+      postprocessBackend,
+      modelId,
+      controlGridShape,
       effectiveDocumentPoints,
       refinementApplied,
       localFlatteningApplied,
-      paperCropApplied,
+      residualWarpApplied,
+      residualWarpFallbackReason,
       encodedBytes,
     }, [encodedBytes]);
   } catch (error) {

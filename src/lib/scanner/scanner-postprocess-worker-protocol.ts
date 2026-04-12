@@ -1,5 +1,6 @@
 import type {Point} from "./document-detector";
 import type {OrthogonalRotation} from "./image-data";
+import type {ScannerPostProcessBackend} from "@/store/settings-store";
 
 export interface ScannerPostProcessWorkerInitRequest {
   type: "init";
@@ -16,6 +17,9 @@ export interface ScannerPostProcessWorkerProcessRequest {
   documentPoints: Point[] | null;
   outputRotation: OrthogonalRotation;
   imageEnhancement: boolean;
+  colorMode: string;
+  postprocessBackend: ScannerPostProcessBackend;
+  spineFlattening: boolean;
 }
 
 export type ScannerPostProcessWorkerRequest =
@@ -34,19 +38,24 @@ export interface ScannerPostProcessWorkerResultResponse {
   refineMs: number | null;
   perspectiveMs: number | null;
   flattenMs: number | null;
-  cropMs: number | null;
   enhanceMs: number | null;
+  modelMs: number | null;
+  residualWarpMs: number | null;
   rotateMs: number | null;
   encodeMs: number;
   inputWidth: number;
   inputHeight: number;
   outputWidth: number;
   outputHeight: number;
-  encodedMimeType: "image/png";
+  encodedMimeType: string;
+  postprocessBackend: ScannerPostProcessBackend;
+  modelId: string | null;
+  controlGridShape: string | null;
   effectiveDocumentPoints: Point[] | null;
   refinementApplied: boolean;
   localFlatteningApplied: boolean;
-  paperCropApplied: boolean;
+  residualWarpApplied: boolean;
+  residualWarpFallbackReason: string | null;
   encodedBytes: ArrayBuffer;
 }
 

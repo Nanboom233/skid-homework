@@ -12,6 +12,7 @@ export interface ScannerCvWorkerDetectRequest {
   height: number;
   maxWidth: number;
   maxHeight: number;
+  isFinalCapture?: boolean;
   pixels: ArrayBuffer;
 }
 

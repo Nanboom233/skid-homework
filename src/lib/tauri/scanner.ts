@@ -1,11 +1,12 @@
 import type {Point} from "@/lib/scanner/document-detector";
 import type {OrthogonalRotation} from "@/lib/scanner/image-data";
+import type {ScannerPostProcessBackend} from "@/store/settings-store";
 
 import {isTauri} from "./platform";
 
 type TauriRawChannelPayload = string | ArrayBuffer | Uint8Array | number[];
 
-const NATIVE_POST_PROCESS_TIMEOUT_MS = 20_000;
+const NATIVE_POST_PROCESS_TIMEOUT_MS = 120_000;
 const NATIVE_POST_PROCESS_PARTIAL_TIMEOUT_MS = 1_500;
 
 export interface TauriScannerPostProcessResult {
@@ -14,19 +15,24 @@ export interface TauriScannerPostProcessResult {
   refineMs: number | null;
   perspectiveMs: number | null;
   flattenMs: number | null;
-  cropMs: number | null;
   enhanceMs: number | null;
+  modelMs: number | null;
+  residualWarpMs: number | null;
   rotateMs: number | null;
   encodeMs: number;
   inputWidth: number;
   inputHeight: number;
   outputWidth: number;
   outputHeight: number;
-  encodedMimeType: "image/png";
+  encodedMimeType: string;
+  postprocessBackend: ScannerPostProcessBackend;
+  modelId: string | null;
+  controlGridShape: string | null;
   effectiveDocumentPoints: Point[] | null;
   refinementApplied: boolean;
   localFlatteningApplied: boolean;
-  paperCropApplied: boolean;
+  residualWarpApplied: boolean;
+  residualWarpFallbackReason: string | null;
   encodedBytes: ArrayBuffer;
 }
 
@@ -72,6 +78,11 @@ export const processTauriScannerPostProcessSourceFile = async (
     documentPoints: Point[] | null;
     outputRotation: OrthogonalRotation;
     imageEnhancement: boolean;
+    colorMode?: "auto" | "color" | "grayscale" | "binary";
+    postprocessBackend?: ScannerPostProcessBackend;
+    spineFlattening?: boolean;
+    perspectiveTransform?: boolean;
+    affineRemoval?: boolean;
   },
 ): Promise<TauriScannerPostProcessResult> => {
   if (!isTauri()) {
@@ -159,6 +170,11 @@ export const processTauriScannerPostProcessSourceFile = async (
           documentPoints: options.documentPoints,
           outputRotation: options.outputRotation,
           imageEnhancement: options.imageEnhancement,
+          colorMode: options.colorMode ?? "auto",
+          postprocessBackend: options.postprocessBackend ?? "heuristic",
+          spineFlattening: options.spineFlattening ?? true,
+          perspectiveTransform: options.perspectiveTransform ?? true,
+          affineRemoval: options.affineRemoval ?? true,
         },
         payloadChannel,
       },
@@ -173,5 +189,26 @@ export const processTauriScannerPostProcessSourceFile = async (
       .catch((error) => {
         settleReject(error);
       });
+  });
+};
+
+/**
+ * Calls the native corner refinement command.
+ * Takes the source image + coarse corner points and returns optimized points.
+ */
+export const refineDocumentCorners = async (
+  sourceFile: Blob,
+  documentPoints: Point[],
+): Promise<Point[]> => {
+  if (!isTauri()) {
+    throw new Error("Native corner refinement is only available in Tauri desktop builds.");
+  }
+  const sourceBytes = new Uint8Array(await sourceFile.arrayBuffer());
+  const {invoke} = await import("@tauri-apps/api/core");
+  return invoke<Point[]>("tauri_scanner_refine_document_corners", {
+    request: {
+      sourceBytes,
+      documentPoints,
+    },
   });
 };

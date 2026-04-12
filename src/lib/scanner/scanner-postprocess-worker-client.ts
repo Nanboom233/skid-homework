@@ -5,6 +5,7 @@ import type {
 } from "./scanner-postprocess-worker-protocol";
 import type {Point} from "./document-detector";
 import type {OrthogonalRotation} from "./image-data";
+import type {ScannerPostProcessBackend} from "@/store/settings-store";
 
 const WORKER_INIT_TIMEOUT_MS = 12_000;
 
@@ -12,6 +13,9 @@ interface ProcessRequestOptions {
   documentPoints: Point[] | null;
   outputRotation: OrthogonalRotation;
   imageEnhancement: boolean;
+  colorMode: string;
+  postprocessBackend: ScannerPostProcessBackend;
+  spineFlattening: boolean;
 }
 
 export interface ScannerPostProcessWorkerResult {
@@ -20,19 +24,24 @@ export interface ScannerPostProcessWorkerResult {
   refineMs: number | null;
   perspectiveMs: number | null;
   flattenMs: number | null;
-  cropMs: number | null;
   enhanceMs: number | null;
+  modelMs: number | null;
+  residualWarpMs: number | null;
   rotateMs: number | null;
   encodeMs: number;
   inputWidth: number;
   inputHeight: number;
   outputWidth: number;
   outputHeight: number;
-  encodedMimeType: "image/png";
+  encodedMimeType: string;
+  postprocessBackend: ScannerPostProcessBackend;
+  modelId: string | null;
+  controlGridShape: string | null;
   effectiveDocumentPoints: Point[] | null;
   refinementApplied: boolean;
   localFlatteningApplied: boolean;
-  paperCropApplied: boolean;
+  residualWarpApplied: boolean;
+  residualWarpFallbackReason: string | null;
   encodedBytes: ArrayBuffer;
 }
 
@@ -147,6 +156,9 @@ export class ScannerPostProcessWorkerClient {
           documentPoints: options.documentPoints,
           outputRotation: options.outputRotation,
           imageEnhancement: options.imageEnhancement,
+          colorMode: options.colorMode,
+          postprocessBackend: options.postprocessBackend,
+          spineFlattening: options.spineFlattening,
         }, [pixels.buffer]);
       } catch (error) {
         this.pendingRequests.delete(requestId);
@@ -178,6 +190,9 @@ export class ScannerPostProcessWorkerClient {
           documentPoints: options.documentPoints,
           outputRotation: options.outputRotation,
           imageEnhancement: options.imageEnhancement,
+          colorMode: options.colorMode,
+          postprocessBackend: options.postprocessBackend,
+          spineFlattening: options.spineFlattening,
         });
       } catch (error) {
         this.pendingRequests.delete(requestId);
@@ -222,8 +237,9 @@ export class ScannerPostProcessWorkerClient {
           refineMs: message.refineMs,
           perspectiveMs: message.perspectiveMs,
           flattenMs: message.flattenMs,
-          cropMs: message.cropMs,
           enhanceMs: message.enhanceMs,
+          modelMs: message.modelMs,
+          residualWarpMs: message.residualWarpMs,
           rotateMs: message.rotateMs,
           encodeMs: message.encodeMs,
           inputWidth: message.inputWidth,
@@ -231,10 +247,14 @@ export class ScannerPostProcessWorkerClient {
           outputWidth: message.outputWidth,
           outputHeight: message.outputHeight,
           encodedMimeType: message.encodedMimeType,
+          postprocessBackend: message.postprocessBackend,
+          modelId: message.modelId,
+          controlGridShape: message.controlGridShape,
           effectiveDocumentPoints: message.effectiveDocumentPoints,
           refinementApplied: message.refinementApplied,
           localFlatteningApplied: message.localFlatteningApplied,
-          paperCropApplied: message.paperCropApplied,
+          residualWarpApplied: message.residualWarpApplied,
+          residualWarpFallbackReason: message.residualWarpFallbackReason,
           encodedBytes: message.encodedBytes,
         });
         return;

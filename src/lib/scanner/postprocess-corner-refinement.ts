@@ -158,7 +158,9 @@ const computeNormalEdgeStrength = (
 
   const outside = (outsideNear + outsideFar) * 0.5;
   const inside = (insideNear + insideFar) * 0.5;
-  return Math.max(0, inside - outside);
+  // Use absolute difference so that both light-on-dark and dark-on-light
+  // document edges produce a positive edge strength signal.
+  return Math.abs(inside - outside);
 };
 
 const fitLineToPoints = (points: Point[]): LineFit | null => {

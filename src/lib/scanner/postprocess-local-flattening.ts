@@ -1,354 +1,294 @@
-const FLATTEN_DETECTION_BAND_RATIO = 0.22;
-const FLATTEN_APPLY_BAND_RATIO = 0.22;
-const FLATTEN_MIN_BAND_PX = 24;
-const FLATTEN_MAX_BAND_RATIO = 0.45;
-const FLATTEN_MIN_VALID_ROWS_RATIO = 0.18;
-const FLATTEN_MIN_MEAN_SHIFT_PX = 3.5;
-const FLATTEN_MIN_MAX_SHIFT_PX = 7;
-const FLATTEN_MAX_SHIFT_PX = 14;
-const FLATTEN_SMOOTHING_RADIUS = 4;
-const FLATTEN_EDGE_ANCHOR_PX = 12;
-const FLATTEN_MIN_EDGE_ANCHOR_RATIO = 0.2;
-const FLATTEN_DOMINANT_EDGE_ANCHOR_RATIO = 1.35;
-const FLATTEN_DOMINANT_SCORE_RATIO = 1.15;
+/**
+ * Page flattening v9: Expanded Geometric Mesh & Secondary Crop
+ *
+ * Physical model: Phase 1 provides an expanded rectangular canvas containing the
+ * complete physical page (margins are pure black).
+ * By directly extracting the continuous top and bottom boundary curves of this page,
+ * we inherently capture both horizontal paper curl foreshortening and
+ * vertical perspective pitch sag.
+ *
+ * We map these curves flat to produce the final cropped, straight output.
+ */
 
-type FlattenSide = "left" | "right";
-
-interface FlattenCandidate {
-  side: FlattenSide;
-  rowShifts: number[];
-  score: number;
-  maxShift: number;
-  edgeAnchorRatio: number;
-}
+const SAT_REJECT = 0.25;
+const COLOR_SAT_MAX = 0.15;
+const COLOR_VAL_MIN = 0.6;
+const COLOR_SPREAD_MAX = 50;
 
 export interface LocalFlatteningResult {
   imageData: ImageData;
   applied: boolean;
 }
 
-const clamp = (value: number, min: number, max: number): number => {
-  return Math.min(max, Math.max(min, value));
+const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+
+const toGrayscale = (img: ImageData): Float32Array => {
+  const out = new Float32Array(img.width * img.height);
+  for (let i = 0; i < out.length; i++) {
+    const o = i * 4;
+    out[i] = img.data[o] * 0.299 + img.data[o + 1] * 0.587 + img.data[o + 2] * 0.114;
+  }
+  return out;
 };
 
-const toGrayscale = (imageData: ImageData): Float32Array => {
-  const output = new Float32Array(imageData.width * imageData.height);
-  for (let index = 0; index < output.length; index += 1) {
-    const offset = index * 4;
-    output[index] = (imageData.data[offset] * 0.299)
-      + (imageData.data[offset + 1] * 0.587)
-      + (imageData.data[offset + 2] * 0.114);
+const computeOtsuThreshold = (gray: Float32Array): number => {
+  const hist = new Int32Array(256);
+  for (let i = 0; i < gray.length; i++) {
+    hist[clamp(Math.round(gray[i]), 0, 255)]++;
   }
+  const total = gray.length;
+  let sumAll = 0;
+  for (let i = 0; i < 256; i++) sumAll += i * hist[i];
 
-  return output;
+  let wB = 0, sumB = 0, maxVar = 0, threshold = 128;
+  for (let t = 0; t < 256; t++) {
+    wB += hist[t];
+    if (wB === 0) continue;
+    const wF = total - wB;
+    if (wF === 0) break;
+    sumB += t * hist[t];
+    const mB = sumB / wB;
+    const mF = (sumAll - sumB) / wF;
+    const v = wB * wF * (mB - mF) * (mB - mF);
+    if (v > maxVar) { maxVar = v; threshold = t; }
+  }
+  return threshold;
 };
 
-const computeDarknessWindow = (
-  gray: Float32Array,
-  width: number,
-  height: number,
-  x: number,
-  y: number,
-): number => {
-  let darkness = 0;
-  let samples = 0;
-
-  for (let sampleY = Math.max(0, y - 1); sampleY <= Math.min(height - 1, y + 1); sampleY += 1) {
-    for (let sampleX = Math.max(0, x - 1); sampleX <= Math.min(width - 1, x + 1); sampleX += 1) {
-      darkness += 255 - gray[(sampleY * width) + sampleX];
-      samples += 1;
-    }
+const buildPaperMask = (
+  gray: Float32Array, img: ImageData, threshold: number,
+): Uint8Array => {
+  const n = img.width * img.height;
+  const mask = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    const o = i * 4;
+    const r = img.data[o], g = img.data[o + 1], b = img.data[o + 2];
+    const maxC = Math.max(r, g, b);
+    const minC = Math.min(r, g, b);
+    const sat = maxC > 0 ? (maxC - minC) / maxC : 0;
+    const grayOk = gray[i] > threshold && sat < SAT_REJECT;
+    const colorOk = (maxC / 255) > COLOR_VAL_MIN
+      && sat < COLOR_SAT_MAX
+      && (maxC - minC) < COLOR_SPREAD_MAX;
+    mask[i] = (grayOk || colorOk) ? 1 : 0;
   }
-
-  return samples === 0 ? 0 : darkness / samples;
+  return mask;
 };
 
-const detectEdgeOffsetForRow = (
-  gray: Float32Array,
-  width: number,
-  height: number,
-  row: number,
-  side: FlattenSide,
-  bandWidth: number,
-): number | null => {
-  let rowDarkness = 0;
-  for (let x = 0; x < width; x += 1) {
-    rowDarkness += 255 - gray[(row * width) + x];
-  }
-  const threshold = Math.max(24, (rowDarkness / width) * 2.4);
+const gaussianSmooth1D = (arr: (number | null)[], sigma: number, fallback: number): Float32Array => {
+  const valid = arr.map(v => v === null ? fallback : v);
 
-  if (side === "left") {
-    for (let x = 0; x < bandWidth; x += 1) {
-      if (computeDarknessWindow(gray, width, height, x, row) >= threshold) {
-        return x;
-      }
-    }
-    return null;
+  // Impute missing edges from nearest valid
+  let last = fallback;
+  for (let i = 0; i < valid.length; i++) {
+    if (arr[i] !== null) { last = arr[i]!; }
+    valid[i] = last;
+  }
+  last = fallback;
+  for (let i = valid.length - 1; i >= 0; i--) {
+    if (arr[i] !== null) { last = arr[i]!; }
+    valid[i] = last;
   }
 
-  for (let offset = 0; offset < bandWidth; offset += 1) {
-    const x = width - 1 - offset;
-    if (computeDarknessWindow(gray, width, height, x, row) >= threshold) {
-      return offset;
-    }
+  const out = new Float32Array(valid.length);
+  const radius = Math.ceil(sigma * 3);
+  const kernel: number[] = [];
+  let kSum = 0;
+  for (let k = -radius; k <= radius; k++) {
+    const v = Math.exp(-0.5 * (k / sigma) * (k / sigma));
+    kernel.push(v);
+    kSum += v;
   }
-
-  return null;
-};
-
-const percentile = (values: number[], ratio: number): number => {
-  if (values.length === 0) {
-    return 0;
-  }
-
-  const sorted = [...values].sort((first, second) => first - second);
-  const index = clamp(Math.floor((sorted.length - 1) * ratio), 0, sorted.length - 1);
-  return sorted[index];
-};
-
-const fillMissingOffsets = (values: Array<number | null>, fallback: number): number[] => {
-  const result = values.map((value) => value ?? Number.NaN);
-  let lastKnownIndex = -1;
-
-  for (let index = 0; index < result.length; index += 1) {
-    if (!Number.isNaN(result[index])) {
-      if (lastKnownIndex < 0) {
-        for (let fillIndex = 0; fillIndex < index; fillIndex += 1) {
-          result[fillIndex] = result[index];
-        }
-      } else if (index - lastKnownIndex > 1) {
-        const startValue = result[lastKnownIndex];
-        const endValue = result[index];
-        const gap = index - lastKnownIndex;
-        for (let fillIndex = 1; fillIndex < gap; fillIndex += 1) {
-          const progress = fillIndex / gap;
-          result[lastKnownIndex + fillIndex] = startValue + ((endValue - startValue) * progress);
-        }
-      }
-      lastKnownIndex = index;
-    }
-  }
-
-  if (lastKnownIndex >= 0) {
-    for (let index = lastKnownIndex + 1; index < result.length; index += 1) {
-      result[index] = result[lastKnownIndex];
-    }
-  }
-
-  return result.map((value) => (Number.isNaN(value) ? fallback : value));
-};
-
-const smoothValues = (values: number[], radius: number): number[] => {
-  return values.map((_, index) => {
+  for (let i = 0; i < kernel.length; i++) kernel[i] /= kSum;
+  for (let i = 0; i < valid.length; i++) {
     let sum = 0;
-    let count = 0;
-    for (
-      let sampleIndex = Math.max(0, index - radius);
-      sampleIndex <= Math.min(values.length - 1, index + radius);
-      sampleIndex += 1
-    ) {
-      sum += values[sampleIndex];
-      count += 1;
+    for (let k = -radius; k <= radius; k++) {
+      sum += valid[clamp(i + k, 0, valid.length - 1)] * kernel[k + radius];
     }
-
-    return count === 0 ? 0 : sum / count;
-  });
+    out[i] = sum;
+  }
+  return out;
 };
 
-const buildFlattenCandidate = (
-  gray: Float32Array,
-  width: number,
-  height: number,
-  side: FlattenSide,
-  bandWidth: number,
-): FlattenCandidate | null => {
-  const offsets = Array.from({length: height}, (_, row) => {
-    return detectEdgeOffsetForRow(gray, width, height, row, side, bandWidth);
-  });
-  const validOffsets = offsets.filter((value): value is number => value !== null);
-  if (validOffsets.length < Math.max(6, Math.floor(height * FLATTEN_MIN_VALID_ROWS_RATIO))) {
-    return null;
-  }
-
-  const baseline = percentile(validOffsets, 0.15);
-  const edgeAnchorRatio = validOffsets.filter((value) => value <= FLATTEN_EDGE_ANCHOR_PX).length
-    / validOffsets.length;
-  if (edgeAnchorRatio < FLATTEN_MIN_EDGE_ANCHOR_RATIO) {
-    return null;
-  }
-  const rawShifts = offsets.map((value) => {
-    return value === null
-      ? null
-      : clamp(value - baseline, 0, FLATTEN_MAX_SHIFT_PX);
-  });
-  const filledShifts = fillMissingOffsets(rawShifts, 0);
-  const smoothedShifts = smoothValues(filledShifts, FLATTEN_SMOOTHING_RADIUS);
-  const positiveShifts = smoothedShifts.filter((value) => value > 0.5);
-  if (positiveShifts.length === 0) {
-    return null;
-  }
-
-  const meanShift = positiveShifts.reduce((sum, value) => sum + value, 0) / positiveShifts.length;
-  const maxShift = Math.max(...positiveShifts);
-  if (meanShift < FLATTEN_MIN_MEAN_SHIFT_PX || maxShift < FLATTEN_MIN_MAX_SHIFT_PX) {
-    return null;
-  }
-
-  const coverage = positiveShifts.length / smoothedShifts.length;
-  return {
-    side,
-    rowShifts: smoothedShifts,
-    maxShift,
-    score: meanShift * (1 + coverage),
-    edgeAnchorRatio,
-  };
-};
-
-const selectFlattenCandidate = (candidates: FlattenCandidate[]): FlattenCandidate | null => {
-  if (candidates.length === 0) {
-    return null;
-  }
-
-  const sorted = [...candidates].sort((first, second) => {
-    if (second.edgeAnchorRatio !== first.edgeAnchorRatio) {
-      return second.edgeAnchorRatio - first.edgeAnchorRatio;
-    }
-    if (second.score !== first.score) {
-      return second.score - first.score;
-    }
-    return second.maxShift - first.maxShift;
-  });
-
-  const selected = sorted[0];
-  if (selected.maxShift < FLATTEN_MIN_MAX_SHIFT_PX) {
-    return null;
-  }
-
-  const runnerUp = sorted[1];
-  if (runnerUp) {
-    const edgeAnchorDominant = selected.edgeAnchorRatio
-      >= (runnerUp.edgeAnchorRatio * FLATTEN_DOMINANT_EDGE_ANCHOR_RATIO);
-    const scoreDominant = selected.score >= (runnerUp.score * FLATTEN_DOMINANT_SCORE_RATIO);
-    if (!edgeAnchorDominant && !scoreDominant) {
-      return null;
-    }
-  }
-
-  return selected;
-};
-
-const sampleRgbaBilinear = (
-  data: Uint8ClampedArray,
-  width: number,
-  height: number,
-  x: number,
-  y: number,
+const sampleBilinear = (
+  data: Uint8ClampedArray, w: number, h: number, x: number, y: number,
 ): [number, number, number, number] => {
-  const clampedX = clamp(x, 0, Math.max(0, width - 1));
-  const clampedY = clamp(y, 0, Math.max(0, height - 1));
-  const x0 = Math.floor(clampedX);
-  const y0 = Math.floor(clampedY);
-  const x1 = Math.min(width - 1, x0 + 1);
-  const y1 = Math.min(height - 1, y0 + 1);
-  const tx = clampedX - x0;
-  const ty = clampedY - y0;
+  const cx = clamp(x, 0, w - 1), cy = clamp(y, 0, h - 1);
+  const x0 = Math.floor(cx), y0 = Math.floor(cy);
+  const x1 = Math.min(w - 1, x0 + 1), y1 = Math.min(h - 1, y0 + 1);
+  const tx = cx - x0, ty = cy - y0;
 
-  const readPixel = (pixelX: number, pixelY: number): [number, number, number, number] => {
-    const offset = ((pixelY * width) + pixelX) * 4;
-    return [
-      data[offset],
-      data[offset + 1],
-      data[offset + 2],
-      data[offset + 3],
-    ];
-  };
+  const oTL = (y0 * w + x0) * 4;
+  const tlR = data[oTL], tlG = data[oTL + 1], tlB = data[oTL + 2], tlA = data[oTL + 3];
 
-  const topLeft = readPixel(x0, y0);
-  const topRight = readPixel(x1, y0);
-  const bottomLeft = readPixel(x0, y1);
-  const bottomRight = readPixel(x1, y1);
-  const output: [number, number, number, number] = [0, 0, 0, 0];
+  const oTR = (y0 * w + x1) * 4;
+  const trR = data[oTR], trG = data[oTR + 1], trB = data[oTR + 2], trA = data[oTR + 3];
 
-  for (let channel = 0; channel < 4; channel += 1) {
-    const top = topLeft[channel] + ((topRight[channel] - topLeft[channel]) * tx);
-    const bottom = bottomLeft[channel] + ((bottomRight[channel] - bottomLeft[channel]) * tx);
-    output[channel] = top + ((bottom - top) * ty);
-  }
+  const oBL = (y1 * w + x0) * 4;
+  const blR = data[oBL], blG = data[oBL + 1], blB = data[oBL + 2], blA = data[oBL + 3];
 
-  return output;
-};
+  const oBR = (y1 * w + x1) * 4;
+  const brR = data[oBR], brG = data[oBR + 1], brB = data[oBR + 2], brA = data[oBR + 3];
 
-const applyWarp = (
-  imageData: ImageData,
-  side: FlattenSide,
-  rowShifts: number[],
-): ImageData => {
-  const applyBandWidth = clamp(
-    Math.round(imageData.width * FLATTEN_APPLY_BAND_RATIO),
-    Math.max(FLATTEN_MIN_BAND_PX, Math.floor(imageData.width * 0.12)),
-    Math.max(FLATTEN_MIN_BAND_PX, Math.floor(imageData.width * FLATTEN_MAX_BAND_RATIO)),
-  );
-  const output = new Uint8ClampedArray(imageData.data.length);
+  const tR = tlR + (trR - tlR) * tx;
+  const bR = blR + (brR - blR) * tx;
+  const r = tR + (bR - tR) * ty;
 
-  for (let y = 0; y < imageData.height; y += 1) {
-    const shift = rowShifts[y] ?? 0;
-    for (let x = 0; x < imageData.width; x += 1) {
-      const distanceIntoBand = side === "left"
-        ? x
-        : (imageData.width - 1) - x;
-      const weight = clamp(1 - (distanceIntoBand / applyBandWidth), 0, 1);
-      const easedWeight = weight * weight;
-      const sourceX = side === "left"
-        ? x + (shift * easedWeight)
-        : x - (shift * easedWeight);
-      const [red, green, blue, alpha] = sampleRgbaBilinear(
-        imageData.data,
-        imageData.width,
-        imageData.height,
-        sourceX,
-        y,
-      );
-      const offset = ((y * imageData.width) + x) * 4;
-      output[offset] = red;
-      output[offset + 1] = green;
-      output[offset + 2] = blue;
-      output[offset + 3] = alpha;
-    }
-  }
+  const tG = tlG + (trG - tlG) * tx;
+  const bG = blG + (brG - blG) * tx;
+  const g = tG + (bG - tG) * ty;
 
-  return new ImageData(output, imageData.width, imageData.height);
+  const tB = tlB + (trB - tlB) * tx;
+  const bB = blB + (brB - blB) * tx;
+  const b = tB + (bB - tB) * ty;
+
+  const tA = tlA + (trA - tlA) * tx;
+  const bA = blA + (brA - blA) * tx;
+  const a = tA + (bA - tA) * ty;
+
+  return [Math.round(r), Math.round(g), Math.round(b), Math.round(a)];
 };
 
 export const applyLocalSpineFlatteningToImageData = (
-  imageData: ImageData,
+  imageData: ImageData
 ): LocalFlatteningResult => {
-  if (imageData.width < 48 || imageData.height < 48) {
-    return {
-      imageData,
-      applied: false,
-    };
+  const { width, height } = imageData;
+  if (width < 48 || height < 48) return { imageData, applied: false };
+
+  // 1. Threshold & Build Mask
+  const gray = toGrayscale(imageData);
+  const threshold = computeOtsuThreshold(gray);
+  const mask = buildPaperMask(gray, imageData, threshold);
+
+  // 2. Locate the precise horizontal boundaries of the padded page
+  let paperMinX = -1, paperMaxX = -1;
+  const colThreshold = Math.floor(height * 0.10);
+
+  for (let x = 0; x < width; x++) {
+    let colSum = 0;
+    for (let y = 0; y < height; y++) { if (mask[y * width + x]) colSum++; }
+    if (colSum > colThreshold) { paperMinX = x; break; }
+  }
+  for (let x = width - 1; x >= 0; x--) {
+    let colSum = 0;
+    for (let y = 0; y < height; y++) { if (mask[y * width + x]) colSum++; }
+    if (colSum > colThreshold) { paperMaxX = x; break; }
   }
 
-  const gray = toGrayscale(imageData);
-  const bandWidth = clamp(
-    Math.round(imageData.width * FLATTEN_DETECTION_BAND_RATIO),
-    FLATTEN_MIN_BAND_PX,
-    Math.max(FLATTEN_MIN_BAND_PX, Math.floor(imageData.width * 0.33)),
-  );
-  const candidates = [
-    buildFlattenCandidate(gray, imageData.width, imageData.height, "left", bandWidth),
-    buildFlattenCandidate(gray, imageData.width, imageData.height, "right", bandWidth),
-  ].filter((candidate): candidate is FlattenCandidate => candidate !== null);
-  const selected = selectFlattenCandidate(candidates);
-  if (!selected) {
-    return {
-      imageData,
-      applied: false,
-    };
+  // Margin sanity check
+  if (paperMinX < 0 || paperMaxX < 0 || paperMaxX - paperMinX < 20) {
+    return { imageData, applied: false };
+  }
+
+  // Add a tiny inner margin to avoid tracking the messy physical tear/noise edge perfectly
+  const innerPad = 5;
+  const safeMinX = clamp(paperMinX + innerPad, 0, width - 1);
+  const safeMaxX = clamp(paperMaxX - innerPad, safeMinX, width - 1);
+  const paperW = safeMaxX - safeMinX + 1;
+
+  // 3. Trace Top & Bottom physical boundaries natively
+  const rawTop: (number | null)[] = new Array(paperW).fill(null);
+  const rawBottom: (number | null)[] = new Array(paperW).fill(null);
+  const midY = Math.floor(height / 2);
+
+  for (let i = 0; i < paperW; i++) {
+    const x = safeMinX + i;
+    for (let y = 0; y < midY; y++) {
+      if (mask[y * width + x]) { rawTop[i] = y; break; }
+    }
+    for (let y = height - 1; y >= midY; y--) {
+      if (mask[y * width + x]) { rawBottom[i] = y; break; }
+    }
+  }
+
+  // 4. Extract smoothed geometric curves
+  // Book curves are continuous; heavy Gaussian rejects text/thumbs noise
+  const SMOOTH_SIGMA = Math.max(15, Math.floor(paperW * 0.05));
+  const topCurve = gaussianSmooth1D(rawTop, SMOOTH_SIGMA, midY / 2);
+  const bottomCurve = gaussianSmooth1D(rawBottom, SMOOTH_SIGMA, height - midY / 2);
+
+  // 5. Measure physical foreshortening H(x) & base projection
+  const H = new Float32Array(paperW);
+  for (let i = 0; i < paperW; i++) {
+    H[i] = Math.max(1, bottomCurve[i] - topCurve[i]);
+  }
+
+  const sortedH = Array.from(H).sort((a, b) => a - b);
+  const hFlat = sortedH[Math.floor(paperW * 0.90)]; // 90th percentile is the un-curled flat dimension
+  const minH = sortedH[0];
+
+  // If variation is < 4%, the image is already flat.
+  if (minH > hFlat * 0.96) {
+    return { imageData, applied: false };
+  }
+
+  // 6. Compute Unrolled Width using stretch integral
+  const stretch = new Float32Array(paperW);
+  let totalOutputWidth = 0;
+  for (let i = 0; i < paperW; i++) {
+    const s = Math.max(1.0, hFlat / Math.max(1, H[i]));
+    stretch[i] = Math.min(s, 2.5); // restrict extreme stretching
+    totalOutputWidth += stretch[i];
+  }
+
+  const outW = Math.round(totalOutputWidth);
+  const outH = Math.round(hFlat);
+
+  if (outW <= 0 || outH <= 0 || outW > width * 3 || outH > height * 3) {
+    return { imageData, applied: false };
+  }
+
+  // Integral Mapping: Destination Flat X -> Source Curled X
+  const dstXtoSrcX = new Float32Array(outW);
+  let currentAccum = 0;
+  let srcInt = 0;
+  for (let dstX = 0; dstX < outW; dstX++) {
+    while (srcInt < paperW - 1 && currentAccum + stretch[srcInt] < dstX) {
+      currentAccum += stretch[srcInt];
+      srcInt++;
+    }
+    const fractional = srcInt < paperW - 1 ? (dstX - currentAccum) / stretch[srcInt] : 0;
+    dstXtoSrcX[dstX] = Math.max(0, Math.min(paperW - 1, srcInt + fractional));
+  }
+
+  // 7. Render flat secondary crop
+  const outData = new Uint8ClampedArray(outW * outH * 4);
+  const srcPixels = imageData.data;
+
+  for (let dx = 0; dx < outW; dx++) {
+    const fx = dstXtoSrcX[dx];
+    const ix = Math.floor(fx);
+    const tx = fx - ix;
+    const nx = Math.min(paperW - 1, ix + 1);
+
+    // Linearly interpolate exactly on the continuous curve
+    const t0 = topCurve[ix]; const t1 = topCurve[nx];
+    const topY = t0 + (t1 - t0) * tx;
+
+    const b0 = bottomCurve[ix]; const b1 = bottomCurve[nx];
+    const botY = b0 + (b1 - b0) * tx;
+
+    const currentH = botY - topY;
+    const sx = safeMinX + fx;
+
+    for (let dy = 0; dy < outH; dy++) {
+       // Inverse perspective mapping:
+       // linearly interpolating between exactly topCurve and bottomCurve
+       // completely removes orthographic pitch errors.
+       const yRatio = dy / (outH - 1);
+       const sy = topY + yRatio * currentH;
+
+       const pixel = sampleBilinear(srcPixels, width, height, sx, sy);
+       const o = (dy * outW + dx) * 4;
+       outData[o] = pixel[0];
+       outData[o+1] = pixel[1];
+       outData[o+2] = pixel[2];
+       outData[o+3] = pixel[3];
+    }
   }
 
   return {
-    imageData: applyWarp(imageData, selected.side, selected.rowShifts),
-    applied: true,
+    imageData: new ImageData(outData, outW, outH),
+    applied: true
   };
 };

@@ -11,6 +11,7 @@ interface DetectionRequestOptions {
   frameVersion: number;
   maxWidth: number;
   maxHeight: number;
+  isFinalCapture?: boolean;
 }
 
 export interface ScannerCvWorkerDetectionResult {
@@ -128,6 +129,7 @@ export class ScannerCvWorkerClient {
           height: frame.height,
           maxWidth: options.maxWidth,
           maxHeight: options.maxHeight,
+          isFinalCapture: options.isFinalCapture,
           pixels: pixels.buffer,
         }, [pixels.buffer]);
       } catch (error) {

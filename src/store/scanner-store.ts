@@ -1,7 +1,11 @@
 import {create} from "zustand";
 import type {FrameSource, Point, ScannerConfig} from "@/lib/scanner";
 import type {OrthogonalRotation} from "@/lib/scanner/image-data";
-import type {ScannerDetectionBackend} from "@/store/settings-store";
+import type {
+  ScannerDetectionBackend,
+  ScannerPostProcessBackend,
+} from "@/store/settings-store";
+import type {PostProcessOptions} from "@/components/scanner/ScannerCapturedDocumentEditor";
 
 /**
  * Scanner state management for the ADB camera document scanner.
@@ -149,12 +153,28 @@ export interface ScannerCaptureDebugState {
   postProcessEncodeMs: number | null;
   /** Total elapsed time for the latest post-processing pass. */
   postProcessTotalMs: number | null;
+  /** Backend that produced the latest post-process result. */
+  postProcessBackend: ScannerPostProcessBackend;
+  /** Model id used by the latest post-process pass, when applicable. */
+  postProcessModelId: string | null;
+  /** Time spent inside the native residual-control-point model, when applicable. */
+  postProcessModelMs: number | null;
+  /** Time spent applying residual warp after model inference. */
+  postProcessResidualWarpMs: number | null;
+  /** Time spent applying local spine flattening. */
+  postProcessFlattenMs: number | null;
   /** Whether the latest pass attempted a source-image redetect. */
   postProcessUsedRedetect: boolean;
   /** Whether the latest pass applied perspective crop. */
   postProcessUsedPerspective: boolean;
   /** Whether the latest pass applied enhancement. */
   postProcessUsedEnhancement: boolean;
+  /** Whether the latest pass applied the learned residual warp. */
+  postProcessUsedResidualWarp: boolean;
+  /** Latest residual-warp fallback reason, if the ML branch was requested but skipped. */
+  postProcessFallbackReason: string | null;
+  /** Latest residual control-grid shape, when surfaced by the native path. */
+  postProcessControlGridShape: string | null;
   /** Input width of the latest post-process pass. */
   postProcessInputWidth: number | null;
   /** Input height of the latest post-process pass. */
@@ -192,6 +212,8 @@ export interface ScannerCapturedDocument {
   outputNameBase: string;
   /** Deferred clockwise rotation that should be applied to the exported output. */
   outputRotation: OrthogonalRotation;
+  /** Custom post-processing option overrides for this document. */
+  options?: PostProcessOptions;
 }
 
 export interface ScannerState {
@@ -351,9 +373,17 @@ const createInitialCaptureDebugState = (): ScannerCaptureDebugState => ({
   postProcessEnhanceMs: null,
   postProcessEncodeMs: null,
   postProcessTotalMs: null,
+  postProcessBackend: "heuristic",
+  postProcessModelId: null,
+  postProcessModelMs: null,
+  postProcessResidualWarpMs: null,
+  postProcessFlattenMs: null,
   postProcessUsedRedetect: false,
   postProcessUsedPerspective: false,
   postProcessUsedEnhancement: false,
+  postProcessUsedResidualWarp: false,
+  postProcessFallbackReason: null,
+  postProcessControlGridShape: null,
   postProcessInputWidth: null,
   postProcessInputHeight: null,
   postProcessOutputWidth: null,
