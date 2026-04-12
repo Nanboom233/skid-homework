@@ -244,15 +244,13 @@ final class CameraSupport {
     }
 
     /**
-     * Pick the highest-resolution output size whose aspect ratio most closely matches
-     * the preview stream. Exact-ratio matches are preferred before falling back to the
-     * nearest available ratio.
+     * Finds the absolute maximum picture size supported by the hardware for the given format.
+     * This conceptually represents the raw sensor size (e.g. 4080x3072, aspect ratio 4:3) 
+     * out of the available scaled formats.
      */
-    static Size selectOutputSize(
+    static Size getMaximumOutputSize(
             CameraCharacteristics characteristics,
-            int format,
-            int referenceWidth,
-            int referenceHeight
+            int format
     ) {
         StreamConfigurationMap map = characteristics.get(
                 CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP
@@ -266,29 +264,106 @@ final class CameraSupport {
             throw new IllegalStateException("Camera does not expose output sizes for format " + format + ".");
         }
 
-        double targetAspect = normalizedAspectRatio(referenceWidth, referenceHeight);
+        Size maxSize = candidates[0];
+        long maxArea = -1L;
+
+        for (Size candidate : candidates) {
+            long area = (long) candidate.getWidth() * (long) candidate.getHeight();
+            if (area > maxArea) {
+                maxSize = candidate;
+                maxArea = area;
+            }
+        }
+
+        return maxSize;
+    }
+
+    /**
+     * Pick an output size whose aspect ratio most closely matches the given targetAspect ratio.
+     * Among matches, it prefers the size whose pixel area is closest to the targetArea.
+     * This guarantees we don't accidentally crop the physical sensor FoV.
+     */
+    static Size selectOutputSizeForAspect(
+            CameraCharacteristics characteristics,
+            int format,
+            double targetAspect,
+            long targetArea
+    ) {
+        StreamConfigurationMap map = characteristics.get(
+                CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP
+        );
+        if (map == null) {
+            throw new IllegalStateException("Camera does not expose a stream configuration map.");
+        }
+
+        Size[] candidates = map.getOutputSizes(format);
+        if (candidates == null || candidates.length == 0) {
+            throw new IllegalStateException("Camera does not expose output sizes for format " + format + ".");
+        }
+
         Size bestSize = candidates[0];
         double bestAspectDelta = Double.MAX_VALUE;
-        long bestArea = -1L;
+        long bestAreaDelta = Long.MAX_VALUE;
 
         for (Size candidate : candidates) {
             long candidateArea = (long) candidate.getWidth() * (long) candidate.getHeight();
             double candidateAspect = normalizedAspectRatio(candidate.getWidth(), candidate.getHeight());
             double aspectDelta = Math.abs(candidateAspect - targetAspect);
+            long areaDelta = Math.abs(candidateArea - targetArea);
 
             if (aspectDelta < bestAspectDelta - 0.000_001d) {
                 bestSize = candidate;
                 bestAspectDelta = aspectDelta;
-                bestArea = candidateArea;
+                bestAreaDelta = areaDelta;
                 continue;
             }
 
-            if (Math.abs(aspectDelta - bestAspectDelta) <= 0.000_001d && candidateArea > bestArea) {
+            if (Math.abs(aspectDelta - bestAspectDelta) <= 0.000_001d && areaDelta < bestAreaDelta) {
                 bestSize = candidate;
-                bestArea = candidateArea;
+                bestAreaDelta = areaDelta;
             }
         }
 
+        return bestSize;
+    }
+
+    
+    static Size selectOutputSizeForClassAspect(
+            CameraCharacteristics characteristics,
+            Class<?> klass,
+            double targetAspect,
+            long targetArea
+    ) {
+        StreamConfigurationMap map = characteristics.get(
+                CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP
+        );
+        if (map == null) throw new IllegalStateException("Camera does not expose a stream configuration map.");
+
+        Size[] candidates = map.getOutputSizes(klass);
+        if (candidates == null || candidates.length == 0) throw new IllegalStateException("Camera does not expose output sizes for class.");
+
+        Size bestSize = candidates[0];
+        double bestAspectDelta = Double.MAX_VALUE;
+        long bestAreaDelta = Long.MAX_VALUE;
+
+        for (Size candidate : candidates) {
+            long candidateArea = (long) candidate.getWidth() * (long) candidate.getHeight();
+            double candidateAspect = normalizedAspectRatio(candidate.getWidth(), candidate.getHeight());
+            double aspectDelta = Math.abs(candidateAspect - targetAspect);
+            long areaDelta = Math.abs(candidateArea - targetArea);
+
+            if (aspectDelta < bestAspectDelta - 0.000_001d) {
+                bestSize = candidate;
+                bestAspectDelta = aspectDelta;
+                bestAreaDelta = areaDelta;
+                continue;
+            }
+
+            if (Math.abs(aspectDelta - bestAspectDelta) <= 0.000_001d && areaDelta < bestAreaDelta) {
+                bestSize = candidate;
+                bestAreaDelta = areaDelta;
+            }
+        }
         return bestSize;
     }
 

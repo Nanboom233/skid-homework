@@ -110,14 +110,29 @@ fn main() {
 
 fn benchmark_mode(
     mode: &'static str,
-    request: ScannerDetectDocumentRequest,
+    request_template: ScannerDetectDocumentRequest,
     iterations: usize,
     reset_before_each_run: bool,
 ) -> BenchmarkSample {
+    // `detect_document_native_yolo` consumes rgba_bytes / source_bytes via
+    // `std::mem::take`, so we must reconstruct the request from the original
+    // data for each invocation rather than relying on clone-after-take.
+    let frozen_rgba = request_template.rgba_bytes.clone();
+    let frozen_source = request_template.source_bytes.clone();
+    let rebuild = || ScannerDetectDocumentRequest {
+        source_bytes: frozen_source.clone(),
+        rgba_bytes: frozen_rgba.clone(),
+        use_latest_preview_frame: request_template.use_latest_preview_frame,
+        rgba_width: request_template.rgba_width,
+        rgba_height: request_template.rgba_height,
+        max_width: request_template.max_width,
+        max_height: request_template.max_height,
+    };
+
     if reset_before_each_run {
         reset_scanner_yolo_runtime_caches();
     }
-    let warmup = detect_document_native_yolo(request.clone(), None, None)
+    let warmup = detect_document_native_yolo(rebuild(), None, None)
         .unwrap_or_else(|error| panic!("warmup for {mode} failed: {error}"));
     let mut total_processing_ms = 0.0;
 
@@ -125,7 +140,7 @@ fn benchmark_mode(
         if reset_before_each_run {
             reset_scanner_yolo_runtime_caches();
         }
-        let response = detect_document_native_yolo(request.clone(), None, None)
+        let response = detect_document_native_yolo(rebuild(), None, None)
             .unwrap_or_else(|error| panic!("benchmark run for {mode} failed: {error}"));
         total_processing_ms += extract_processing_ms(&response);
     }

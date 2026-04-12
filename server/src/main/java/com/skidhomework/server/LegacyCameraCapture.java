@@ -95,24 +95,68 @@ public final class LegacyCameraCapture implements CameraCaptureBackend {
 
     @Override
     public byte[] captureStillJpeg() throws Exception {
-        byte[] latestFrameCopy = getLatestPreviewFrameCopy();
-        if (latestFrameCopy == null || latestFrameCopy.length == 0) {
-            throw new IllegalStateException("Legacy preview fallback has not produced a frame yet.");
+        if (camera == null) {
+            System.err.println("[LegacyCamera] Cannot capture still JPEG: Camera object is null (not active).");
+            throw new IllegalStateException("Legacy camera is not active.");
         }
 
-        ByteArrayOutputStream outputStream = new ByteArrayOutputStream(latestFrameCopy.length);
-        writePreviewFrameJpeg(latestFrameCopy, outputStream);
-        return outputStream.toByteArray();
+        System.out.println("[LegacyCamera] Requesting HQ still capture via takePicture()...");
+        CountDownLatch latch = new CountDownLatch(1);
+        AtomicReference<byte[]> imageBytesRef = new AtomicReference<>();
+        AtomicReference<Exception> errorRef = new AtomicReference<>();
+
+        cameraHandler.post(() -> {
+            try {
+                camera.takePicture(null, null, (data, activeCamera) -> {
+                    if (data != null && data.length > 0) {
+                        System.out.println("[LegacyCamera] takePicture() succeeded. Received " + data.length + " bytes.");
+                        imageBytesRef.set(data);
+                    } else {
+                        System.err.println("[LegacyCamera] takePicture() returned a null or empty byte array.");
+                        errorRef.set(new IllegalStateException("Legacy camera takePicture returned empty data."));
+                    }
+                    try {
+                        System.out.println("[LegacyCamera] Restarting preview after takePicture()...");
+                        activeCamera.startPreview();
+                    } catch (RuntimeException e) {
+                        System.err.println("[LegacyCamera] Failed to restart preview after takePicture: " + e.getMessage());
+                        e.printStackTrace(System.err);
+                    }
+                    latch.countDown();
+                });
+            } catch (RuntimeException e) {
+                System.err.println("[LegacyCamera] RuntimeException thrown while calling takePicture(): " + e.getMessage());
+                e.printStackTrace(System.err);
+                errorRef.set(e);
+                latch.countDown();
+            }
+        });
+
+        if (!latch.await(10, TimeUnit.SECONDS)) {
+            System.err.println("[LegacyCamera] Timed out waiting 10s for takePicture() callback!");
+            throw new RuntimeException("Legacy camera still capture timed out.");
+        }
+
+        Exception error = errorRef.get();
+        if (error != null) {
+            System.err.println("[LegacyCamera] takePicture() operation failed with an exception: " + error.getMessage());
+            throw error;
+        }
+
+        byte[] imageBytes = imageBytesRef.get();
+        if (imageBytes == null || imageBytes.length == 0) {
+            System.err.println("[LegacyCamera] Final validation failed: returned HQ still frame is empty.");
+            throw new IllegalStateException("Legacy preview fallback failed to produce a still frame.");
+        }
+
+        return imageBytes;
     }
 
     @Override
     public void streamStillJpeg(OutputStream outputStream) throws Exception {
-        byte[] latestFrameCopy = getLatestPreviewFrameCopy();
-        if (latestFrameCopy == null || latestFrameCopy.length == 0) {
-            throw new IllegalStateException("Legacy preview fallback has not produced a frame yet.");
-        }
-
-        writePreviewFrameJpeg(latestFrameCopy, outputStream);
+        byte[] imageBytes = captureStillJpeg();
+        outputStream.write(imageBytes);
+        outputStream.flush();
     }
 
     @Override
@@ -255,10 +299,38 @@ public final class LegacyCameraCapture implements CameraCaptureBackend {
             throw new IllegalStateException("Legacy preview fallback requires NV21 preview support.");
         }
 
+        List<Camera.Size> supportedPictureSizes = parameters.getSupportedPictureSizes();
+        Camera.Size bestPictureSize = null;
+        if (supportedPictureSizes != null && !supportedPictureSizes.isEmpty()) {
+            bestPictureSize = supportedPictureSizes.get(0);
+            long bestArea = (long) bestPictureSize.width * (long) bestPictureSize.height;
+            for (Camera.Size candidate : supportedPictureSizes) {
+                long area = (long) candidate.width * (long) candidate.height;
+                if (area > bestArea) {
+                    bestPictureSize = candidate;
+                    bestArea = area;
+                }
+            }
+            parameters.setPictureSize(bestPictureSize.width, bestPictureSize.height);
+            System.out.println(
+                    "[LegacyCamera] Picture size="
+                            + bestPictureSize.width
+                            + "x"
+                            + bestPictureSize.height
+                            + "."
+            );
+        }
+
+        double sensorAspect = bestPictureSize != null 
+                ? CameraSupport.normalizedAspectRatio(bestPictureSize.width, bestPictureSize.height)
+                : CameraSupport.normalizedAspectRatio(targetWidth, targetHeight);
+
+        long targetArea = (long) Math.max(1, targetWidth) * (long) Math.max(1, targetHeight);
+
         Camera.Size selectedPreviewSize = selectPreviewSize(
                 parameters.getSupportedPreviewSizes(),
-                targetWidth,
-                targetHeight
+                sensorAspect,
+                targetArea
         );
         if (selectedPreviewSize == null) {
             throw new IllegalStateException(
@@ -312,15 +384,13 @@ public final class LegacyCameraCapture implements CameraCaptureBackend {
 
     private Camera.Size selectPreviewSize(
             List<Camera.Size> sizes,
-            int referenceWidth,
-            int referenceHeight
+            double targetAspect,
+            long targetArea
     ) {
         if (sizes == null || sizes.isEmpty()) {
             return null;
         }
 
-        double targetAspect = CameraSupport.normalizedAspectRatio(referenceWidth, referenceHeight);
-        long targetArea = (long) Math.max(1, referenceWidth) * (long) Math.max(1, referenceHeight);
         Camera.Size bestSize = sizes.get(0);
         double bestAspectDelta = Double.MAX_VALUE;
         long bestAreaDelta = Long.MAX_VALUE;

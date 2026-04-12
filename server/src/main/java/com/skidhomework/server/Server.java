@@ -227,6 +227,7 @@ public final class Server {
                     encoder = legacyEncoder;
                     legacyCapture.attachEncoder(legacyEncoder);
                 } else {
+                    System.out.println("[Server] Creating VideoEncoder with size: " + config.width + "x" + config.height);
                     VideoEncoder surfaceEncoder = new VideoEncoder(
                             config.width,
                             config.height,

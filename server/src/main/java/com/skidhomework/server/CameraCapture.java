@@ -354,11 +354,9 @@ public final class CameraCapture implements CameraCaptureBackend {
             throw new RuntimeException("failed to open camera " + cameraId);
         }
 
-        stillCaptureSize = CameraSupport.selectOutputSize(
+        stillCaptureSize = CameraSupport.getMaximumOutputSize(
                 cameraCharacteristics,
-                ImageFormat.JPEG,
-                width,
-                height
+                ImageFormat.JPEG
         );
         stillImageReader = ImageReader.newInstance(
                 stillCaptureSize.getWidth(),
@@ -1172,4 +1170,4 @@ public final class CameraCapture implements CameraCaptureBackend {
 
         return ranges[selection.index];
     }
-}
+}

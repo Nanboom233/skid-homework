@@ -5,7 +5,9 @@ use app_lib::scanner_detect::{
     detect_document_native_yolo, ScannerDetectDocumentRequest, ScannerDetectDocumentResponse,
     ScannerPoint,
 };
-use app_lib::scanner_postprocess::{postprocess_image_bytes, ScannerPostProcessResponse};
+use app_lib::scanner_postprocess::{
+    postprocess_image_bytes_with_options, ScannerPostProcessResponse,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug)]
@@ -15,6 +17,8 @@ struct Args {
     points_json: Option<PathBuf>,
     output_rotation: u16,
     image_enhancement: bool,
+    postprocess_backend: String,
+    resource_root: Option<PathBuf>,
     skip_detect: bool,
 }
 
@@ -52,6 +56,8 @@ struct ValidationMetadata {
     resolved_points: Option<Vec<ScannerPoint>>,
     output_rotation: u16,
     image_enhancement: bool,
+    postprocess_backend: String,
+    resource_root: Option<String>,
     detection: Option<ScannerDetectDocumentResponse>,
     postprocess: Option<ScannerPostProcessResponse>,
     status: &'static str,
@@ -103,6 +109,11 @@ fn run() -> Result<(), String> {
             resolved_points,
             output_rotation: args.output_rotation,
             image_enhancement: args.image_enhancement,
+            postprocess_backend: args.postprocess_backend.clone(),
+            resource_root: args
+                .resource_root
+                .as_ref()
+                .map(|path| path.display().to_string()),
             detection: detection_response,
             postprocess: None,
             status: "failed",
@@ -122,11 +133,18 @@ fn run() -> Result<(), String> {
         ));
     };
 
-    let (postprocess_response, encoded_png) = match postprocess_image_bytes(
+    let (postprocess_response, encoded_png) = match postprocess_image_bytes_with_options(
         image_bytes,
         Some(points),
         args.output_rotation,
         args.image_enhancement,
+        "auto".to_string(),
+        args.postprocess_backend.clone(),
+        args.resource_root.clone(),
+        None,
+        true,
+        true,
+        true,
     ) {
         Ok(result) => result,
         Err(error) => {
@@ -141,6 +159,11 @@ fn run() -> Result<(), String> {
                 resolved_points,
                 output_rotation: args.output_rotation,
                 image_enhancement: args.image_enhancement,
+                postprocess_backend: args.postprocess_backend.clone(),
+                resource_root: args
+                    .resource_root
+                    .as_ref()
+                    .map(|path| path.display().to_string()),
                 detection: detection_response,
                 postprocess: None,
                 status: "failed",
@@ -177,6 +200,11 @@ fn run() -> Result<(), String> {
         resolved_points,
         output_rotation: args.output_rotation,
         image_enhancement: args.image_enhancement,
+        postprocess_backend: args.postprocess_backend.clone(),
+        resource_root: args
+            .resource_root
+            .as_ref()
+            .map(|path| path.display().to_string()),
         detection: detection_response,
         postprocess: Some(postprocess_response),
         status: "ok",
@@ -200,6 +228,8 @@ where
     let mut points_json = None;
     let mut output_rotation = 0u16;
     let mut image_enhancement = true;
+    let mut postprocess_backend = "heuristic".to_string();
+    let mut resource_root = None;
     let mut skip_detect = false;
 
     let mut iter = args.into_iter();
@@ -225,6 +255,17 @@ where
             }
             "--no-enhance" => {
                 image_enhancement = false;
+            }
+            "--postprocess-backend" => {
+                postprocess_backend = iter
+                    .next()
+                    .ok_or_else(|| "Missing value for --postprocess-backend.".to_string())?;
+            }
+            "--resource-root" => {
+                let value = iter
+                    .next()
+                    .ok_or_else(|| "Missing value for --resource-root.".to_string())?;
+                resource_root = Some(PathBuf::from(value));
             }
             "--skip-detect" => {
                 skip_detect = true;
@@ -253,12 +294,14 @@ where
         points_json,
         output_rotation,
         image_enhancement,
+        postprocess_backend,
+        resource_root,
         skip_detect,
     })
 }
 
 fn usage() -> &'static str {
-    "usage: scanner-postprocess-real-validation <image-path> --output-dir <dir> [--points-json <path>] [--rotation <0|90|180|270>] [--no-enhance] [--skip-detect]"
+    "usage: scanner-postprocess-real-validation <image-path> --output-dir <dir> [--points-json <path>] [--rotation <0|90|180|270>] [--no-enhance] [--postprocess-backend <heuristic|native-ml-v1>] [--resource-root <dir>] [--skip-detect]"
 }
 
 fn parse_rotation(value: &str) -> Result<u16, String> {
