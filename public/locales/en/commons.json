@@ -366,6 +366,34 @@
         "cancel": "Cancel",
         "apply": "Apply Crop",
         "applying": "Applying..."
+      },
+      "postprocess": {
+        "title": "Post-Processing Options",
+        "image-enhancement": "Image Enhancement",
+        "spine-flattening": "Spine Flattening",
+        "paper-crop": "Paper Margin Crop",
+        "color-mode": "Color Mode",
+        "color-mode-options": {
+          "auto": "Auto",
+          "color": "Color",
+          "grayscale": "Grayscale",
+          "binary": "Binary"
+        },
+        "postprocess-backend": "Post-Process Backend",
+        "postprocess-backend-options": {
+          "heuristic": "Heuristic",
+          "native-ml-v1": "Native ML v1"
+        },
+        "recommended-on": "Recommended: On",
+        "recommended-off": "Recommended: Off",
+        "preview": {
+          "button": "Preview Post-Processing",
+          "loading": "Processing...",
+          "processing-time": "Processing time: {{ms}}ms",
+          "click-to-enlarge": "Click to enlarge",
+          "fullscreen-alt": "Post-process preview (click to close)",
+          "stale": "Parameters changed"
+        }
       }
     },
     "controls": {
@@ -405,6 +433,14 @@
           "disabled-hint": "Enable the native backend first to control fallback behavior."
         }
       },
+      "postprocess-backend": {
+        "label": "Post-Process Backend",
+        "description": "The learned residual dewarp branch is native-only for now; JS fallbacks remain heuristic.",
+        "options": {
+          "heuristic": "Heuristic Phase-2",
+          "native-ml-v1": "Native Residual Control-Points (v1)"
+        }
+      },
       "actions": {
         "connecting": "Connecting...",
         "start": "Start Preview",
@@ -427,6 +463,10 @@
           "reconnecting": "Reconnecting",
           "stopped": "Stopped"
         }
+      },
+      "image-enhancement": {
+        "label": "Image Color Enhancement",
+        "description": "Automatically improve document white balance, contrast, and color."
       }
     },
     "preview-hud": {
@@ -492,32 +532,42 @@
         "empty": "No active contour points are available yet. Keep the document inside the preview frame and ensure the selected detector is ready."
       },
       "capture": {
-        "title": "Post-Process Timing",
-        "description": "Segment timings and input/output resolutions for the latest captured-document post-process pass.",
+        "title": "Post-process Details",
+        "description": "Complete state and timing metrics for the latest document post-processing.",
         "badges": {
           "idle": "Idle",
           "processing": "Processing",
-          "success": "Done",
+          "success": "Completed",
           "error": "Failed",
-          "redetect-on": "Redetect on",
-          "redetect-off": "Redetect off",
-          "crop-on": "Crop on",
-          "crop-off": "Crop off",
-          "enhance-on": "Enhance on",
-          "enhance-off": "Enhance off"
+          "redetect-on": "Redetect: On",
+          "redetect-off": "Redetect: Off",
+          "crop-on": "Perspective Crop: ✓",
+          "crop-off": "Perspective Crop: ✗",
+          "enhance-on": "Enhancement: ✓",
+          "enhance-off": "Enhancement: ✗",
+          "warp-on": "UVDoc Warp: ✓",
+          "warp-off": "UVDoc Warp: ✗"
         },
         "metrics": {
-          "total": "Total",
-          "total-hint": "Single post-process pass from start to output file",
+          "total": "Total Time",
+          "total-hint": "Single pass from start to completion",
           "decode": "Source Decode",
-          "redetect": "Source Redetect",
+          "redetect": "Corner Refinement",
           "crop": "Perspective Crop",
-          "enhance": "Document Enhance",
-          "encode": "Output Encode",
-          "input-resolution": "Input Resolution",
-          "output-resolution": "Output Resolution",
-          "last-update": "Last Post-Process Update",
-          "error": "Last Post-Process Error"
+          "enhance": "Detail Enhancement",
+          "encode": "Result Encode",
+          "flatten": "Flatten Algorithm",
+          "paper-crop": "Paper Crop",
+          "model-ms": "UVDoc Model Inference",
+          "residual-warp": "UVDoc Grid Apply",
+          "backend": "Backend Used",
+          "model-id": "UVDoc Model Version",
+          "grid-shape": "UVDoc Control Grid",
+          "fallback": "Fallback Reason",
+          "input-resolution": "Input Res",
+          "output-resolution": "Output Res",
+          "last-update": "Last Update",
+          "error": "Recent Error"
         }
       },
       "badges": {
@@ -582,6 +632,10 @@
           "preview": "preview",
           "single-hq": "single-hq"
         }
+      },
+      "detection": {
+        "title": "Detection & Connection",
+        "description": "Expand to view detailed metrics"
       }
     }
   },

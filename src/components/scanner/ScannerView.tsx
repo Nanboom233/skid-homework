@@ -39,7 +39,7 @@ import {
 import {assessDocumentQuad, validateQuadGeometry} from "@/lib/scanner/document-quad";
 import {refineDocumentQuadInImageData} from "@/lib/scanner/postprocess-corner-refinement";
 import {applyLocalSpineFlatteningToImageData} from "@/lib/scanner/postprocess-local-flattening";
-import {cropToPaperRegionInImageData} from "@/lib/scanner/postprocess-paper-crop";
+
 import {shellTauriAdbCommand} from "@/lib/tauri/adb";
 import {
   detectDocumentWithTauriNativeYoloLatestPreview,
@@ -51,7 +51,11 @@ import {isTauri} from "@/lib/tauri/platform";
 import {processTauriScannerPostProcessSourceFile} from "@/lib/tauri/scanner";
 import {getSelectedDesktopAdbSerial} from "@/lib/webadb/screenshot";
 import {useBlobDataUrl} from "@/hooks/use-blob-data-url";
-import {type ScannerDetectionBackend, useSettingsStore} from "@/store/settings-store";
+import {
+  type ScannerDetectionBackend,
+  type ScannerPostProcessBackend,
+  useSettingsStore,
+} from "@/store/settings-store";
 import {
   type ScannerCapturedDocument,
   type ScannerCvDebugState,
@@ -60,13 +64,12 @@ import {
 import {cn} from "@/lib/utils";
 
 import OpenCVLoader from "../OpenCVLoader";
-import {ScannerCapturedDocumentEditor} from "./ScannerCapturedDocumentEditor";
+import {ScannerCapturedDocumentEditor, type PostProcessOptions} from "./ScannerCapturedDocumentEditor";
 import {ScannerControls} from "./ScannerControls";
 import {
-  ScannerCaptureDebugCard,
-  ScannerCvDebugCard,
+  ScannerDetectionDebugCard,
   ScannerDebugPanel,
-  ScannerPreviewDebugCard,
+  ScannerPostProcessDetailsCard,
 } from "./ScannerDebugPanel";
 import {ScannerOverlay} from "./ScannerOverlay";
 import {ScannerPreviewHud} from "./ScannerPreviewHud";
@@ -111,14 +114,19 @@ interface ProcessedDocumentRenderResult {
   outputHeight: number;
   perspectiveMs: number | null;
   flattenMs: number | null;
-  cropMs: number | null;
   enhanceMs: number | null;
+  modelMs: number | null;
+  residualWarpMs: number | null;
   rotateMs: number | null;
   encodeMs: number;
+  postprocessBackend: ScannerPostProcessBackend;
+  modelId: string | null;
+  controlGridShape: string | null;
   effectiveDocumentPoints: Point[] | null;
   refinementApplied: boolean;
   localFlatteningApplied: boolean;
-  paperCropApplied: boolean;
+  residualWarpApplied: boolean;
+  residualWarpFallbackReason: string | null;
 }
 
 interface DetectionBackendState {
@@ -682,18 +690,15 @@ export default function ScannerView({
   const [previewOrientation, setPreviewOrientation] = useState<"landscape" | "portrait">("landscape");
   const { t } = useTranslation("commons", { keyPrefix: "document-scanner" });
   const imageEnhancement = useSettingsStore((state) => state.imageEnhancement);
+  const setImageEnhancement = useSettingsStore((state) => state.setImageEnhancement);
   const scannerDetectionBackend = useSettingsStore((state) => state.scannerDetectionBackend);
-  const setScannerDetectionBackend = useSettingsStore((state) => state.setScannerDetectionBackend);
   const scannerNativeYoloStrictMode = useSettingsStore((state) => state.scannerNativeYoloStrictMode);
-  const setScannerNativeYoloStrictMode = useSettingsStore((state) => state.setScannerNativeYoloStrictMode);
+  const scannerPostProcessBackend = useSettingsStore((state) => state.scannerPostProcessBackend);
+  const setScannerPostProcessBackend = useSettingsStore((state) => state.setScannerPostProcessBackend);
 
   const status = useScannerStore((state) => state.status);
   const errorMessage = useScannerStore((state) => state.errorMessage);
   const capturedDocuments = useScannerStore((state) => state.capturedDocuments);
-  const cvDebug = useScannerStore((state) => state.cvDebug);
-  const previewWidth = useScannerStore((state) => state.previewDebug.previewWidth);
-  const previewHeight = useScannerStore((state) => state.previewDebug.previewHeight);
-  const reconnectState = useScannerStore((state) => state.connectionDebug.reconnectState);
   const setStatus = useScannerStore((state) => state.setStatus);
   const setFrameSource = useScannerStore((state) => state.setFrameSource);
   const setConfig = useScannerStore((state) => state.setConfig);
@@ -710,13 +715,6 @@ export default function ScannerView({
 
   const isStreaming = status === "streaming";
   const isConnecting = status === "connecting";
-  const previewResolution = useMemo(() => {
-    if (!previewWidth || !previewHeight) {
-      return "—";
-    }
-
-    return `${previewWidth} × ${previewHeight}`;
-  }, [previewHeight, previewWidth]);
   const editingCapturedDocument = useMemo(() => {
     if (!editingCapturedDocumentId) {
       return null;
@@ -1386,18 +1384,29 @@ export default function ScannerView({
     frame: ImageData,
     documentPoints: Point[] | null,
     outputRotation: OrthogonalRotation = 0,
+    optionsOverride?: Partial<PostProcessOptions>,
   ): Promise<ProcessedDocumentRenderResult> => {
+    const overrideEnhancement = optionsOverride?.imageEnhancement ?? imageEnhancement;
+    const overrideSpineFlattening = optionsOverride?.spineFlattening ?? true;
+    const overrideColorMode = optionsOverride?.colorMode ?? "auto";
+    const postprocessBackend = optionsOverride?.postprocessBackend ?? scannerPostProcessBackend;
     let baseImage = frame;
     let refineMs: number | null = null;
     let perspectiveMs: number | null = null;
     let flattenMs: number | null = null;
-    let cropMs: number | null = null;
     let enhanceMs: number | null = null;
+    const modelMs: number | null = null;
+    const residualWarpMs: number | null = null;
     let rotateMs: number | null = null;
     let effectiveDocumentPoints = clonePoints(documentPoints);
     let refinementApplied = false;
     let localFlatteningApplied = false;
-    let paperCropApplied = false;
+    const modelId: string | null = null;
+    const controlGridShape: string | null = null;
+    const residualWarpApplied = false;
+    const residualWarpFallbackReason = postprocessBackend === "native-ml-v1"
+      ? "Local fallback keeps the current heuristic phase-2 path; native residual-control-point inference is only attempted in Tauri."
+      : null;
 
     if (documentPoints && documentPoints.length === 4) {
       const refineStartedAt = performance.now();
@@ -1420,14 +1429,19 @@ export default function ScannerView({
         outputHeight: resultImage.height,
         perspectiveMs,
         flattenMs,
-        cropMs,
         enhanceMs,
+        modelMs,
+        residualWarpMs,
         rotateMs,
         encodeMs: performance.now() - encodeStartedAt,
+        postprocessBackend,
+        modelId,
+        controlGridShape,
         effectiveDocumentPoints,
         refinementApplied,
         localFlatteningApplied,
-        paperCropApplied,
+        residualWarpApplied,
+        residualWarpFallbackReason,
       };
     };
 
@@ -1440,8 +1454,16 @@ export default function ScannerView({
 
     if (effectiveDocumentPoints && effectiveDocumentPoints.length === 4) {
       const perspectiveStartedAt = performance.now();
-      baseImage = applyPerspectiveTransformToImageData(frame, effectiveDocumentPoints);
+      baseImage = applyPerspectiveTransformToImageData(frame, effectiveDocumentPoints, 0.01);
       perspectiveMs = performance.now() - perspectiveStartedAt;
+    }
+
+    if (overrideSpineFlattening && effectiveDocumentPoints && effectiveDocumentPoints.length === 4) {
+      const flattenStartedAt = performance.now();
+      const flattenResult = applyLocalSpineFlatteningToImageData(baseImage);
+      flattenMs = performance.now() - flattenStartedAt;
+      baseImage = flattenResult.imageData;
+      localFlatteningApplied = flattenResult.applied;
     }
 
     if (outputRotation !== 0) {
@@ -1450,29 +1472,14 @@ export default function ScannerView({
       rotateMs = performance.now() - rotateStartedAt;
     }
 
-    if (effectiveDocumentPoints && effectiveDocumentPoints.length === 4) {
-      const flattenStartedAt = performance.now();
-      const flattenResult = applyLocalSpineFlatteningToImageData(baseImage);
-      flattenMs = performance.now() - flattenStartedAt;
-      baseImage = flattenResult.imageData;
-      localFlatteningApplied = flattenResult.applied;
-    }
-
-    if (effectiveDocumentPoints && effectiveDocumentPoints.length === 4 && !localFlatteningApplied) {
-      const cropStartedAt = performance.now();
-      const cropResult = cropToPaperRegionInImageData(baseImage);
-      cropMs = performance.now() - cropStartedAt;
-      baseImage = cropResult.imageData;
-      paperCropApplied = cropResult.applied;
-    }
-
-    if (!imageEnhancement) {
+    if (!overrideEnhancement) {
       return await finalizeOutputBlob(baseImage);
     }
 
     const enhanceStartedAt = performance.now();
     const enhancedImage = await enhanceDocumentImageData(baseImage, {
       preferSoftTone: localFlatteningApplied,
+      colorMode: overrideColorMode,
     });
     enhanceMs = performance.now() - enhanceStartedAt;
     return await finalizeOutputBlob(enhancedImage);
@@ -1482,61 +1489,22 @@ export default function ScannerView({
     frame: ImageData,
     documentPoints: Point[] | null,
     outputRotation: OrthogonalRotation = 0,
+    optionsOverride?: Partial<PostProcessOptions>,
   ): Promise<ProcessedDocumentRenderResult> => {
-    const worker = await ensurePostProcessWorker();
-    if (worker) {
-      try {
-        const workerResult = await worker.process(frame, {
-          documentPoints,
-          outputRotation,
-          imageEnhancement,
-        });
-        const blob = new Blob([workerResult.encodedBytes], { type: workerResult.encodedMimeType });
-        return {
-          blob,
-          decodeMs: workerResult.decodeMs,
-          refineMs: workerResult.refineMs,
-          inputWidth: workerResult.inputWidth,
-          inputHeight: workerResult.inputHeight,
-          outputWidth: workerResult.outputWidth,
-          outputHeight: workerResult.outputHeight,
-          perspectiveMs: workerResult.perspectiveMs,
-          flattenMs: workerResult.flattenMs,
-          cropMs: workerResult.cropMs,
-          enhanceMs: workerResult.enhanceMs,
-          rotateMs: workerResult.rotateMs,
-          encodeMs: workerResult.encodeMs,
-          effectiveDocumentPoints: workerResult.effectiveDocumentPoints,
-          refinementApplied: workerResult.refinementApplied,
-          localFlatteningApplied: workerResult.localFlatteningApplied,
-          paperCropApplied: workerResult.paperCropApplied,
-        };
-      } catch (error) {
-        console.warn("[Scanner] Post-process worker failed, falling back to main thread:", error);
-        terminatePostProcessWorker();
-      }
-    }
-
-    return await renderProcessedDocumentBlobLocally(frame, documentPoints, outputRotation);
-  }, [
-    ensurePostProcessWorker,
-    imageEnhancement,
-    renderProcessedDocumentBlobLocally,
-    terminatePostProcessWorker,
-  ]);
-
-  const renderProcessedDocumentBlobFromSourceFile = useCallback(async (
-    sourceFile: Blob,
-    documentPoints: Point[] | null,
-    outputRotation: OrthogonalRotation = 0,
-  ): Promise<ProcessedDocumentRenderResult> => {
-    const shouldTryNativePostProcess = !nativePostProcessUnavailableReasonRef.current;
+    // In Tauri, try the native backend first (encode ImageData to PNG for the IPC).
+    const shouldTryNativePostProcess = isTauri() && !nativePostProcessUnavailableReasonRef.current;
     if (shouldTryNativePostProcess) {
       try {
-        const nativeResult = await processTauriScannerPostProcessSourceFile(sourceFile, {
+        const sourceBlob = await imageDataToPngBlob(frame);
+        const nativeResult = await processTauriScannerPostProcessSourceFile(sourceBlob, {
           documentPoints,
           outputRotation,
-          imageEnhancement,
+          imageEnhancement: optionsOverride?.imageEnhancement ?? imageEnhancement,
+          colorMode: optionsOverride?.colorMode ?? "auto",
+          postprocessBackend: optionsOverride?.postprocessBackend ?? scannerPostProcessBackend,
+          spineFlattening: optionsOverride?.spineFlattening ?? true,
+          perspectiveTransform: optionsOverride?.perspectiveTransform ?? true,
+          affineRemoval: optionsOverride?.affineRemoval ?? true,
         });
         const blob = new Blob([nativeResult.encodedBytes], {type: nativeResult.encodedMimeType});
         return {
@@ -1549,14 +1517,123 @@ export default function ScannerView({
           outputHeight: nativeResult.outputHeight,
           perspectiveMs: nativeResult.perspectiveMs,
           flattenMs: nativeResult.flattenMs,
-          cropMs: nativeResult.cropMs,
           enhanceMs: nativeResult.enhanceMs,
+          modelMs: nativeResult.modelMs,
+          residualWarpMs: nativeResult.residualWarpMs,
           rotateMs: nativeResult.rotateMs,
           encodeMs: nativeResult.encodeMs,
+          postprocessBackend: nativeResult.postprocessBackend,
+          modelId: nativeResult.modelId,
+          controlGridShape: nativeResult.controlGridShape,
           effectiveDocumentPoints: nativeResult.effectiveDocumentPoints,
           refinementApplied: nativeResult.refinementApplied,
           localFlatteningApplied: nativeResult.localFlatteningApplied,
-          paperCropApplied: nativeResult.paperCropApplied,
+          residualWarpApplied: nativeResult.residualWarpApplied,
+          residualWarpFallbackReason: nativeResult.residualWarpFallbackReason,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (shouldDisableNativePostProcess(message)) {
+          nativePostProcessUnavailableReasonRef.current = message;
+        }
+        console.warn("[Scanner] Native post-process failed in renderProcessedDocumentBlob, falling back to worker:", error);
+      }
+    }
+
+    const worker = await ensurePostProcessWorker();
+    if (worker) {
+      try {
+        const workerResult = await worker.process(frame, {
+          documentPoints,
+          outputRotation,
+          imageEnhancement: optionsOverride?.imageEnhancement ?? imageEnhancement,
+          colorMode: optionsOverride?.colorMode ?? "auto",
+          postprocessBackend: optionsOverride?.postprocessBackend ?? scannerPostProcessBackend,
+          spineFlattening: optionsOverride?.spineFlattening ?? true,
+        });
+        const blob = new Blob([workerResult.encodedBytes], { type: workerResult.encodedMimeType });
+        return {
+          blob,
+          decodeMs: workerResult.decodeMs,
+          refineMs: workerResult.refineMs,
+          inputWidth: workerResult.inputWidth,
+          inputHeight: workerResult.inputHeight,
+          outputWidth: workerResult.outputWidth,
+          outputHeight: workerResult.outputHeight,
+          perspectiveMs: workerResult.perspectiveMs,
+          flattenMs: workerResult.flattenMs,
+          enhanceMs: workerResult.enhanceMs,
+          modelMs: workerResult.modelMs,
+          residualWarpMs: workerResult.residualWarpMs,
+          rotateMs: workerResult.rotateMs,
+          encodeMs: workerResult.encodeMs,
+          postprocessBackend: workerResult.postprocessBackend,
+          modelId: workerResult.modelId,
+          controlGridShape: workerResult.controlGridShape,
+          effectiveDocumentPoints: workerResult.effectiveDocumentPoints,
+          refinementApplied: workerResult.refinementApplied,
+          localFlatteningApplied: workerResult.localFlatteningApplied,
+          residualWarpApplied: workerResult.residualWarpApplied,
+          residualWarpFallbackReason: workerResult.residualWarpFallbackReason,
+        };
+      } catch (error) {
+        console.warn("[Scanner] Post-process worker failed, falling back to main thread:", error);
+        terminatePostProcessWorker();
+      }
+    }
+
+    return await renderProcessedDocumentBlobLocally(frame, documentPoints, outputRotation, optionsOverride);
+  }, [
+    ensurePostProcessWorker,
+    imageEnhancement,
+    renderProcessedDocumentBlobLocally,
+    scannerPostProcessBackend,
+    terminatePostProcessWorker,
+  ]);
+
+  const renderProcessedDocumentBlobFromSourceFile = useCallback(async (
+    sourceFile: Blob,
+    documentPoints: Point[] | null,
+    outputRotation: OrthogonalRotation = 0,
+    optionsOverride?: Partial<PostProcessOptions>,
+  ): Promise<ProcessedDocumentRenderResult> => {
+    const shouldTryNativePostProcess = !nativePostProcessUnavailableReasonRef.current;
+    if (shouldTryNativePostProcess) {
+      try {
+        const nativeResult = await processTauriScannerPostProcessSourceFile(sourceFile, {
+          documentPoints,
+          outputRotation,
+          imageEnhancement: optionsOverride?.imageEnhancement ?? imageEnhancement,
+          colorMode: optionsOverride?.colorMode ?? "auto",
+          postprocessBackend: optionsOverride?.postprocessBackend ?? scannerPostProcessBackend,
+          spineFlattening: optionsOverride?.spineFlattening ?? true,
+          perspectiveTransform: optionsOverride?.perspectiveTransform ?? true,
+          affineRemoval: optionsOverride?.affineRemoval ?? true,
+        });
+        const blob = new Blob([nativeResult.encodedBytes], {type: nativeResult.encodedMimeType});
+        return {
+          blob,
+          decodeMs: nativeResult.decodeMs,
+          refineMs: nativeResult.refineMs,
+          inputWidth: nativeResult.inputWidth,
+          inputHeight: nativeResult.inputHeight,
+          outputWidth: nativeResult.outputWidth,
+          outputHeight: nativeResult.outputHeight,
+          perspectiveMs: nativeResult.perspectiveMs,
+          flattenMs: nativeResult.flattenMs,
+          enhanceMs: nativeResult.enhanceMs,
+          modelMs: nativeResult.modelMs,
+          residualWarpMs: nativeResult.residualWarpMs,
+          rotateMs: nativeResult.rotateMs,
+          encodeMs: nativeResult.encodeMs,
+          postprocessBackend: nativeResult.postprocessBackend,
+          modelId: nativeResult.modelId,
+          controlGridShape: nativeResult.controlGridShape,
+          effectiveDocumentPoints: nativeResult.effectiveDocumentPoints,
+          refinementApplied: nativeResult.refinementApplied,
+          localFlatteningApplied: nativeResult.localFlatteningApplied,
+          residualWarpApplied: nativeResult.residualWarpApplied,
+          residualWarpFallbackReason: nativeResult.residualWarpFallbackReason,
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -1573,7 +1650,10 @@ export default function ScannerView({
         const workerResult = await worker.processSourceFile(sourceFile, {
           documentPoints,
           outputRotation,
-          imageEnhancement,
+          imageEnhancement: optionsOverride?.imageEnhancement ?? imageEnhancement,
+          colorMode: optionsOverride?.colorMode ?? "auto",
+          postprocessBackend: optionsOverride?.postprocessBackend ?? scannerPostProcessBackend,
+          spineFlattening: optionsOverride?.spineFlattening ?? true,
         });
         const blob = new Blob([workerResult.encodedBytes], { type: workerResult.encodedMimeType });
         return {
@@ -1586,14 +1666,19 @@ export default function ScannerView({
           outputHeight: workerResult.outputHeight,
           perspectiveMs: workerResult.perspectiveMs,
           flattenMs: workerResult.flattenMs,
-          cropMs: workerResult.cropMs,
           enhanceMs: workerResult.enhanceMs,
+          modelMs: workerResult.modelMs,
+          residualWarpMs: workerResult.residualWarpMs,
           rotateMs: workerResult.rotateMs,
           encodeMs: workerResult.encodeMs,
+          postprocessBackend: workerResult.postprocessBackend,
+          modelId: workerResult.modelId,
+          controlGridShape: workerResult.controlGridShape,
           effectiveDocumentPoints: workerResult.effectiveDocumentPoints,
           refinementApplied: workerResult.refinementApplied,
           localFlatteningApplied: workerResult.localFlatteningApplied,
-          paperCropApplied: workerResult.paperCropApplied,
+          residualWarpApplied: workerResult.residualWarpApplied,
+          residualWarpFallbackReason: workerResult.residualWarpFallbackReason,
         };
       } catch (error) {
         console.warn("[Scanner] Post-process worker source decode failed, falling back to main thread:", error);
@@ -1604,7 +1689,7 @@ export default function ScannerView({
     const decodeStartedAt = performance.now();
     const decodedFrame = await decodeBlobToImageData(sourceFile);
     const decodeMs = performance.now() - decodeStartedAt;
-    const localResult = await renderProcessedDocumentBlobLocally(decodedFrame, documentPoints, outputRotation);
+    const localResult = await renderProcessedDocumentBlobLocally(decodedFrame, documentPoints, outputRotation, optionsOverride);
     return {
       ...localResult,
       decodeMs,
@@ -1615,6 +1700,7 @@ export default function ScannerView({
     ensurePostProcessWorker,
     imageEnhancement,
     renderProcessedDocumentBlobLocally,
+    scannerPostProcessBackend,
     terminatePostProcessWorker,
   ]);
 
@@ -1771,6 +1857,7 @@ export default function ScannerView({
     initialFrame?: ImageData,
     options?: {
       redetectPoints?: boolean;
+      overrides?: Partial<PostProcessOptions>;
     },
   ): void => {
     const queueGeneration = capturedDocumentQueueGenerationRef.current;
@@ -1782,6 +1869,14 @@ export default function ScannerView({
       status: "processing",
       error: null,
       points: clonePoints(documentPoints),
+      options: options?.overrides ? {
+        imageEnhancement: options.overrides.imageEnhancement ?? imageEnhancement,
+        colorMode: options.overrides.colorMode ?? "auto",
+        postprocessBackend: options.overrides.postprocessBackend ?? scannerPostProcessBackend,
+        spineFlattening: options.overrides.spineFlattening ?? true,
+        perspectiveTransform: options.overrides.perspectiveTransform ?? true,
+        affineRemoval: options.overrides.affineRemoval ?? true,
+      } : undefined,
     });
     setCaptureDebug({
       postProcessStatus: "processing",
@@ -1790,11 +1885,18 @@ export default function ScannerView({
       postProcessRedetectMs: null,
         postProcessPerspectiveMs: null,
         postProcessEnhanceMs: null,
+        postProcessModelMs: null,
+        postProcessResidualWarpMs: null,
         postProcessEncodeMs: null,
         postProcessTotalMs: null,
+        postProcessBackend: scannerPostProcessBackend,
+        postProcessModelId: null,
         postProcessUsedRedetect: shouldAttemptRedetect,
         postProcessUsedPerspective: Boolean(documentPoints && documentPoints.length === 4),
         postProcessUsedEnhancement: imageEnhancement,
+        postProcessUsedResidualWarp: false,
+        postProcessFallbackReason: null,
+        postProcessControlGridShape: null,
         postProcessInputWidth: initialFrame?.width ?? null,
         postProcessInputHeight: initialFrame?.height ?? null,
       postProcessOutputWidth: null,
@@ -1842,11 +1944,13 @@ export default function ScannerView({
             initialFrame,
             resolvedPoints,
             outputRotation,
+            options?.overrides,
           )
         : await renderProcessedDocumentBlobFromSourceFile(
             sourceFile,
             resolvedPoints,
             outputRotation,
+            options?.overrides,
           );
       const effectiveDecodeMs = decodeMs ?? processedDocument.decodeMs;
       const inputWidth = initialFrame?.width ?? redetectFrame?.width ?? processedDocument.inputWidth;
@@ -1876,11 +1980,18 @@ export default function ScannerView({
         postProcessRedetectMs: redetectMs,
         postProcessPerspectiveMs: processedDocument.perspectiveMs,
         postProcessEnhanceMs: processedDocument.enhanceMs,
+        postProcessModelMs: processedDocument.modelMs,
+        postProcessResidualWarpMs: processedDocument.residualWarpMs,
         postProcessEncodeMs: processedDocument.encodeMs,
         postProcessTotalMs: totalMs,
+        postProcessBackend: processedDocument.postprocessBackend,
+        postProcessModelId: processedDocument.modelId,
         postProcessUsedRedetect: shouldAttemptRedetect,
         postProcessUsedPerspective: Boolean(effectivePoints && effectivePoints.length === 4),
         postProcessUsedEnhancement: imageEnhancement,
+        postProcessUsedResidualWarp: processedDocument.residualWarpApplied,
+        postProcessFallbackReason: processedDocument.residualWarpFallbackReason,
+        postProcessControlGridShape: processedDocument.controlGridShape,
         postProcessInputWidth: inputWidth,
         postProcessInputHeight: inputHeight,
         postProcessOutputWidth: processedDocument.outputWidth,
@@ -1893,15 +2004,19 @@ export default function ScannerView({
         + ` refine=${formatPerfMetric(processedDocument.refineMs)}ms`
         + ` redetect=${formatPerfMetric(redetectMs)}ms`
         + ` perspective=${formatPerfMetric(processedDocument.perspectiveMs)}ms`
+        + ` model=${formatPerfMetric(processedDocument.modelMs)}ms`
+        + ` residualWarp=${formatPerfMetric(processedDocument.residualWarpMs)}ms`
         + ` flatten=${formatPerfMetric(processedDocument.flattenMs)}ms`
-        + ` crop=${formatPerfMetric(processedDocument.cropMs)}ms`
         + ` enhance=${formatPerfMetric(processedDocument.enhanceMs)}ms`
         + ` rotate=${formatPerfMetric(processedDocument.rotateMs)}ms`
         + ` encode=${processedDocument.encodeMs.toFixed(1)}ms`
         + ` outputRotation=${outputRotation}`
+        + ` backend=${processedDocument.postprocessBackend}`
+        + ` modelId=${processedDocument.modelId ?? "—"}`
         + ` refinementApplied=${processedDocument.refinementApplied}`
+        + ` residualWarpApplied=${processedDocument.residualWarpApplied}`
         + ` localFlatteningApplied=${processedDocument.localFlatteningApplied}`
-        + ` paperCropApplied=${processedDocument.paperCropApplied}`
+        + ` residualWarpFallback=${processedDocument.residualWarpFallbackReason ?? "—"}`
         + ` | ${inputWidth}x${inputHeight}`
         + ` -> ${processedDocument.outputWidth}x${processedDocument.outputHeight}`,
       );
@@ -1927,6 +2042,7 @@ export default function ScannerView({
         setCaptureDebug({
           postProcessStatus: "error",
           postProcessError: message,
+          postProcessBackend: scannerPostProcessBackend,
           postProcessUpdatedAt: Date.now(),
         });
         toast.error(t("toasts.post-process-failed", {message}));
@@ -2509,11 +2625,18 @@ export default function ScannerView({
       postProcessRedetectMs: null,
       postProcessPerspectiveMs: null,
       postProcessEnhanceMs: null,
+      postProcessModelMs: null,
+      postProcessResidualWarpMs: null,
       postProcessEncodeMs: null,
       postProcessTotalMs: null,
+      postProcessBackend: "heuristic",
+      postProcessModelId: null,
       postProcessUsedRedetect: false,
       postProcessUsedPerspective: false,
       postProcessUsedEnhancement: false,
+      postProcessUsedResidualWarp: false,
+      postProcessFallbackReason: null,
+      postProcessControlGridShape: null,
       postProcessInputWidth: null,
       postProcessInputHeight: null,
       postProcessOutputWidth: null,
@@ -2774,6 +2897,7 @@ export default function ScannerView({
   const handleApplyCapturedDocumentEdit = useCallback((
     documentId: string,
     nextPoints: Point[],
+    _options?: PostProcessOptions,
   ) => {
     const document = capturedDocuments.find((entry) => entry.id === documentId);
     if (!document) {
@@ -2790,9 +2914,26 @@ export default function ScannerView({
       undefined,
       {
         redetectPoints: false,
+        overrides: _options,
       },
     );
   }, [capturedDocuments, queueCapturedDocumentProcessing]);
+
+  const handleEditorPreviewRequest = useCallback(async (
+    doc: ScannerCapturedDocument,
+    points: Point[],
+    _ppOptions: PostProcessOptions,
+  ): Promise<{ blob: Blob; processingMs: number }> => {
+    const startedAt = performance.now();
+    const result = await renderProcessedDocumentBlobFromSourceFile(
+      doc.sourceFile,
+      points,
+      doc.outputRotation,
+      _ppOptions
+    );
+    const processingMs = performance.now() - startedAt;
+    return { blob: result.blob, processingMs };
+  }, [renderProcessedDocumentBlobFromSourceFile]);
 
   const handlePreviewOrientationToggle = useCallback(() => {
     setPreviewOrientation((current) => (current === "landscape" ? "portrait" : "landscape"));
@@ -2968,7 +3109,6 @@ export default function ScannerView({
       ) : null}
     </div>
   );
-
   const controlsPanel = (
     <ScannerControls
       isConnecting={isConnecting}
@@ -2976,22 +3116,12 @@ export default function ScannerView({
       isProcessing={isProcessing}
       autoCapture={autoCapture}
       isStable={isStable}
-      requestedBackend={scannerDetectionBackend}
-      activeBackend={cvDebug.activeBackend}
-      backendReady={cvDebug.cvReady}
-      nativeBackendSupported={nativeBackendSupported}
-      nativeStrictMode={scannerNativeYoloStrictMode}
-      backendStatusMessage={cvDebug.backendMessage}
-      preferredProvider={cvDebug.preferredProvider}
-      preferredProviderReady={cvDebug.preferredProviderReady}
-      selectedModelKind={cvDebug.selectedModelKind}
-      selectedModelId={cvDebug.selectedModelId}
+      requestedPostProcessBackend={scannerPostProcessBackend}
       previewOrientation={previewOrientation}
-      previewResolution={previewResolution}
-      reconnectState={reconnectState}
-      onDetectionBackendChange={setScannerDetectionBackend}
-      onNativeStrictModeChange={setScannerNativeYoloStrictMode}
+      imageEnhancement={imageEnhancement}
+      onPostProcessBackendChange={setScannerPostProcessBackend}
       onAutoCaptureChange={setAutoCapture}
+      onImageEnhancementChange={setImageEnhancement}
       onPreviewOrientationToggle={handlePreviewOrientationToggle}
       onStart={handleStart}
       onStop={handleStop}
@@ -3026,12 +3156,11 @@ export default function ScannerView({
 
                   <div className="flex min-w-0 w-full flex-col gap-4 xl:min-h-0 xl:self-start">
                     {controlsPanel}
-                    <ScannerCvDebugCard />
+                    <ScannerDetectionDebugCard />
                   </div>
 
                   <div className="flex min-w-0 w-full flex-col gap-4 xl:min-h-0 xl:self-start">
-                    <ScannerPreviewDebugCard />
-                    <ScannerCaptureDebugCard />
+                    <ScannerPostProcessDetailsCard />
                   </div>
                 </>
               ) : (
@@ -3124,6 +3253,7 @@ export default function ScannerView({
           }
         }}
         onApply={handleApplyCapturedDocumentEdit}
+        onPreviewRequest={handleEditorPreviewRequest}
       />
     </Dialog>
   );

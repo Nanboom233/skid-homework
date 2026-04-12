@@ -10,7 +10,7 @@ import {Label} from "@/components/ui/label";
 import {Select, SelectContent, SelectItem, SelectTrigger, SelectValue} from "@/components/ui/select";
 import {Separator} from "@/components/ui/separator";
 import {Switch} from "@/components/ui/switch";
-import type {ScannerDetectionBackend} from "@/store/settings-store";
+import type {ScannerPostProcessBackend} from "@/store/settings-store";
 
 interface ScannerControlsProps {
   isConnecting: boolean;
@@ -18,69 +18,23 @@ interface ScannerControlsProps {
   isProcessing: boolean;
   autoCapture: boolean;
   isStable: boolean;
-  requestedBackend: ScannerDetectionBackend;
-  activeBackend: ScannerDetectionBackend;
-  backendReady: boolean;
-  nativeBackendSupported: boolean;
-  nativeStrictMode: boolean;
-  backendStatusMessage: string | null;
-  preferredProvider: string | null;
-  preferredProviderReady: boolean;
-  selectedModelKind: string | null;
-  selectedModelId: string | null;
+  requestedPostProcessBackend: ScannerPostProcessBackend;
   previewOrientation: "landscape" | "portrait";
-  previewResolution: string;
-  reconnectState: string;
-  onDetectionBackendChange: (backend: ScannerDetectionBackend) => void;
-  onNativeStrictModeChange: (enabled: boolean) => void;
+  imageEnhancement: boolean;
+  onPostProcessBackendChange: (backend: ScannerPostProcessBackend) => void;
   onAutoCaptureChange: (enabled: boolean) => void;
+  onImageEnhancementChange: (enabled: boolean) => void;
   onPreviewOrientationToggle: () => void;
   onStart: () => void;
   onStop: () => void;
   onPreviewCapture: () => void;
 }
 
-const getReconnectStateLabel = (
-  reconnectState: string,
-  t: (
-    key:
-      | "states.reconnect.connected"
-      | "states.reconnect.connecting"
-      | "states.reconnect.error"
-      | "states.reconnect.idle"
-      | "states.reconnect.reconnecting"
-      | "states.reconnect.stopped",
-  ) => string,
-): string => {
-  switch (reconnectState) {
-    case "connected":
-    case "connecting":
-    case "error":
-    case "idle":
-    case "reconnecting":
-    case "stopped":
-      return t(`states.reconnect.${reconnectState}`);
-    default:
-      return reconnectState;
-  }
-};
-
-const translateBackend = (
-  backend: ScannerDetectionBackend,
+const translatePostProcessBackend = (
+  backend: ScannerPostProcessBackend,
   t: (key: string) => string,
 ): string => {
-  return t(`detection-backend.options.${backend}`);
-};
-
-const translateModelKind = (
-  modelKind: string | null,
-  t: (key: string) => string,
-): string => {
-  if (modelKind === "public-baseline" || modelKind === "planned-primary") {
-    return t(`detection-backend.model-kind.${modelKind}`);
-  }
-
-  return modelKind ?? "—";
+  return t(`postprocess-backend.options.${backend}`);
 };
 
 export function ScannerControls({
@@ -89,22 +43,12 @@ export function ScannerControls({
   isProcessing,
   autoCapture,
   isStable,
-  requestedBackend,
-  activeBackend,
-  backendReady,
-  nativeBackendSupported,
-  nativeStrictMode,
-  backendStatusMessage,
-  preferredProvider,
-  preferredProviderReady,
-  selectedModelKind,
-  selectedModelId,
+  requestedPostProcessBackend,
   previewOrientation,
-  previewResolution,
-  reconnectState,
-  onDetectionBackendChange,
-  onNativeStrictModeChange,
+  imageEnhancement,
+  onPostProcessBackendChange,
   onAutoCaptureChange,
+  onImageEnhancementChange,
   onPreviewOrientationToggle,
   onStart,
   onStop,
@@ -134,103 +78,34 @@ export function ScannerControls({
         <CardDescription>{t("description")}</CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
-        <div className="grid gap-2.5 md:grid-cols-2">
-          <div className="min-w-0 rounded-lg border bg-background/60 p-2.5">
-            <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-              {t("metrics.preview-resolution")}
-            </p>
-            <p className="mt-1 break-words text-sm font-semibold">{previewResolution}</p>
-          </div>
-          <div className="min-w-0 rounded-lg border bg-background/60 p-2.5">
-            <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-              {t("metrics.reconnect-state")}
-            </p>
-            <p className="mt-1 break-words text-sm font-semibold">
-              {getReconnectStateLabel(reconnectState, t)}
-            </p>
-          </div>
-        </div>
-
         <div className="grid gap-3 rounded-lg border bg-background/60 p-3">
           <div className="grid gap-3 md:grid-cols-2">
             <div className="space-y-2">
-              <Label htmlFor="scanner-detection-backend">
-                {t("detection-backend.label")}
+              <Label htmlFor="scanner-postprocess-backend">
+                {t("postprocess-backend.label")}
               </Label>
               <Select
-                value={requestedBackend}
-                onValueChange={(value) => onDetectionBackendChange(value as ScannerDetectionBackend)}
+                value={requestedPostProcessBackend}
+                onValueChange={(value) => onPostProcessBackendChange(value as ScannerPostProcessBackend)}
                 disabled={isProcessing}
               >
-                <SelectTrigger id="scanner-detection-backend">
+                <SelectTrigger id="scanner-postprocess-backend">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="opencv">
-                    {translateBackend("opencv", t)}
+                  <SelectItem value="heuristic">
+                    {translatePostProcessBackend("heuristic", t)}
                   </SelectItem>
-                  <SelectItem value="native-yolo" disabled={!nativeBackendSupported}>
-                    {translateBackend("native-yolo", t)}
+                  <SelectItem value="native-ml-v1">
+                    {translatePostProcessBackend("native-ml-v1", t)}
                   </SelectItem>
                 </SelectContent>
               </Select>
             </div>
-
-            <div className="min-w-0 rounded-lg border bg-background p-2.5">
-              <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                {t("detection-backend.active")}
+            <div className="flex flex-col justify-center">
+              <p className="text-xs text-muted-foreground pt-3 md:pt-6">
+                {t("postprocess-backend.description")}
               </p>
-              <div className="mt-1 flex flex-wrap items-center gap-2">
-                <Badge variant={backendReady ? "default" : "outline"}>
-                  {translateBackend(activeBackend, t)}
-                </Badge>
-                <Badge variant={backendReady ? "secondary" : "destructive"}>
-                  {backendReady
-                    ? t("detection-backend.status.ready")
-                    : t("detection-backend.status.not-ready")}
-                </Badge>
-                {preferredProvider ? (
-                  <Badge variant={preferredProviderReady ? "secondary" : "outline"}>
-                    {preferredProvider}
-                  </Badge>
-                ) : null}
-              </div>
-              <p className="mt-2 text-xs text-muted-foreground">
-                {backendStatusMessage ?? t("detection-backend.no-status")}
-              </p>
-            </div>
-          </div>
-
-          <div className="grid gap-3 md:grid-cols-2">
-            <div className="min-w-0 rounded-lg border bg-background p-2.5">
-              <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                {t("detection-backend.stage1-model")}
-              </p>
-              <p className="mt-1 break-words text-sm font-semibold">
-                {selectedModelId ?? t("detection-backend.model-missing")}
-              </p>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {translateModelKind(selectedModelKind, t)}
-              </p>
-            </div>
-
-            <div className="flex items-start space-x-3 rounded-lg border bg-background p-2.5 shadow-sm">
-              <Switch
-                id="scanner-native-strict-mode"
-                checked={nativeStrictMode}
-                onCheckedChange={onNativeStrictModeChange}
-                disabled={requestedBackend !== "native-yolo" || isProcessing}
-              />
-              <div className="min-w-0 space-y-1">
-                <Label htmlFor="scanner-native-strict-mode" className="cursor-pointer text-sm font-medium">
-                  {t("detection-backend.strict-mode.label")}
-                </Label>
-                <p className="text-xs text-muted-foreground">
-                  {requestedBackend === "native-yolo"
-                    ? t("detection-backend.strict-mode.description")
-                    : t("detection-backend.strict-mode.disabled-hint")}
-                </p>
-              </div>
             </div>
           </div>
         </div>
@@ -280,20 +155,39 @@ export function ScannerControls({
 
         <Separator />
 
-        <div className="flex items-start space-x-3 rounded-md border p-2.5 shadow-sm">
-          <Switch
-            id="auto-capture"
-            checked={autoCapture}
-            onCheckedChange={onAutoCaptureChange}
-            disabled={!isStreaming || isProcessing}
-          />
-          <div className="min-w-0 space-y-1">
-            <Label htmlFor="auto-capture" className="cursor-pointer text-sm font-medium">
-              {t("auto-capture.label")}
-            </Label>
-            <p className="text-xs text-muted-foreground">
-              {t("auto-capture.description")}
-            </p>
+        <div className="grid gap-3 md:grid-cols-2">
+          <div className="flex items-start space-x-3 rounded-md border p-2.5 shadow-sm">
+            <Switch
+              id="auto-capture"
+              checked={autoCapture}
+              onCheckedChange={onAutoCaptureChange}
+              disabled={!isStreaming || isProcessing}
+            />
+            <div className="min-w-0 space-y-1">
+              <Label htmlFor="auto-capture" className="cursor-pointer text-sm font-medium">
+                {t("auto-capture.label")}
+              </Label>
+              <p className="text-xs text-muted-foreground">
+                {t("auto-capture.description")}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-start space-x-3 rounded-md border p-2.5 shadow-sm">
+            <Switch
+              id="image-enhancement"
+              checked={imageEnhancement}
+              onCheckedChange={onImageEnhancementChange}
+              disabled={isProcessing}
+            />
+            <div className="min-w-0 space-y-1">
+              <Label htmlFor="image-enhancement" className="cursor-pointer text-sm font-medium">
+                {t("image-enhancement.label")}
+              </Label>
+              <p className="text-xs text-muted-foreground">
+                {t("image-enhancement.description")}
+              </p>
+            </div>
           </div>
         </div>
       </CardContent>

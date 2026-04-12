@@ -17,6 +17,7 @@ export type ShortcutMap = Record<ShortcutAction, string>;
 
 export type ExplanationMode = "explanation" | "steps";
 export type ScannerDetectionBackend = "opencv" | "native-yolo";
+export type ScannerPostProcessBackend = "heuristic" | "native-ml-v1";
 
 const DEFAULT_SHORTCUTS: ShortcutMap = {
   upload: "ctrl+1",
@@ -72,6 +73,9 @@ export interface SettingsState {
 
   scannerNativeYoloStrictMode: boolean;
   setScannerNativeYoloStrictMode: (state: boolean) => void;
+
+  scannerPostProcessBackend: ScannerPostProcessBackend;
+  setScannerPostProcessBackend: (backend: ScannerPostProcessBackend) => void;
 }
 
 export const useSettingsStore = create<SettingsState>()(
@@ -91,6 +95,7 @@ export const useSettingsStore = create<SettingsState>()(
       showOnlineSearchInScanner: false,
       scannerDetectionBackend: "opencv",
       scannerNativeYoloStrictMode: false,
+      scannerPostProcessBackend: "heuristic",
 
       setImageEnhancement: (state) => set({ imageEnhancement: state }),
       setThemePreference: (theme) => set({ theme }),
@@ -133,6 +138,8 @@ export const useSettingsStore = create<SettingsState>()(
         set({ scannerDetectionBackend: backend }),
       setScannerNativeYoloStrictMode: (state) =>
         set({ scannerNativeYoloStrictMode: state }),
+      setScannerPostProcessBackend: (backend) =>
+        set({ scannerPostProcessBackend: backend }),
     }),
     {
       name: "skidhw-storage",
@@ -152,8 +159,9 @@ export const useSettingsStore = create<SettingsState>()(
         showOnlineSearchInScanner: state.showOnlineSearchInScanner,
         scannerDetectionBackend: state.scannerDetectionBackend,
         scannerNativeYoloStrictMode: state.scannerNativeYoloStrictMode,
+        scannerPostProcessBackend: state.scannerPostProcessBackend,
       }),
-      version: 9,
+      version: 10,
       migrate: (persistedState, version) => {
         const data: Partial<SettingsState> & Record<string, unknown> =
           persistedState && typeof persistedState === "object"
@@ -193,6 +201,12 @@ export const useSettingsStore = create<SettingsState>()(
           scannerNativeYoloStrictMode:
             (data as { scannerNativeYoloStrictMode?: boolean })
               .scannerNativeYoloStrictMode ?? false,
+          scannerPostProcessBackend:
+            (
+              data as {
+                scannerPostProcessBackend?: ScannerPostProcessBackend;
+              }
+            ).scannerPostProcessBackend ?? "heuristic",
           devtoolsEnabled:
             (data as { devtoolsEnabled?: boolean }).devtoolsEnabled ??
             legacyDevtools ??

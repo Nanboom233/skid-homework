@@ -15,7 +15,7 @@ import {parseSolveResponse} from "@/ai/response";
 import {type FileItem, type ProblemSolution, useProblemsStore} from "@/store/problems-store";
 import SolutionsArea from "../solutions/SolutionsArea";
 import {useSettingsStore} from "@/store/settings-store";
-import {processImage} from "@/utils/image-post-processing";
+
 import {Button} from "../ui/button";
 import {useTranslation} from "react-i18next";
 import {useMediaQuery} from "@/hooks/use-media-query";
@@ -23,7 +23,7 @@ import {Tabs, TabsContent, TabsList, TabsTrigger} from "../ui/tabs";
 import {cn} from "@/lib/utils";
 import {useRouter} from "next/navigation";
 import {useShortcut} from "@/hooks/use-shortcut";
-import OpenCVLoader from "../OpenCVLoader";
+
 import {getEnabledToolCallingPrompts} from "@/ai/prompts/prompt-manager";
 import {useStoreInitialization} from "@/hooks/use-store-initialization";
 import {isTextMimeType} from "@/utils/file-utils";
@@ -38,7 +38,6 @@ export default function ScanPage() {
     addFileItems,
     updateItemStatus,
     removeImageItem,
-    updateFileItem,
     clearAllItems,
     setSelectedProblem,
     addSolution,
@@ -50,7 +49,7 @@ export default function ScanPage() {
   } = useProblemsStore((s) => s);
   const isStoreReady = useStoreInitialization();
 
-  const { imageEnhancement, traits, onlineSearchEnabled } = useSettingsStore(
+  const { traits, onlineSearchEnabled } = useSettingsStore(
     (s) => s
   );
 
@@ -155,8 +154,6 @@ export default function ScanPage() {
 
       if (arr.length === 0) return;
 
-      const shouldEnhanceImages = imageEnhancement && source !== "scanner";
-
       const initialItems: FileItem[] = arr.map((file) => ({
         id: uuidv4(),
         file,
@@ -164,39 +161,12 @@ export default function ScanPage() {
         mimeType: file.type,
         url: URL.createObjectURL(file),
         source,
-        status:
-          file.type.startsWith("image/") && shouldEnhanceImages
-            ? "processing"
-            : "pending"
+        status: "pending",
       }));
 
       addFileItems(initialItems);
-
-      // Image post-processing
-      if (shouldEnhanceImages) {
-        initialItems.forEach((item) => {
-          if (item.status === "processing") {
-            console.log(`Processing image ${item.displayName}`);
-            processImage(item.file)
-              .then((result) => {
-                console.log(`Success processed image ${item.displayName}`);
-                updateFileItem(item.id, {
-                  status: "pending",
-                  file: result.file,
-                  url: result.url
-                });
-              })
-              .catch((error) => {
-                console.error(`Failed to process ${item.displayName}:`, error);
-                updateFileItem(item.id, {
-                  status: "failed"
-                });
-              });
-          }
-        });
-      }
     },
-    [addFileItems, imageEnhancement, allowPdfUploads, t, updateFileItem]
+    [addFileItems, allowPdfUploads, t]
   );
 
   // Function to remove a specific item from the list by its ID.
@@ -543,7 +513,7 @@ ${traits}
 
   return (
     <>
-      {imageEnhancement && <OpenCVLoader />}
+
 
       <div className={cn("min-h-screen", isMobile && "pb-24")}>
         <div className="mx-auto w-full max-w-6xl px-4 py-6 sm:px-6 lg:px-8">

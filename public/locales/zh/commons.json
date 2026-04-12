@@ -364,6 +364,34 @@
         "cancel": "取消",
         "apply": "应用裁切",
         "applying": "应用中..."
+      },
+      "postprocess": {
+        "title": "后处理选项",
+        "image-enhancement": "图像增强",
+        "spine-flattening": "书页展平",
+        "paper-crop": "纸面边距裁切",
+        "color-mode": "颜色模式",
+        "color-mode-options": {
+          "auto": "自动",
+          "color": "彩色",
+          "grayscale": "灰度",
+          "binary": "二值化"
+        },
+        "postprocess-backend": "后处理后端",
+        "postprocess-backend-options": {
+          "heuristic": "Heuristic",
+          "native-ml-v1": "Native ML v1"
+        },
+        "recommended-on": "推荐: 开",
+        "recommended-off": "推荐: 关",
+        "preview": {
+          "button": "预览后处理效果",
+          "loading": "处理中...",
+          "processing-time": "处理耗时: {{ms}}ms",
+          "click-to-enlarge": "点击放大",
+          "fullscreen-alt": "后处理预览（点击关闭）",
+          "stale": "参数已变更"
+        }
       }
     },
     "controls": {
@@ -403,6 +431,14 @@
           "disabled-hint": "先启用原生后端，才能控制回退行为。"
         }
       },
+      "postprocess-backend": {
+        "label": "后处理后端",
+        "description": "学习式 residual dewarp 当前只走原生桌面路径；JS fallback 仍保持 heuristic。",
+        "options": {
+          "heuristic": "Heuristic Phase-2",
+          "native-ml-v1": "原生 Residual Control-Points（v1）"
+        }
+      },
       "actions": {
         "connecting": "连接中...",
         "start": "启动预览",
@@ -425,6 +461,10 @@
           "reconnecting": "重连中",
           "stopped": "已停止"
         }
+      },
+      "image-enhancement": {
+        "label": "图像色彩增强",
+        "description": "自动提升文档白平衡、对比度和色彩。"
       }
     },
     "preview-hud": {
@@ -490,32 +530,42 @@
         "empty": "当前还没有可用的轮廓点。请将文档保持在预览区域内，并确认所选检测器已经就绪。"
       },
       "capture": {
-        "title": "后处理计时",
-        "description": "最近一次文档后处理的分段耗时与输入输出分辨率。",
+        "title": "后处理详情",
+        "description": "最近一次文档后处理的完整状态与计时指标。",
         "badges": {
           "idle": "空闲",
           "processing": "处理中",
           "success": "已完成",
           "error": "失败",
-          "redetect-on": "源图重检开",
-          "redetect-off": "源图重检关",
-          "crop-on": "裁切开",
-          "crop-off": "裁切关",
-          "enhance-on": "增强开",
-          "enhance-off": "增强关"
+          "redetect-on": "源图重检: 开",
+          "redetect-off": "源图重检: 关",
+          "crop-on": "透视裁切: ✓",
+          "crop-off": "透视裁切: ✗",
+          "enhance-on": "图像增强: ✓",
+          "enhance-off": "图像增强: ✗",
+          "warp-on": "UVDoc Warp: ✓",
+          "warp-off": "UVDoc Warp: ✗"
         },
         "metrics": {
           "total": "总耗时",
-          "total-hint": "单次后处理从开始到产出文件",
+          "total-hint": "单次后处理从开始到完成",
           "decode": "源图解码",
-          "redetect": "源图重检",
+          "redetect": "角点优化",
           "crop": "透视裁切",
-          "enhance": "文档增强",
+          "enhance": "细节增强",
           "encode": "结果编码",
-          "input-resolution": "输入分辨率",
-          "output-resolution": "输出分辨率",
-          "last-update": "最近后处理更新时间",
-          "error": "最近后处理错误"
+          "flatten": "展平算法",
+          "paper-crop": "多余纸面裁切",
+          "model-ms": "UVDoc 模型推理",
+          "residual-warp": "UVDoc 网格应用",
+          "backend": "所用后端",
+          "model-id": "UVDoc 模型版本",
+          "grid-shape": "UVDoc 控制网格",
+          "fallback": "回退原因",
+          "input-resolution": "输入尺寸",
+          "output-resolution": "输出尺寸",
+          "last-update": "最近更新",
+          "error": "最近错误"
         }
       },
       "badges": {
@@ -580,6 +630,10 @@
           "preview": "preview",
           "single-hq": "single-hq"
         }
+      },
+      "detection": {
+        "title": "检测与连接",
+        "description": "展开查看详细指标"
       }
     }
   },
