@@ -1134,11 +1134,11 @@ export class TauriNativeFrameSource implements FrameSource {
         dimensions?.width ?? null,
         dimensions?.height ?? null,
       )) {
-        const downgradeReason =
-          `High-quality still capture downgraded to preview-sized legacy fallback `
-          + `(${dimensions?.width ?? 0}x${dimensions?.height ?? 0} vs preview ${previewWidth ?? 0}x${previewHeight ?? 0}).`;
-        this.markHighQualityStillCaptureUnavailable(downgradeReason);
-        throw new Error(downgradeReason);
+        console.warn(
+          `[Scanner][StillDiag] Still capture is preview-sized `
+          + `(${dimensions?.width ?? 0}x${dimensions?.height ?? 0} vs preview ${previewWidth ?? 0}x${previewHeight ?? 0}). `
+          + `Using captured still as-is to avoid mixing in unrelated preview frames.`,
+        );
       }
 
       console.info(
@@ -1701,6 +1701,7 @@ export class TauriNativeFrameSource implements FrameSource {
     }
   }
 
+  // @ts-expect-error Retained for future use when still capture endpoint truly fails.
   private markHighQualityStillCaptureUnavailable(reason: string): void {
     if (!this.state.capabilities.highQualityStillCapture) {
       return;

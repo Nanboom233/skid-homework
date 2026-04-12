@@ -205,6 +205,7 @@ const runEnhancementPipeline = (
   src: any,
   options?: {
     preferSoftTone?: boolean;
+    colorMode?: string;
   },
 ): ImageData => {
   const backgroundKernelSize = toOddKernelSize(
@@ -258,16 +259,20 @@ const runEnhancementPipeline = (
     cv.morphologyEx(otsuBinary, otsuBinary, cv.MORPH_OPEN, cleanupKernel);
     cv.morphologyEx(adaptiveBinary, adaptiveBinary, cv.MORPH_CLOSE, cleanupKernel);
 
-    const finalGray = options?.preferSoftTone
-      ? normalized
-      : (() => {
-          const otsuScore = computeBinaryCandidateScore(cv, otsuBinary);
-          const adaptiveScore = computeBinaryCandidateScore(cv, adaptiveBinary);
-          const bestBinaryScore = Math.max(otsuScore, adaptiveScore);
-          return Number.isFinite(bestBinaryScore)
-            ? (adaptiveScore > otsuScore ? adaptiveBinary : otsuBinary)
-            : normalized;
-        })();
+    const finalGray = (() => {
+      // TS Worker currently only implements a soft-flattened output (grayscale, non-binary)
+      // or an auto-thresholded binary output.
+      if (options?.colorMode === "grayscale" || options?.preferSoftTone) {
+        return normalized;
+      }
+      
+      const otsuScore = computeBinaryCandidateScore(cv, otsuBinary);
+      const adaptiveScore = computeBinaryCandidateScore(cv, adaptiveBinary);
+      const bestBinaryScore = Math.max(otsuScore, adaptiveScore);
+      return Number.isFinite(bestBinaryScore)
+        ? (adaptiveScore > otsuScore ? adaptiveBinary : otsuBinary)
+        : normalized;
+    })();
 
     cv.cvtColor(finalGray, display, cv.COLOR_GRAY2RGBA);
     return new ImageData(new Uint8ClampedArray(display.data), display.cols, display.rows);
@@ -282,6 +287,7 @@ export const enhanceDocumentRgbaMatToImageData = async (
   documentMat: any,
   options?: {
     preferSoftTone?: boolean;
+    colorMode?: string;
   },
 ): Promise<ImageData> => {
   const cv = getOpenCvRuntime();
@@ -297,6 +303,7 @@ export const enhanceDocumentImageData = async (
   documentImage: ImageData,
   options?: {
     preferSoftTone?: boolean;
+    colorMode?: string;
   },
 ): Promise<ImageData> => {
   const cv = getOpenCvRuntime();

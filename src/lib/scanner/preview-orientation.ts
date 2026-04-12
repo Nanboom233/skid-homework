@@ -126,3 +126,38 @@ export const mapPointsFromRotatedFrameToSource = (
     rotation,
   ));
 };
+
+/**
+ * Maps a point from the original source-image coordinate space into
+ * the rotated frame coordinate space.  This is the inverse of
+ * `mapPointFromRotatedFrameToSource`.
+ */
+export const mapPointFromSourceToRotatedFrame = (
+  point: PreviewOrientationPoint,
+  sourceWidth: number,
+  sourceHeight: number,
+  rotation: OrthogonalRotation,
+): PreviewOrientationPoint => {
+  switch (rotation) {
+    case 90:
+      return {
+        x: clamp(sourceHeight - 1 - point.y, 0, Math.max(0, sourceHeight - 1)),
+        y: clamp(point.x, 0, Math.max(0, sourceWidth - 1)),
+      };
+    case 180:
+      return {
+        x: clamp(sourceWidth - 1 - point.x, 0, Math.max(0, sourceWidth - 1)),
+        y: clamp(sourceHeight - 1 - point.y, 0, Math.max(0, sourceHeight - 1)),
+      };
+    case 270:
+      return {
+        x: clamp(point.y, 0, Math.max(0, sourceHeight - 1)),
+        y: clamp(sourceWidth - 1 - point.x, 0, Math.max(0, sourceWidth - 1)),
+      };
+    default:
+      return {
+        x: clamp(point.x, 0, Math.max(0, sourceWidth - 1)),
+        y: clamp(point.y, 0, Math.max(0, sourceHeight - 1)),
+      };
+  }
+};

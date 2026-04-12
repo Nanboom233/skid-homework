@@ -190,7 +190,7 @@ const encodeImageDataToPngBlobLocally = async (frame: ImageData): Promise<Blob> 
     surface.context.putImageData(frame, 0, 0);
 
     if (surface.kind === "offscreen") {
-      return await surface.canvas.convertToBlob({ type: "image/png" });
+      return await surface.canvas.convertToBlob({ type: "image/jpeg", quality: 0.95 });
     }
 
     return await new Promise<Blob>((resolve, reject) => {
@@ -198,9 +198,9 @@ const encodeImageDataToPngBlobLocally = async (frame: ImageData): Promise<Blob> 
         if (blob) {
           resolve(blob);
         } else {
-          reject(new Error("Failed to encode the frame as PNG."));
+          reject(new Error("Failed to encode the frame as JPEG."));
         }
-      }, "image/png");
+      }, "image/jpeg", 0.95);
     });
   } finally {
     releaseEncode?.();

@@ -48,8 +48,9 @@ const imageDataToPngBlob = async (imageData: ImageData): Promise<Blob> => {
 export const applyPerspectiveTransformToImageData = (
   imageData: ImageData,
   corners: Point[],
+  marginRatio: number = 0,
 ): ImageData => {
-  const warpedMat = applyPerspectiveTransformToMat(imageData, corners);
+  const warpedMat = applyPerspectiveTransformToMat(imageData, corners, marginRatio);
   try {
     return new ImageData(
       new Uint8ClampedArray(warpedMat.data),
@@ -62,7 +63,7 @@ export const applyPerspectiveTransformToImageData = (
 };
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-export const applyPerspectiveTransformToMat = (imageData: ImageData, corners: Point[]): any => {
+export const applyPerspectiveTransformToMat = (imageData: ImageData, corners: Point[], marginRatio: number = 0): any => {
   const cv = getOpenCvRuntime();
 
   if (corners.length !== 4) {
@@ -79,6 +80,11 @@ export const applyPerspectiveTransformToMat = (imageData: ImageData, corners: Po
   const heightRight = distance(tr, br);
   const maxHeight = Math.max(1, Math.round(Math.max(heightLeft, heightRight)));
 
+  const marginX = Math.round(maxWidth * marginRatio);
+  const marginY = Math.round(maxHeight * marginRatio);
+  const targetWidth = maxWidth + marginX * 2;
+  const targetHeight = maxHeight + marginY * 2;
+
   const srcMat = new cv.Mat(imageData.height, imageData.width, cv.CV_8UC4);
   const dstMat = new cv.Mat();
   const srcArr = new Float32Array([
@@ -88,10 +94,10 @@ export const applyPerspectiveTransformToMat = (imageData: ImageData, corners: Po
     bl.x, bl.y,
   ]);
   const dstArr = new Float32Array([
-    0, 0,
-    maxWidth - 1, 0,
-    maxWidth - 1, maxHeight - 1,
-    0, maxHeight - 1,
+    marginX, marginY,
+    marginX + maxWidth - 1, marginY,
+    marginX + maxWidth - 1, marginY + maxHeight - 1,
+    marginX, marginY + maxHeight - 1,
   ]);
 
   const srcPoints = cv.matFromArray(4, 1, cv.CV_32FC2, srcArr);
@@ -104,10 +110,10 @@ export const applyPerspectiveTransformToMat = (imageData: ImageData, corners: Po
       srcMat,
       dstMat,
       transformMatrix,
-      new cv.Size(maxWidth, maxHeight),
+      new cv.Size(targetWidth, targetHeight),
       cv.INTER_CUBIC,
-      cv.BORDER_REPLICATE,
-      new cv.Scalar(),
+      cv.BORDER_CONSTANT,
+      new cv.Scalar(0, 0, 0, 0),
     );
 
     return dstMat;
@@ -133,7 +139,8 @@ export const applyPerspectiveTransformToMat = (imageData: ImageData, corners: Po
  */
 export const applyPerspectiveTransform = async (
   imageData: ImageData,
-  corners: Point[]
+  corners: Point[],
+  marginRatio: number = 0,
 ): Promise<Blob> => {
-  return await imageDataToPngBlob(applyPerspectiveTransformToImageData(imageData, corners));
+  return await imageDataToPngBlob(applyPerspectiveTransformToImageData(imageData, corners, marginRatio));
 };

@@ -6,6 +6,7 @@ export interface Point {
 export interface DocumentContourOptions {
   maxWidth?: number;
   maxHeight?: number;
+  isFinalCapture?: boolean;
 }
 
 interface OpenCvGlobalScope {
@@ -25,14 +26,15 @@ export const buildDocumentContourDetectionOptions = (
   return {
     maxWidth: hasExplicitWidth ? Math.max(1, Math.floor(options.maxWidth as number)) : Math.max(1, Math.floor(width)),
     maxHeight: hasExplicitHeight ? Math.max(1, Math.floor(options.maxHeight as number)) : Math.max(1, Math.floor(height)),
+    isFinalCapture: options.isFinalCapture,
   };
 };
 
-const CONTOUR_AREA_MIN_RATIO = 0.08;
+const CONTOUR_AREA_MIN_RATIO = 0.04;
 const CONTOUR_AREA_MAX_RATIO = 0.98;
 const APPROXIMATION_EPSILON_FACTORS = [0.015, 0.02, 0.03, 0.04, 0.05] as const;
 const MAX_SCORING_CONTOURS = 15;
-const MIN_ACCEPTABLE_QUAD_SCORE = 2.2;
+const MIN_ACCEPTABLE_QUAD_SCORE = 1.5;
 const BORDER_TOUCH_MARGIN_RATIO = 0.02;
 
 const clamp = (value: number, min: number, max: number): number => {
@@ -135,8 +137,8 @@ const computeAreaScore = (
     return 0;
   }
 
-  const targetAreaRatio = 0.42;
-  const normalizedDistance = Math.min(1, Math.abs(areaRatio - targetAreaRatio) / targetAreaRatio);
+  const targetAreaRatio = 0.50;
+  const normalizedDistance = Math.min(1, Math.abs(areaRatio - targetAreaRatio) / 0.55);
   return 1 - normalizedDistance;
 };
 
@@ -263,7 +265,8 @@ export const detectDocumentContour = (
     cv.GaussianBlur(gray, blur, new cv.Size(5, 5), 0, 0, cv.BORDER_DEFAULT);
 
     // 3. Detect edges directly from the blurred grayscale image.
-    cv.Canny(blur, edges, 75, 200);
+    //    Use lower thresholds to catch soft-contrast document edges.
+    cv.Canny(blur, edges, 30, 90);
 
     // 4. Reconnect fragmented borders before contour extraction.
     cv.dilate(edges, edges, dilateKernel);
@@ -354,6 +357,158 @@ export const detectDocumentContour = (
     hierarchy.delete();
     closeKernel.delete();
     dilateKernel.delete();
+  }
+
+  if (!finalPoints || bestScore < MIN_ACCEPTABLE_QUAD_SCORE) {
+    // For final capture, try a second pass with adaptive thresholding
+    // which can detect document edges that standard Canny misses.
+    if (options.isFinalCapture) {
+      const adaptiveResult = detectDocumentContourAdaptive(imageData, options);
+      if (adaptiveResult) {
+        return adaptiveResult;
+      }
+    }
+    return null;
+  }
+
+  return finalPoints;
+};
+
+/**
+ * Fallback detection using adaptive thresholding.
+ * Used only for final capture when standard Canny detection fails.
+ */
+const detectDocumentContourAdaptive = (
+  imageData: ImageData,
+  options: DocumentContourOptions = {},
+): Point[] | null => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const cv = (globalThis as OpenCvGlobalScope).cv as any;
+  if (!cv || !cv.Mat) {
+    return null;
+  }
+
+  const src = new cv.Mat(imageData.height, imageData.width, cv.CV_8UC4);
+  src.data.set(imageData.data);
+
+  let working = src;
+  let resized: InstanceType<typeof cv.Mat> | null = null;
+  let scaleX = 1;
+  let scaleY = 1;
+
+  const hasMaxWidth = typeof options.maxWidth === "number" && Number.isFinite(options.maxWidth);
+  const hasMaxHeight = typeof options.maxHeight === "number" && Number.isFinite(options.maxHeight);
+  const maxWidth = hasMaxWidth ? Math.max(1, Math.floor(options.maxWidth as number)) : imageData.width;
+  const maxHeight = hasMaxHeight ? Math.max(1, Math.floor(options.maxHeight as number)) : imageData.height;
+  const resizeScale = Math.min(
+    1,
+    maxWidth / Math.max(1, imageData.width),
+    maxHeight / Math.max(1, imageData.height),
+  );
+
+  if (resizeScale < 1) {
+    const targetWidth = Math.max(1, Math.round(imageData.width * resizeScale));
+    const targetHeight = Math.max(1, Math.round(imageData.height * resizeScale));
+    resized = new cv.Mat();
+    cv.resize(src, resized, new cv.Size(targetWidth, targetHeight), 0, 0, cv.INTER_AREA);
+    working = resized;
+    scaleX = imageData.width / targetWidth;
+    scaleY = imageData.height / targetHeight;
+  }
+
+  const gray = new cv.Mat();
+  const blurred = new cv.Mat();
+  const thresh = new cv.Mat();
+  const contours = new cv.MatVector();
+  const hierarchy = new cv.Mat();
+
+  let finalPoints: Point[] | null = null;
+  let bestScore = Number.NEGATIVE_INFINITY;
+
+  try {
+    cv.cvtColor(working, gray, cv.COLOR_RGBA2GRAY);
+    cv.GaussianBlur(gray, blurred, new cv.Size(5, 5), 0, 0, cv.BORDER_DEFAULT);
+
+    // Adaptive threshold reveals document edges even under uneven lighting.
+    cv.adaptiveThreshold(
+      blurred,
+      thresh,
+      255,
+      cv.ADAPTIVE_THRESH_GAUSSIAN_C,
+      cv.THRESH_BINARY_INV,
+      31,
+      10,
+    );
+
+    // Morphological closing to bridge small gaps.
+    const kernel = cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(5, 5));
+    cv.morphologyEx(thresh, thresh, cv.MORPH_CLOSE, kernel);
+    kernel.delete();
+
+    cv.findContours(thresh, contours, hierarchy, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE);
+
+    const minArea = working.cols * working.rows * CONTOUR_AREA_MIN_RATIO;
+    const maxArea = working.cols * working.rows * CONTOUR_AREA_MAX_RATIO;
+    const numContours = contours.size();
+    const sortedContours: Array<{ index: number; area: number }> = [];
+
+    for (let i = 0; i < numContours; i++) {
+      const contour = contours.get(i);
+      const area = cv.contourArea(contour);
+      contour.delete();
+      if (area < minArea || area > maxArea) {
+        continue;
+      }
+      sortedContours.push({ index: i, area });
+    }
+
+    sortedContours.sort((a, b) => b.area - a.area);
+
+    for (let i = 0; i < Math.min(MAX_SCORING_CONTOURS, sortedContours.length); i++) {
+      const contour = contours.get(sortedContours[i].index);
+      const perimeter = cv.arcLength(contour, true);
+      const contourArea = sortedContours[i].area;
+
+      for (const epsilonFactor of APPROXIMATION_EPSILON_FACTORS) {
+        const approx = new cv.Mat();
+        try {
+          cv.approxPolyDP(contour, approx, epsilonFactor * perimeter, true);
+          if (approx.rows === 4 && cv.isContourConvex(approx)) {
+            const candidatePoints: Point[] = [];
+            for (let j = 0; j < 4; j++) {
+              candidatePoints.push({
+                x: Math.round(approx.data32S[j * 2] * scaleX),
+                y: Math.round(approx.data32S[j * 2 + 1] * scaleY),
+              });
+            }
+            const orderedCandidatePoints = orderPoints(candidatePoints);
+            const candidateScore = computeQuadScore(
+              orderedCandidatePoints,
+              contourArea * scaleX * scaleY,
+              imageData.width,
+              imageData.height,
+            );
+            if (candidateScore > bestScore) {
+              bestScore = candidateScore;
+              finalPoints = orderedCandidatePoints;
+            }
+          }
+        } finally {
+          approx.delete();
+        }
+      }
+      contour.delete();
+    }
+  } catch (error) {
+    console.error("[Scanner] Adaptive document detection error: ", error);
+  } finally {
+    src.delete();
+    resized?.delete();
+    gray.delete();
+    blurred.delete();
+    thresh.delete();
+    contours.delete();
+    hierarchy.delete();
   }
 
   if (!finalPoints || bestScore < MIN_ACCEPTABLE_QUAD_SCORE) {
