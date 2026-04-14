@@ -521,8 +521,10 @@ const resolveStillFrameRotation = (
 
   if (selectedRotation === null || !selectedDimensions) {
     throw new Error(
-      lastCompatibilityReason
-        ?? `Preview/still mapping is incompatible (${previewDimensions.width}x${previewDimensions.height} -> ${stillDimensions.width}x${stillDimensions.height}).`,
+      `Preview/still mapping failed after trying all rotations. `
+        + `preview=${previewDimensions.width}x${previewDimensions.height}, `
+        + `still=${stillDimensions.width}x${stillDimensions.height}. `
+        + (lastCompatibilityReason ? `Last attempt: ${lastCompatibilityReason}` : ``),
     );
   }
 
@@ -1504,7 +1506,7 @@ export default function ScannerView({
           postprocessBackend: optionsOverride?.postprocessBackend ?? scannerPostProcessBackend,
           spineFlattening: optionsOverride?.spineFlattening ?? true,
           perspectiveTransform: optionsOverride?.perspectiveTransform ?? true,
-          affineRemoval: optionsOverride?.affineRemoval ?? true,
+          gridPostprocess: optionsOverride?.gridPostprocess ?? "none",
         });
         const blob = new Blob([nativeResult.encodedBytes], {type: nativeResult.encodedMimeType});
         return {
@@ -1608,7 +1610,7 @@ export default function ScannerView({
           postprocessBackend: optionsOverride?.postprocessBackend ?? scannerPostProcessBackend,
           spineFlattening: optionsOverride?.spineFlattening ?? true,
           perspectiveTransform: optionsOverride?.perspectiveTransform ?? true,
-          affineRemoval: optionsOverride?.affineRemoval ?? true,
+          gridPostprocess: optionsOverride?.gridPostprocess ?? "none",
         });
         const blob = new Blob([nativeResult.encodedBytes], {type: nativeResult.encodedMimeType});
         return {
@@ -1875,7 +1877,7 @@ export default function ScannerView({
         postprocessBackend: options.overrides.postprocessBackend ?? scannerPostProcessBackend,
         spineFlattening: options.overrides.spineFlattening ?? true,
         perspectiveTransform: options.overrides.perspectiveTransform ?? true,
-        affineRemoval: options.overrides.affineRemoval ?? true,
+        gridPostprocess: options.overrides.gridPostprocess ?? "none",
       } : undefined,
     });
     setCaptureDebug({

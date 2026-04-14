@@ -11,7 +11,7 @@ export interface FrameMappingCompatibility {
   reason: string | null;
 }
 
-const DEFAULT_ASPECT_DELTA_TOLERANCE = 0.015;
+const DEFAULT_ASPECT_DELTA_TOLERANCE = 0.05;
 
 const assertValidDimensions = (dimensions: FrameDimensions, label: string): void => {
   if (!Number.isFinite(dimensions.width) || !Number.isFinite(dimensions.height)) {
