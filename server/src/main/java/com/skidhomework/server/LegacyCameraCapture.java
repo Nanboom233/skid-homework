@@ -299,15 +299,24 @@ public final class LegacyCameraCapture implements CameraCaptureBackend {
             throw new IllegalStateException("Legacy preview fallback requires NV21 preview support.");
         }
 
+        double targetAspect = CameraSupport.normalizedAspectRatio(targetWidth, targetHeight);
+
         List<Camera.Size> supportedPictureSizes = parameters.getSupportedPictureSizes();
         Camera.Size bestPictureSize = null;
         if (supportedPictureSizes != null && !supportedPictureSizes.isEmpty()) {
             bestPictureSize = supportedPictureSizes.get(0);
-            long bestArea = (long) bestPictureSize.width * (long) bestPictureSize.height;
+            double bestAspectDelta = Double.MAX_VALUE;
+            long bestArea = -1L;
             for (Camera.Size candidate : supportedPictureSizes) {
                 long area = (long) candidate.width * (long) candidate.height;
-                if (area > bestArea) {
+                double candidateAspect = CameraSupport.normalizedAspectRatio(
+                        candidate.width, candidate.height);
+                double aspectDelta = Math.abs(candidateAspect - targetAspect);
+                if (aspectDelta < bestAspectDelta - 0.001d
+                        || (Math.abs(aspectDelta - bestAspectDelta) <= 0.001d
+                            && area > bestArea)) {
                     bestPictureSize = candidate;
+                    bestAspectDelta = aspectDelta;
                     bestArea = area;
                 }
             }
@@ -321,9 +330,7 @@ public final class LegacyCameraCapture implements CameraCaptureBackend {
             );
         }
 
-        double sensorAspect = bestPictureSize != null 
-                ? CameraSupport.normalizedAspectRatio(bestPictureSize.width, bestPictureSize.height)
-                : CameraSupport.normalizedAspectRatio(targetWidth, targetHeight);
+        double sensorAspect = targetAspect;
 
         long targetArea = (long) Math.max(1, targetWidth) * (long) Math.max(1, targetHeight);
 

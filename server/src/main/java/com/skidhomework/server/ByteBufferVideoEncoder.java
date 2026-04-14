@@ -308,14 +308,17 @@ public final class ByteBufferVideoEncoder implements PreviewStreamEncoder {
             throw new IOException("encoder does not expose any byte-buffer input color formats");
         }
 
+        // Prefer Planar (I420): three independent Y/U/V planes eliminate
+        // the NV12-vs-NV21 interleaving ambiguity that affects SemiPlanar
+        // on some Android vendor implementations.
         for (int colorFormat : colorFormats) {
-            if (colorFormat == MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar) {
+            if (colorFormat == MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar) {
                 return colorFormat;
             }
         }
 
         for (int colorFormat : colorFormats) {
-            if (colorFormat == MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar) {
+            if (colorFormat == MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar) {
                 return colorFormat;
             }
         }
