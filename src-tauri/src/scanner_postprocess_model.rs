@@ -590,7 +590,7 @@ pub fn run_native_postprocess_model_with_runtime_hints(
     app_config_dir_hint: Option<PathBuf>,
     proxy_image: &RgbaImage,
     target_size: Option<(u32, u32)>,
-    remove_affine: bool,
+    grid_postprocess: &str,
 ) -> Result<NativePostprocessModelRunResult, String> {
     let resource_root_candidates = build_resource_root_candidates(resource_dir_hint);
     let selected_resource_root = select_resource_root(&resource_root_candidates)
@@ -763,7 +763,7 @@ pub fn run_native_postprocess_model_with_runtime_hints(
     // Per the official UVDoc design (github.com/tanguymagne/UVDoc), the grid
     // is applied directly to the same image the model analyzed (the proxy).
     let residual_started_at = std::time::Instant::now();
-    let image = apply_uvdoc_point_grid(proxy_image, target_size, remove_affine, &point_grid.1, &point_grid.0)?;
+    let image = apply_uvdoc_point_grid(proxy_image, target_size, grid_postprocess, &point_grid.1, &point_grid.0)?;
     let residual_warp_ms = residual_started_at.elapsed().as_secs_f64() * 1000.0;
 
     Ok(NativePostprocessModelRunResult {
@@ -834,7 +834,7 @@ fn build_uvdoc_input_tensor(
 fn apply_uvdoc_point_grid(
     proxy_image: &RgbaImage,
     target_size: Option<(u32, u32)>,
-    remove_affine: bool,
+    grid_postprocess: &str,
     grid: &[f32],
     shape: &[i64],
 ) -> Result<RgbaImage, String> {
@@ -862,9 +862,13 @@ fn apply_uvdoc_point_grid(
     }
 
     let mut cleaned_grid = grid[..plane_len * 2].to_vec();
-    if remove_affine {
-        // ── Remove global affine component from the grid ──
-        remove_affine_from_grid(&mut cleaned_grid, grid_height, grid_width);
+    match grid_postprocess {
+        "x-stretch-equalize" => {
+            x_stretch_equalize_grid(&mut cleaned_grid, grid_height, grid_width);
+        }
+        _ => {
+            // "none" — use raw grid as-is
+        }
     }
 
     let out_w = target_size.map(|s| s.0).unwrap_or_else(|| proxy_image.width());
@@ -907,130 +911,46 @@ fn apply_uvdoc_point_grid(
     Ok(output)
 }
 
-/// Removes the global affine component from a UVDoc deformation grid **in-place**.
+/// Per-row X stretch equalization of the UVDoc grid **in-place**.
 ///
-/// The grid is `[2, Gh, Gw]` stored as two consecutive planes of `Gh × Gw` f32
-/// values (channel 0 = X, channel 1 = Y) in row-major order, with values in
-/// normalized `[-1, 1]` coordinates.
+/// The UVDoc backward-mapping grid has non-uniform horizontal stretch:
+/// the spine side is spread out (stretch > 1) while the non-spine side
+/// is compressed (stretch < 1, e.g. R=0.66 vs M=1.03).  This makes
+/// text on the non-spine side appear narrower.
 ///
-/// For each grid point we compute the displacement from identity and then fit a
-/// 6-parameter affine model to the entire displacement field:
+/// **Algorithm:**
 ///
-/// ```text
-///   dx(u,v) ≈ a₁₁·u + a₁₂·v + b₁
-///   dy(u,v) ≈ a₂₁·u + a₂₂·v + b₂
-/// ```
+/// For each grid row, replace the ch0 (X) values with a uniform
+/// linspace between the row's existing edge values `[x_left, x_right]`.
+/// This redistributes the internal stretch evenly across the row while
+/// preserving the model's edge positions (which are already near ±1
+/// after perspective cropping).
 ///
-/// where `(u, v)` are the identity-grid normalized coordinates.
-///
-/// Because the grid points are uniformly spaced in `[-1, 1]`, the cross-terms
-/// `Σ(u)`, `Σ(v)`, `Σ(u·v)` are all exactly zero, so the normal equations
-/// decouple into a trivially diagonal system — no matrix inversion needed.
-///
-/// Subtracting the affine prediction from the displacement and adding identity
-/// back yields a grid that preserves **only** the model's local curvature
-/// corrections while eliminating any global rotation, scale, or translation.
-fn remove_affine_from_grid(grid: &mut [f32], grid_height: usize, grid_width: usize) {
-    let plane_len = grid_height * grid_width;
-    if plane_len == 0 {
+/// The ch1 (Y) values are left **completely untouched**, preserving the
+/// model's vertical curvature corrections.
+fn x_stretch_equalize_grid(grid: &mut [f32], grid_height: usize, grid_width: usize) {
+    if grid_width <= 1 || grid_height == 0 {
         return;
     }
-    let n = plane_len as f64;
 
-    // ── Pass 1: accumulate sums for the diagonal normal equations ──
-    // Independent variables: u = identity_x, v = identity_y
-    // Dependent variables:   dx = grid_x − u,  dy = grid_y − v
-    let mut sum_u2: f64 = 0.0;
-    let mut sum_v2: f64 = 0.0;
+    let denom = (grid_width as f32) - 1.0;
 
-    // X-channel (channel 0) displacement
-    let mut sum_u_dx: f64 = 0.0;
-    let mut sum_v_dx: f64 = 0.0;
-    let mut sum_dx: f64 = 0.0;
-
-    // Y-channel (channel 1) displacement
-    let mut sum_u_dy: f64 = 0.0;
-    let mut sum_v_dy: f64 = 0.0;
-    let mut sum_dy: f64 = 0.0;
-
+    // Only modify channel 0 (X).  Channel 1 (Y) stays untouched.
     for gy in 0..grid_height {
-        let v = if grid_height <= 1 {
-            0.0
-        } else {
-            2.0 * gy as f64 / (grid_height as f64 - 1.0) - 1.0
-        };
+        let row_start = gy * grid_width;
+        let x_left = grid[row_start];
+        let x_right = grid[row_start + grid_width - 1];
         for gx in 0..grid_width {
-            let u = if grid_width <= 1 {
-                0.0
-            } else {
-                2.0 * gx as f64 / (grid_width as f64 - 1.0) - 1.0
-            };
-
-            let idx = gy * grid_width + gx;
-            let gx_val = grid[idx] as f64;              // channel 0 (X)
-            let gy_val = grid[plane_len + idx] as f64;   // channel 1 (Y)
-
-            let dx = gx_val - u;
-            let dy = gy_val - v;
-
-            sum_u2 += u * u;
-            sum_v2 += v * v;
-
-            sum_u_dx += u * dx;
-            sum_v_dx += v * dx;
-            sum_dx += dx;
-
-            sum_u_dy += u * dy;
-            sum_v_dy += v * dy;
-            sum_dy += dy;
+            grid[row_start + gx] = x_left + (x_right - x_left) * (gx as f32) / denom;
         }
     }
-
-    // ── Solve the diagonal 3×3 systems ──
-    let a11 = if sum_u2 > 1e-12 { sum_u_dx / sum_u2 } else { 0.0 };
-    let a12 = if sum_v2 > 1e-12 { sum_v_dx / sum_v2 } else { 0.0 };
-    let b1 = sum_dx / n;
-
-    let a21 = if sum_u2 > 1e-12 { sum_u_dy / sum_u2 } else { 0.0 };
-    let a22 = if sum_v2 > 1e-12 { sum_v_dy / sum_v2 } else { 0.0 };
-    let b2 = sum_dy / n;
 
     eprintln!(
-        "[UVDoc affine removal] scale_x={:.4} shear_xy={:.4} tx={:.4}  \
-         shear_yx={:.4} scale_y={:.4} ty={:.4}",
-        a11, a12, b1, a21, a22, b2
+        "[UVDoc] grid_postprocess=x-stretch-equalize applied | ch0(X)→linspace, ch1(Y)→preserved",
     );
-
-    // ── Pass 2: subtract affine, reconstruct grid = identity + residual ──
-    for gy in 0..grid_height {
-        let v = if grid_height <= 1 {
-            0.0
-        } else {
-            2.0 * gy as f64 / (grid_height as f64 - 1.0) - 1.0
-        };
-        for gx in 0..grid_width {
-            let u = if grid_width <= 1 {
-                0.0
-            } else {
-                2.0 * gx as f64 / (grid_width as f64 - 1.0) - 1.0
-            };
-
-            let idx = gy * grid_width + gx;
-
-            // Channel 0 (X)
-            let raw_x = grid[idx] as f64;
-            let dx = raw_x - u;
-            let dx_residual = dx - (a11 * u + a12 * v + b1);
-            grid[idx] = (u + dx_residual) as f32;
-
-            // Channel 1 (Y)
-            let raw_y = grid[plane_len + idx] as f64;
-            let dy = raw_y - v;
-            let dy_residual = dy - (a21 * u + a22 * v + b2);
-            grid[plane_len + idx] = (v + dy_residual) as f32;
-        }
-    }
 }
+
+
 
 fn bilinear_sample_grid_channel(
     grid: &[f32],
@@ -1131,7 +1051,7 @@ mod tests {
 
         let grid = vec![-1.0, 1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0];
         let shape = [1_i64, 2, 2, 2];
-        let warped = apply_uvdoc_point_grid(&source, &grid, &shape)
+        let warped = apply_uvdoc_point_grid(&source, None, "none", &grid, &shape)
             .expect("identity warp should succeed");
         assert_eq!(warped.width(), source.width());
         assert_eq!(warped.height(), source.height());

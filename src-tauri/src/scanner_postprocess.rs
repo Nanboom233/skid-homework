@@ -49,10 +49,11 @@ pub struct ScannerPostProcessRequest {
     /// Whether to apply perspective transform to produce a top-down view.
     #[serde(default = "default_true")]
     perspective_transform: bool,
-    /// Whether to remove the global affine component from the UVDoc grid.
-    /// When false, the raw UVDoc grid is used directly.
-    #[serde(default = "default_true")]
-    affine_removal: bool,
+    /// Grid post-processing mode for UVDoc output.
+    /// - `"none"` (default): raw grid, no post-processing.
+    /// - `"x-stretch-equalize"`: per-row X linspace equalization.
+    #[serde(default = "default_grid_postprocess")]
+    grid_postprocess: String,
 }
 
 fn default_true() -> bool {
@@ -67,8 +68,9 @@ fn default_postprocess_backend() -> String {
     "heuristic".to_string()
 }
 
-
-
+fn default_grid_postprocess() -> String {
+    "none".to_string()
+}
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScannerPostProcessResponse {
@@ -206,7 +208,7 @@ pub fn postprocess_image_bytes(
         None,
         true,
         true,
-        true,
+        default_grid_postprocess(),
     )
 }
 
@@ -222,7 +224,7 @@ pub fn postprocess_image_bytes_with_options(
     app_config_dir_hint: Option<std::path::PathBuf>,
     spine_flattening: bool,
     perspective_transform: bool,
-    affine_removal: bool,
+    grid_postprocess: String,
 ) -> Result<(ScannerPostProcessResponse, Vec<u8>), String> {
     let request = ScannerPostProcessRequest {
         source_bytes,
@@ -241,7 +243,7 @@ pub fn postprocess_image_bytes_with_options(
         postprocess_backend,
         spine_flattening,
         perspective_transform,
-        affine_removal,
+        grid_postprocess,
     };
     process_image_request(request, resource_dir_hint, app_config_dir_hint)
 }
@@ -282,6 +284,17 @@ fn process_image_request(
     let mut model_id = None;
     let mut control_grid_shape = None;
 
+    eprintln!(
+        "[Pipeline] begin | input={}x{} | rotate={} | perspective={} | flatten={} | enhance={} | backend={} | grid_pp={}",
+        input_width, input_height,
+        request.output_rotation,
+        request.perspective_transform,
+        request.spine_flattening,
+        request.image_enhancement,
+        request.postprocess_backend,
+        request.grid_postprocess,
+    );
+
     // ── Step 1: Rotation ──
     // The image is rotated first.  The front-end sends document_points that are
     // already in the rotated coordinate space, so no point transformation is
@@ -290,6 +303,7 @@ fn process_image_request(
         let rotate_started_at = Instant::now();
         current = rotate_image(current, request.output_rotation)?;
         rotate_ms = Some(rotate_started_at.elapsed().as_secs_f64() * 1000.0);
+        eprintln!("[Pipeline] step1:rotate {}° → {}x{} ({:.1}ms)", request.output_rotation, current.width(), current.height(), rotate_ms.unwrap());
     }
 
     // ── Step 2: Perspective Transform / Crop ──
@@ -314,6 +328,7 @@ fn process_image_request(
                 &mut warped,
             );
             current = warped;
+            eprintln!("[Pipeline] step2:perspective → {}x{} ({:.1}ms)", current.width(), current.height(), perspective_ms.unwrap());
         } else {
             // Perspective is off — still crop to the bounding box of the 4 corner points.
             let min_x = points.iter().map(|p| p.x).fold(f32::INFINITY, f32::min).max(0.0) as u32;
@@ -325,6 +340,7 @@ fn process_image_request(
             if max_x > min_x && max_y > min_y {
                 let cropped = image::imageops::crop_imm(&current, min_x, min_y, max_x - min_x, max_y - min_y).to_image();
                 current = cropped;
+                eprintln!("[Pipeline] step2:crop → {}x{}", current.width(), current.height());
             }
         }
     }
@@ -337,7 +353,7 @@ fn process_image_request(
                 app_config_dir_hint.clone(),
                 &current,
                 None,
-                request.affine_removal,
+                &request.grid_postprocess,
             );
 
             postprocess_backend = result.backend_used.clone();
@@ -349,9 +365,15 @@ fn process_image_request(
 
             if let Some(image) = result.image {
                 current = image;
+                eprintln!(
+                    "[Pipeline] step3:flatten(ML) → {}x{} (model={:.1}ms warp={:.1}ms)",
+                    current.width(), current.height(),
+                    model_ms.unwrap_or(0.0), residual_warp_ms.unwrap_or(0.0),
+                );
             } else {
                 let reason = result.fallback_reason
                     .unwrap_or_else(|| "Unknown ML pipeline error".to_string());
+                eprintln!("[Pipeline] step3:flatten(ML) FAILED: {}", reason);
                 return Err(reason);
             }
         } else {
@@ -360,6 +382,10 @@ fn process_image_request(
             flatten_ms = Some(flatten_started_at.elapsed().as_secs_f64() * 1000.0);
             current = flatten_result.image;
             local_flattening_applied = flatten_result.applied;
+            eprintln!(
+                "[Pipeline] step3:flatten(heuristic) applied={} ({:.1}ms)",
+                local_flattening_applied, flatten_ms.unwrap(),
+            );
         }
     }
 
@@ -368,12 +394,19 @@ fn process_image_request(
         let enhance_started_at = Instant::now();
         current = enhance_document_image(&current, local_flattening_applied, &request.color_mode);
         enhance_ms = Some(enhance_started_at.elapsed().as_secs_f64() * 1000.0);
+        eprintln!("[Pipeline] step4:enhance mode={} ({:.1}ms)", request.color_mode, enhance_ms.unwrap());
     }
 
     // ── Step 5: Encode ──
     let encode_started_at = Instant::now();
     let encoded_png = encode_png(&current)?;
     let encode_ms = encode_started_at.elapsed().as_secs_f64() * 1000.0;
+    let total_ms = started_at.elapsed().as_secs_f64() * 1000.0;
+
+    eprintln!(
+        "[Pipeline] done | output={}x{} | encode={:.1}ms | total={:.1}ms",
+        current.width(), current.height(), encode_ms, total_ms,
+    );
 
     let response = ScannerPostProcessResponse {
         processing_ms: started_at.elapsed().as_secs_f64() * 1000.0,
@@ -409,14 +442,14 @@ fn attempt_residual_control_point_stage(
     app_config_dir_hint: Option<std::path::PathBuf>,
     proxy_image: &RgbaImage,
     target_size: Option<(u32, u32)>,
-    remove_affine: bool,
+    grid_postprocess: &str,
 ) -> ResidualWarpAttempt {
     match run_native_postprocess_model_with_runtime_hints(
         resource_dir_hint.clone(),
         app_config_dir_hint.clone(),
         proxy_image,
         target_size,
-        remove_affine,
+        grid_postprocess,
     ) {
         Ok(result) => ResidualWarpAttempt {
             backend_used: ScannerPostProcessBackend::NativeMlV1,
@@ -2006,6 +2039,8 @@ mod tests {
                 color_mode: default_color_mode(),
                 postprocess_backend: default_postprocess_backend(),
                 spine_flattening: true,
+                perspective_transform: true,
+                grid_postprocess: default_grid_postprocess(),
             },
             None,
             None,
@@ -2126,6 +2161,8 @@ mod tests {
                 color_mode: default_color_mode(),
                 postprocess_backend: default_postprocess_backend(),
                 spine_flattening: true,
+                perspective_transform: true,
+                grid_postprocess: default_grid_postprocess(),
             },
             None,
             None,
@@ -2168,6 +2205,8 @@ mod tests {
                 color_mode: default_color_mode(),
                 postprocess_backend: default_postprocess_backend(),
                 spine_flattening: true,
+                perspective_transform: true,
+                grid_postprocess: default_grid_postprocess(),
             },
             None,
             None,

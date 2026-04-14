@@ -82,7 +82,7 @@ export const processTauriScannerPostProcessSourceFile = async (
     postprocessBackend?: ScannerPostProcessBackend;
     spineFlattening?: boolean;
     perspectiveTransform?: boolean;
-    affineRemoval?: boolean;
+    gridPostprocess?: "none" | "x-stretch-equalize";
   },
 ): Promise<TauriScannerPostProcessResult> => {
   if (!isTauri()) {
@@ -174,7 +174,7 @@ export const processTauriScannerPostProcessSourceFile = async (
           postprocessBackend: options.postprocessBackend ?? "heuristic",
           spineFlattening: options.spineFlattening ?? true,
           perspectiveTransform: options.perspectiveTransform ?? true,
-          affineRemoval: options.affineRemoval ?? true,
+          gridPostprocess: options.gridPostprocess ?? "none",
         },
         payloadChannel,
       },

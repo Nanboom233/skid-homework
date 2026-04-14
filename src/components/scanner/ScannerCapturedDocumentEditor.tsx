@@ -37,7 +37,7 @@ export interface PostProcessOptions {
   postprocessBackend: ScannerPostProcessBackend;
   spineFlattening: boolean;
   perspectiveTransform?: boolean;
-  affineRemoval?: boolean;
+  gridPostprocess?: "none" | "x-stretch-equalize";
 }
 
 interface ScannerCapturedDocumentEditorProps {
@@ -137,7 +137,7 @@ const buildOptionsFingerprint = (
   options: PostProcessOptions,
 ): string => {
   const pointsStr = points.map((p) => `${Math.round(p.x * 10)},${Math.round(p.y * 10)}`).join("|");
-  return `${pointsStr}::${options.imageEnhancement}:${options.colorMode}:${options.postprocessBackend}:${options.spineFlattening}:${options.perspectiveTransform}:${options.affineRemoval}`;
+  return `${pointsStr}::${options.imageEnhancement}:${options.colorMode}:${options.postprocessBackend}:${options.spineFlattening}:${options.perspectiveTransform}:${options.gridPostprocess}`;
 };
 
 export function ScannerCapturedDocumentEditor({
@@ -193,7 +193,7 @@ function ScannerCapturedDocumentEditorBody({
   const [postprocessBackend, setPostprocessBackend] = useState<ScannerPostProcessBackend>(document.options?.postprocessBackend ?? globalBackend);
   const [spineFlattening, setSpineFlattening] = useState(document.options?.spineFlattening ?? true);
   const [perspectiveTransform, setPerspectiveTransform] = useState(document.options?.perspectiveTransform ?? true);
-  const [affineRemoval, setAffineRemoval] = useState(document.options?.affineRemoval ?? true);
+  const [gridPostprocess, setGridPostprocess] = useState<"none" | "x-stretch-equalize">(document.options?.gridPostprocess ?? "none");
 
   // Corner refinement state
   const [isRefining, setIsRefining] = useState(false);
@@ -222,8 +222,8 @@ function ScannerCapturedDocumentEditorBody({
     postprocessBackend,
     spineFlattening,
     perspectiveTransform,
-    affineRemoval,
-  }), [imageEnhancement, colorMode, postprocessBackend, spineFlattening, perspectiveTransform, affineRemoval]);
+    gridPostprocess,
+  }), [imageEnhancement, colorMode, postprocessBackend, spineFlattening, perspectiveTransform, gridPostprocess]);
 
   // Current fingerprint — used to detect whether a re-process is needed
   const currentFingerprint = useMemo(
@@ -540,20 +540,24 @@ function ScannerCapturedDocumentEditorBody({
             />
           </div>
 
-          {/* Affine Removal (only meaningful for native-ml-v1) */}
-          {postprocessBackend === "native-ml-v1" ? (
             <div className="flex items-center justify-between gap-3">
-              <Label htmlFor="editor-affine-removal" className="text-sm cursor-pointer">
-                Affine Removal
+              <Label htmlFor="editor-grid-postprocess" className="text-sm shrink-0">
+                Grid Post-Process
               </Label>
-              <Switch
-                id="editor-affine-removal"
-                checked={affineRemoval}
-                onCheckedChange={setAffineRemoval}
+              <Select
+                value={gridPostprocess}
+                onValueChange={(value) => setGridPostprocess(value as "none" | "x-stretch-equalize")}
                 disabled={isApplying}
-              />
+              >
+                <SelectTrigger id="editor-grid-postprocess" className="w-[160px] h-8 text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">None (raw)</SelectItem>
+                  <SelectItem value="x-stretch-equalize">X-Stretch Equalize</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
-          ) : null}
 
           {/* Color Mode */}
           <div className="flex items-center justify-between gap-3">
