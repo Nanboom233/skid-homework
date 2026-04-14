@@ -13,7 +13,7 @@ fn main() {
     }
 
     let result =
-        run_native_postprocess_model_with_runtime_hints(resource_hint, None, &source, None, true)
+        run_native_postprocess_model_with_runtime_hints(resource_hint, None, &source, None, "none")
             .expect("UVDoc smoke run should succeed");
     println!(
         "{}",

@@ -144,7 +144,7 @@ fn run() -> Result<(), String> {
         None,
         true,
         true,
-        true,
+        "none".to_string(),
     ) {
         Ok(result) => result,
         Err(error) => {
