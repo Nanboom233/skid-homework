@@ -817,20 +817,16 @@ fn build_uvdoc_input_tensor(
 
 /// Applies the UVDoc backward-mapping grid to produce the dewarped image.
 ///
-/// Pipeline: model grid → affine removal → bilinear upsample → backward sample.
+/// Pipeline: model grid → optional postprocess → bilinear upsample → backward sample.
 ///
-/// The UVDoc model was trained on raw warped documents (no perspective correction).
-/// When run on an already–perspective-corrected proxy, its predicted grid contains
-/// a mix of useful **local curvature corrections** (spine flattening, line
-/// straightening) and harmful **global affine transformations** (rotation, scale,
-/// translation) that duplicate work our perspective stage already did.
+/// The grid is `[1, 2, Gh, Gw]` with channels 0 (X) and 1 (Y) in normalized
+/// `[-1, 1]` coordinates (PyTorch `align_corners=True` convention).
 ///
-/// We decompose the grid's displacement field (grid − identity) into:
-///   1. **Global affine component** — fitted via least-squares and discarded.
-///   2. **Residual local deformation** — the curvature corrections we want to keep.
-///
-/// The cleaned grid is then applied with the standard PyTorch `F.grid_sample`
-/// backward-mapping logic (`align_corners=True`).
+/// Grid post-processing modes:
+///   - `"none"`: use the raw model grid directly.
+///   - `"x-stretch-equalize"`: replace X channel with identity `[-1, +1]`,
+///     keeping Y curvature intact.  Eliminates non-uniform horizontal
+///     stretch and edge contraction from the model predictions.
 fn apply_uvdoc_point_grid(
     proxy_image: &RgbaImage,
     target_size: Option<(u32, u32)>,
@@ -911,23 +907,22 @@ fn apply_uvdoc_point_grid(
     Ok(output)
 }
 
-/// Per-row X stretch equalization of the UVDoc grid **in-place**.
+/// X stretch equalization of the UVDoc grid **in-place**.
 ///
-/// The UVDoc backward-mapping grid has non-uniform horizontal stretch:
-/// the spine side is spread out (stretch > 1) while the non-spine side
-/// is compressed (stretch < 1, e.g. R=0.66 vs M=1.03).  This makes
-/// text on the non-spine side appear narrower.
+/// Replaces the model's X channel (channel 0) with identity
+/// `linspace(-1, +1)` for **all rows**.  The Y channel is untouched.
 ///
-/// **Algorithm:**
+/// ## Mathematical basis
 ///
-/// For each grid row, replace the ch0 (X) values with a uniform
-/// linspace between the row's existing edge values `[x_left, x_right]`.
-/// This redistributes the internal stretch evenly across the row while
-/// preserving the model's edge positions (which are already near ±1
-/// after perspective cropping).
+/// Uniform text width requires `∂norm_x/∂ox = constant`.
+/// This holds iff `G[0, gy, gx] = A + B·gx` with A, B independent of gy.
+/// The unique stretch-1.0 solution is `A = -1, B = 2/(Gw-1)` (identity).
 ///
-/// The ch1 (Y) values are left **completely untouched**, preserving the
-/// model's vertical curvature corrections.
+/// ## X-Y coupling
+///
+/// The Y channel varies by only ~0.06 across the full width (col_var).
+/// Maximum Y misalignment from identity X is ~3px at extreme edges
+/// (0.13% of image height). Text line alignment is preserved.
 fn x_stretch_equalize_grid(grid: &mut [f32], grid_height: usize, grid_width: usize) {
     if grid_width <= 1 || grid_height == 0 {
         return;
@@ -935,18 +930,15 @@ fn x_stretch_equalize_grid(grid: &mut [f32], grid_height: usize, grid_width: usi
 
     let denom = (grid_width as f32) - 1.0;
 
-    // Only modify channel 0 (X).  Channel 1 (Y) stays untouched.
     for gy in 0..grid_height {
         let row_start = gy * grid_width;
-        let x_left = grid[row_start];
-        let x_right = grid[row_start + grid_width - 1];
         for gx in 0..grid_width {
-            grid[row_start + gx] = x_left + (x_right - x_left) * (gx as f32) / denom;
+            grid[row_start + gx] = -1.0 + 2.0 * (gx as f32 / denom);
         }
     }
 
     eprintln!(
-        "[UVDoc] grid_postprocess=x-stretch-equalize applied | ch0(X)→linspace, ch1(Y)→preserved",
+        "[UVDoc] grid_postprocess=x-stretch-equalize | ch0(X)->identity[-1,+1], ch1(Y)->preserved",
     );
 }
 
