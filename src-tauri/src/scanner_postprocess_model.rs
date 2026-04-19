@@ -671,6 +671,7 @@ pub fn run_native_postprocess_model_with_runtime_hints(
     let model_ms = model_started_at.elapsed().as_secs_f64() * 1000.0;
 
     // ── Diagnostic: dump grid structure for debugging ──
+    #[cfg(debug_assertions)]
     {
         let shape = &point_grid.0;
         let grid = &point_grid.1;
@@ -937,6 +938,7 @@ fn x_stretch_equalize_grid(grid: &mut [f32], grid_height: usize, grid_width: usi
         }
     }
 
+    #[cfg(debug_assertions)]
     eprintln!(
         "[UVDoc] grid_postprocess=x-stretch-equalize | ch0(X)->identity[-1,+1], ch1(Y)->preserved",
     );
