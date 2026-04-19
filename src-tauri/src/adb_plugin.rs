@@ -359,38 +359,7 @@ fn send_raw_payload(
         .map_err(|error| format!("Failed to deliver {context} to the frontend: {error}"))
 }
 
-fn capture_still_via_exec_out_stdout(
-    serial: &str,
-    classpath: &str,
-    socket_name: &str,
-) -> Result<Vec<u8>, String> {
-    let capture_script = build_still_capture_script(classpath, socket_name, None);
-    let capture_args = vec![
-        "-s".to_string(),
-        serial.to_string(),
-        "exec-out".to_string(),
-        "sh".to_string(),
-        "-c".to_string(),
-        wrap_shell_c_script(&capture_script),
-    ];
-    let output = run_adb_checked(
-        &capture_args,
-        &format!("adb -s {serial} exec-out sh -c <capture still to stdout>"),
-    )?;
 
-    let stderr = normalize_text_output(&output.stderr);
-    if !stderr.is_empty() {
-        log::info!("[Scanner][StillDiag] Direct still capture stderr for {serial}: {stderr}");
-    }
-
-    let payload =
-        validate_still_capture_payload(serial, output.stdout, "Direct still capture stdout")?;
-    log::info!(
-        "[Scanner][StillDiag] Direct still payload for {serial}: {}",
-        describe_binary_payload(&payload)
-    );
-    Ok(payload)
-}
 
 fn capture_still_via_device_file(
     serial: &str,
@@ -876,7 +845,9 @@ pub async fn tauri_adb_screenshot(
     send_raw_payload(&payload_channel, png_bytes?, "ADB screenshot")
 }
 
-/// Capture a full-resolution still image from the Android camera pipeline.
+/// Capture a full-resolution still image via device-file transfer.
+/// Previously had an exec-out "fast-path" but it was removed per review:
+/// exec-out had binary payload corruption on some devices and added complexity.
 #[command]
 pub async fn tauri_adb_capture_still(
     serial: String,
@@ -888,36 +859,14 @@ pub async fn tauri_adb_capture_still(
         let serial = ensure_non_empty(&serial, "ADB serial")?;
         let classpath = ensure_non_empty(&classpath, "Server classpath")?;
         let socket_name = ensure_non_empty(&socket_name, "Still capture socket name")?;
-        let overall_start = Instant::now();
-        let direct_start = Instant::now();
+        let start = Instant::now();
 
-        match capture_still_via_exec_out_stdout(&serial, &classpath, &socket_name) {
-            Ok(payload) => {
-                log::info!(
-                    "[Scanner][StillPerf] Fast-path still capture succeeded for {serial} in {:.1}ms (total {:.1}ms).",
-                    direct_start.elapsed().as_secs_f64() * 1000.0,
-                    overall_start.elapsed().as_secs_f64() * 1000.0,
-                );
-                Ok(payload)
-            }
-            Err(direct_error) => {
-                let direct_elapsed_ms = direct_start.elapsed().as_secs_f64() * 1000.0;
-                log::warn!(
-                    "[Scanner][StillPerf] Fast-path still capture failed for {serial} after {:.1}ms: {}. Falling back to device-file transfer.",
-                    direct_elapsed_ms,
-                    direct_error,
-                );
-
-                let fallback_start = Instant::now();
-                let payload = capture_still_via_device_file(&serial, &classpath, &socket_name)?;
-                log::info!(
-                    "[Scanner][StillPerf] Fallback still capture succeeded for {serial} in {:.1}ms after fast-path miss; total {:.1}ms.",
-                    fallback_start.elapsed().as_secs_f64() * 1000.0,
-                    overall_start.elapsed().as_secs_f64() * 1000.0,
-                );
-                Ok(payload)
-            }
-        }
+        let payload = capture_still_via_device_file(&serial, &classpath, &socket_name)?;
+        log::info!(
+            "[Scanner][StillPerf] Still capture via device-file completed for {serial} in {:.1}ms.",
+            start.elapsed().as_secs_f64() * 1000.0,
+        );
+        Ok(payload)
     })
     .await
     .map_err(|error| format!("ADB still-capture task failed: {error}"))?;
