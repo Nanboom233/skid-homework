@@ -1444,6 +1444,10 @@ export class TauriNativeFrameSource implements FrameSource {
       (event) => {
         void this.handleDecoderLifecycleEvent(event);
       },
+      {
+        maxPreviewWidth: this.config.width,
+        maxPreviewHeight: this.config.height,
+      },
     );
     this.decoderRunning = true;
   }

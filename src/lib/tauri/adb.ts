@@ -274,6 +274,10 @@ export const startTauriDecodeStream = async (
   port: number,
   onFrame: (framePacket: ArrayBuffer | Uint8Array) => void,
   onLifecycleEvent: (event: TauriDecodeStreamLifecycleEvent) => void,
+  options?: {
+    maxPreviewWidth?: number;
+    maxPreviewHeight?: number;
+  },
 ): Promise<TauriDecodeStreamHandle> => {
   if (!isTauri()) {
     throw new Error("Tauri decoded frame streaming is only available in Tauri desktop builds.");
@@ -354,6 +358,8 @@ export const startTauriDecodeStream = async (
     port,
     frameChannel,
     statusChannel,
+    maxPreviewWidth: options?.maxPreviewWidth,
+    maxPreviewHeight: options?.maxPreviewHeight,
   });
 
   return {

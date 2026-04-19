@@ -4,7 +4,7 @@
 /// from the Android Camera Server, decodes them with `openh264`, extracts a
 /// downscaled I420 preview frame, and pushes the newest frame packet to the
 /// frontend over a Tauri IPC channel.
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -30,6 +30,10 @@ static FRAME_SEQ: AtomicU64 = AtomicU64::new(0);
 /// The most recent preview frame packet, retained for Rust-side live preview consumers.
 static LATEST_PREVIEW_FRAME_PACKET: OnceLock<Mutex<Option<Vec<u8>>>> = OnceLock::new();
 
+/// Dynamic preview size limits, set from frontend settings at stream start.
+static MAX_PREVIEW_W: AtomicUsize = AtomicUsize::new(DEFAULT_MAX_PREVIEW_WIDTH);
+static MAX_PREVIEW_H: AtomicUsize = AtomicUsize::new(DEFAULT_MAX_PREVIEW_HEIGHT);
+
 /// Emit the aggregate throughput log every N seconds.
 const OVERALL_LOG_INTERVAL_SECS: u64 = 5;
 /// Retry a fresh decoder connection briefly to avoid startup churn.
@@ -49,12 +53,9 @@ const FRAME_PACKET_TELEMETRY_SIZE: usize = 12;
 /// Downscaled I420 preview frame payload with telemetry for end-to-end IPC measurement.
 const FRAME_CODEC_I420_TELEMETRY: u8 = 4;
 
-/// Keep live preview under roughly 640x360 to reduce IPC overhead and frontend decode cost.
-/// NOTE: These must match the frontend settings defaults (scannerPreviewWidth/Height).
-/// TODO: Receive target preview dimensions from `tauri_scanner_start_stream` args
-/// instead of hardcoding, so the frontend settings are the single source of truth.
-const MAX_PREVIEW_WIDTH: usize = 640;
-const MAX_PREVIEW_HEIGHT: usize = 360;
+/// Default preview size cap; overridden by frontend settings at stream start.
+const DEFAULT_MAX_PREVIEW_WIDTH: usize = 640;
+const DEFAULT_MAX_PREVIEW_HEIGHT: usize = 360;
 
 /// Decoded preview frame plus timing metadata.
 struct PreviewFrame {
@@ -107,6 +108,8 @@ pub async fn tauri_scanner_start_stream(
     port: u16,
     frame_channel: Channel<InvokeResponseBody>,
     status_channel: Channel<DecoderLifecycleEvent>,
+    max_preview_width: Option<u32>,
+    max_preview_height: Option<u32>,
 ) -> Result<(), String> {
     if STREAMING.swap(true, Ordering::SeqCst) {
         return Err("Stream decoder is already running.".to_string());
@@ -115,6 +118,14 @@ pub async fn tauri_scanner_start_stream(
 
     FRAME_SEQ.store(0, Ordering::Relaxed);
     replace_latest_preview_frame_packet(None);
+    MAX_PREVIEW_W.store(
+        max_preview_width.unwrap_or(DEFAULT_MAX_PREVIEW_WIDTH as u32) as usize,
+        Ordering::Relaxed,
+    );
+    MAX_PREVIEW_H.store(
+        max_preview_height.unwrap_or(DEFAULT_MAX_PREVIEW_HEIGHT as u32) as usize,
+        Ordering::Relaxed,
+    );
     send_decoder_status(
         &status_channel,
         "starting",
@@ -450,13 +461,15 @@ fn decode_nal_to_preview(
 
 /// Pick a preview size that limits IPC cost while keeping aspect ratio and I420 alignment.
 fn select_preview_dimensions(width: usize, height: usize) -> (usize, usize, usize) {
-    let mut factor = ((width + MAX_PREVIEW_WIDTH - 1) / MAX_PREVIEW_WIDTH)
-        .max((height + MAX_PREVIEW_HEIGHT - 1) / MAX_PREVIEW_HEIGHT)
+    let max_w = MAX_PREVIEW_W.load(Ordering::Relaxed).max(2);
+    let max_h = MAX_PREVIEW_H.load(Ordering::Relaxed).max(2);
+    let mut factor = ((width + max_w - 1) / max_w)
+        .max((height + max_h - 1) / max_h)
         .max(1);
     let mut preview_width = clamp_even_dimension(width / factor);
     let mut preview_height = clamp_even_dimension(height / factor);
 
-    while preview_width > MAX_PREVIEW_WIDTH || preview_height > MAX_PREVIEW_HEIGHT {
+    while preview_width > max_w || preview_height > max_h {
         factor += 1;
         preview_width = clamp_even_dimension(width / factor);
         preview_height = clamp_even_dimension(height / factor);
