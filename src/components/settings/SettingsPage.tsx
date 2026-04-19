@@ -21,15 +21,15 @@ import { useTranslation } from "react-i18next";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { useAvailableModels } from "@/hooks/use-available-models";
 import {
-  probeTauriScannerYolo,
-  readTauriScannerYoloConfig,
-  type TauriScannerYoloConfig,
-  type TauriScannerYoloConfigResponse,
-  type TauriScannerYoloLinuxConfig,
-  type TauriScannerYoloModelConfig,
-  type TauriScannerYoloProbeResult,
-  type TauriScannerYoloWindowsConfig,
-  writeTauriScannerYoloConfig,
+  probeTauriScannerDetect,
+  readTauriScannerDetectConfig,
+  type TauriScannerDetectConfig,
+  type TauriScannerDetectConfigResponse,
+  type TauriScannerDetectLinuxConfig,
+  type TauriScannerDetectModelConfig,
+  type TauriScannerDetectProbeResult,
+  type TauriScannerDetectWindowsConfig,
+  writeTauriScannerDetectConfig,
 } from "@/lib/tauri/scanner-detect";
 import { isTauri } from "@/lib/tauri/platform";
 import { toast } from "sonner";
@@ -55,14 +55,14 @@ export const DEFAULT_BASE_BY_PROVIDER: Record<AiProvider, string> = {
   openai: DEFAULT_OPENAI_BASE_URL
 };
 
-const createDefaultScannerYoloWindowsConfig = (): TauriScannerYoloWindowsConfig => ({
+const createDefaultscannerDetectWindowsConfig = (): TauriScannerDetectWindowsConfig => ({
   preferredProvider: "directml",
   runtimeLibrary: "onnxruntime/windows/onnxruntime.dll",
   sharedLibrary: "onnxruntime/windows/onnxruntime_providers_shared.dll",
   providerLibrary: "onnxruntime/windows/DirectML.dll",
 });
 
-const createDefaultScannerYoloLinuxConfig = (): TauriScannerYoloLinuxConfig => ({
+const createDefaultscannerDetectLinuxConfig = (): TauriScannerDetectLinuxConfig => ({
   preferredProviders: ["tensorrt", "cuda"],
   runtimeLibrary: "onnxruntime/linux/libonnxruntime.so",
   providerLibraries: [
@@ -136,8 +136,8 @@ export default function SettingsPage() {
     setShowOnlineSearchInScanner,
     scannerDetectionBackend,
     setScannerDetectionBackend,
-    scannerNativeYoloStrictMode,
-    setScannerNativeYoloStrictMode,
+    scannerNativeOrtStrictMode,
+    setScannerNativeOrtStrictMode,
     theme: themePreference,
     setThemePreference,
     language,
@@ -157,13 +157,13 @@ export default function SettingsPage() {
   const [recordingAction, setRecordingAction] = useState<ShortcutAction | null>(
     null
   );
-  const [scannerYoloConfig, setScannerYoloConfig] = useState<TauriScannerYoloConfig | null>(null);
-  const [scannerYoloConfigMeta, setScannerYoloConfigMeta] =
-    useState<Omit<TauriScannerYoloConfigResponse, "config"> | null>(null);
-  const [scannerYoloProbe, setScannerYoloProbe] = useState<TauriScannerYoloProbeResult | null>(null);
-  const [scannerYoloLoading, setScannerYoloLoading] = useState(false);
-  const [scannerYoloSaving, setScannerYoloSaving] = useState(false);
-  const [scannerYoloError, setScannerYoloError] = useState<string | null>(null);
+  const [scannerDetectConfig, setscannerDetectConfig] = useState<TauriScannerDetectConfig | null>(null);
+  const [scannerDetectConfigMeta, setscannerDetectConfigMeta] =
+    useState<Omit<TauriScannerDetectConfigResponse, "config"> | null>(null);
+  const [scannerORTProbe, setScannerORTProbe] = useState<TauriScannerDetectProbeResult | null>(null);
+  const [scannerORTLoading, setScannerORTLoading] = useState(false);
+  const [scannerORTSaving, setScannerORTSaving] = useState(false);
+  const [scannerORTError, setScannerORTError] = useState<string | null>(null);
 
   const activeSource = useMemo(
     () => sources.find((source) => source.id === activeSourceId) ?? sources[0],
@@ -362,10 +362,10 @@ export default function SettingsPage() {
     updateSource(activeSource.id, { thinkingBudget: value });
   };
 
-  const applyScannerYoloConfigResponse = useCallback(
-    (response: TauriScannerYoloConfigResponse) => {
-      setScannerYoloConfig(response.config);
-      setScannerYoloConfigMeta({
+  const applyscannerDetectConfigResponse = useCallback(
+    (response: TauriScannerDetectConfigResponse) => {
+      setscannerDetectConfig(response.config);
+      setscannerDetectConfigMeta({
         source: response.source,
         resolvedPath: response.resolvedPath,
         writablePath: response.writablePath,
@@ -374,7 +374,7 @@ export default function SettingsPage() {
     []
   );
 
-  const loadScannerYoloDesktopState = useCallback(
+  const loadScannerORTDesktopState = useCallback(
     async (options?: { silent?: boolean }) => {
       if (!isDesktopTauri) {
         return;
@@ -382,34 +382,34 @@ export default function SettingsPage() {
 
       const silent = options?.silent ?? false;
       if (!silent) {
-        setScannerYoloLoading(true);
+        setScannerORTLoading(true);
       }
 
       try {
         const [configResponse, probeResponse] = await Promise.all([
-          readTauriScannerYoloConfig(),
-          probeTauriScannerYolo(),
+          readTauriScannerDetectConfig(),
+          probeTauriScannerDetect(),
         ]);
-        applyScannerYoloConfigResponse(configResponse);
-        setScannerYoloProbe(probeResponse);
-        setScannerYoloError(null);
+        applyscannerDetectConfigResponse(configResponse);
+        setScannerORTProbe(probeResponse);
+        setScannerORTError(null);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        setScannerYoloError(message);
+        setScannerORTError(message);
         if (!silent) {
           toast.error(
-            t("advanced.scanner-native-yolo-config.toasts.load-error", {
+            t("advanced.scanner-native-ort-config.toasts.load-error", {
               error: message,
             })
           );
         }
       } finally {
         if (!silent) {
-          setScannerYoloLoading(false);
+          setScannerORTLoading(false);
         }
       }
     },
-    [applyScannerYoloConfigResponse, isDesktopTauri, t]
+    [applyscannerDetectConfigResponse, isDesktopTauri, t]
   );
 
   useEffect(() => {
@@ -417,22 +417,22 @@ export default function SettingsPage() {
       return;
     }
 
-    void loadScannerYoloDesktopState({ silent: true });
-  }, [isDesktopTauri, loadScannerYoloDesktopState]);
+    void loadScannerORTDesktopState({ silent: true });
+  }, [isDesktopTauri, loadScannerORTDesktopState]);
 
-  const updateScannerYoloConfig = useCallback(
-    (updater: (current: TauriScannerYoloConfig) => TauriScannerYoloConfig) => {
-      setScannerYoloConfig((current) => (current ? updater(current) : current));
+  const updateScannerDetectConfig = useCallback(
+    (updater: (current: TauriScannerDetectConfig) => TauriScannerDetectConfig) => {
+      setscannerDetectConfig((current) => (current ? updater(current) : current));
     },
     []
   );
 
-  const updateScannerYoloModel = useCallback(
+  const updateScannerDetectModel = useCallback(
     (
       target: "intendedPrimaryModel" | "activePublicBaseline",
-      patch: Partial<TauriScannerYoloModelConfig>
+      patch: Partial<TauriScannerDetectModelConfig>
     ) => {
-      updateScannerYoloConfig((current) => ({
+      updateScannerDetectConfig((current) => ({
         ...current,
         [target]: {
           ...current[target],
@@ -440,38 +440,38 @@ export default function SettingsPage() {
         },
       }));
     },
-    [updateScannerYoloConfig]
+    [updateScannerDetectConfig]
   );
 
-  const updateScannerYoloWindows = useCallback(
-    (patch: Partial<TauriScannerYoloWindowsConfig>) => {
-      updateScannerYoloConfig((current) => ({
+  const updateScannerDetectWindows = useCallback(
+    (patch: Partial<TauriScannerDetectWindowsConfig>) => {
+      updateScannerDetectConfig((current) => ({
         ...current,
         windows: {
-          ...(current.windows ?? createDefaultScannerYoloWindowsConfig()),
+          ...(current.windows ?? createDefaultscannerDetectWindowsConfig()),
           ...patch,
         },
       }));
     },
-    [updateScannerYoloConfig]
+    [updateScannerDetectConfig]
   );
 
-  const updateScannerYoloLinux = useCallback(
-    (patch: Partial<TauriScannerYoloLinuxConfig>) => {
-      updateScannerYoloConfig((current) => ({
+  const updateScannerDetectLinux = useCallback(
+    (patch: Partial<TauriScannerDetectLinuxConfig>) => {
+      updateScannerDetectConfig((current) => ({
         ...current,
         linux: {
-          ...(current.linux ?? createDefaultScannerYoloLinuxConfig()),
+          ...(current.linux ?? createDefaultscannerDetectLinuxConfig()),
           ...patch,
         },
       }));
     },
-    [updateScannerYoloConfig]
+    [updateScannerDetectConfig]
   );
 
   const handleBaselineInputSizeChange = (index: 0 | 1, rawValue: string) => {
     const parsed = Number.parseInt(rawValue, 10);
-    updateScannerYoloConfig((current) => {
+    updateScannerDetectConfig((current) => {
       const currentSize = current.activePublicBaseline.inputSize ?? [256, 256];
       const nextSize: [number, number] = [...currentSize] as [number, number];
       nextSize[index] = Number.isFinite(parsed) ? parsed : 0;
@@ -486,33 +486,33 @@ export default function SettingsPage() {
     });
   };
 
-  const handleScannerYoloSave = useCallback(async () => {
-    if (!scannerYoloConfig) {
+  const handleScannerORTSave = useCallback(async () => {
+    if (!scannerDetectConfig) {
       return;
     }
 
-    setScannerYoloSaving(true);
+    setScannerORTSaving(true);
     try {
-      const response = await writeTauriScannerYoloConfig(scannerYoloConfig);
-      applyScannerYoloConfigResponse(response);
-      setScannerYoloProbe(await probeTauriScannerYolo());
-      setScannerYoloError(null);
-      toast.success(t("advanced.scanner-native-yolo-config.toasts.save-success"));
+      const response = await writeTauriScannerDetectConfig(scannerDetectConfig);
+      applyscannerDetectConfigResponse(response);
+      setScannerORTProbe(await probeTauriScannerDetect());
+      setScannerORTError(null);
+      toast.success(t("advanced.scanner-native-ort-config.toasts.save-success"));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      setScannerYoloError(message);
+      setScannerORTError(message);
       toast.error(
-        t("advanced.scanner-native-yolo-config.toasts.save-error", {
+        t("advanced.scanner-native-ort-config.toasts.save-error", {
           error: message,
         })
       );
     } finally {
-      setScannerYoloSaving(false);
+      setScannerORTSaving(false);
     }
-  }, [applyScannerYoloConfigResponse, scannerYoloConfig, t]);
+  }, [applyscannerDetectConfigResponse, scannerDetectConfig, t]);
 
-  const scannerYoloLinuxProviders = scannerYoloConfig?.linux?.preferredProviders.join(", ") ?? "";
-  const scannerYoloNotes = scannerYoloConfig?.notes.join("\n") ?? "";
+  const scannerDetectLinuxProviders = scannerDetectConfig?.linux?.preferredProviders.join(", ") ?? "";
+  const scannerDetectNotes = scannerDetectConfig?.notes.join("\n") ?? "";
 
   return (
     <>
@@ -946,8 +946,8 @@ export default function SettingsPage() {
                   <SelectItem value="opencv">
                     {t("advanced.scanner-detection-backend.options.opencv")}
                   </SelectItem>
-                  <SelectItem value="native-yolo">
-                    {t("advanced.scanner-detection-backend.options.native-yolo")}
+                  <SelectItem value="native-ort">
+                    {t("advanced.scanner-detection-backend.options.native-ORT")}
                   </SelectItem>
                 </SelectContent>
               </Select>
@@ -958,18 +958,18 @@ export default function SettingsPage() {
 
             <div className="flex items-center gap-3">
               <Checkbox
-                id="scanner-native-yolo-strict-mode"
-                checked={scannerNativeYoloStrictMode}
+                id="scanner-native-ort-strict-mode"
+                checked={scannerNativeOrtStrictMode}
                 onCheckedChange={(state) =>
-                  setScannerNativeYoloStrictMode(state === true)
+                  setScannerNativeOrtStrictMode(state === true)
                 }
               />
               <div className="space-y-1">
-                <Label htmlFor="scanner-native-yolo-strict-mode">
-                  {t("advanced.scanner-native-yolo-strict-mode.label")}
+                <Label htmlFor="scanner-native-ort-strict-mode">
+                  {t("advanced.scanner-native-ort-strict-mode.label")}
                 </Label>
                 <p className="text-sm text-muted-foreground">
-                  {t("advanced.scanner-native-yolo-strict-mode.desc")}
+                  {t("advanced.scanner-native-ort-strict-mode.desc")}
                 </p>
               </div>
             </div>
@@ -1007,109 +1007,109 @@ export default function SettingsPage() {
         {isDesktopTauri ? (
           <Card>
             <CardHeader>
-              <CardTitle>{t("advanced.scanner-native-yolo-config.title")}</CardTitle>
-              <CardDescription>{t("advanced.scanner-native-yolo-config.desc")}</CardDescription>
+              <CardTitle>{t("advanced.scanner-native-ort-config.title")}</CardTitle>
+              <CardDescription>{t("advanced.scanner-native-ort-config.desc")}</CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
               <div className="flex flex-wrap gap-3">
                 <Button
                   type="button"
                   variant="outline"
-                  onClick={() => void loadScannerYoloDesktopState()}
-                  disabled={scannerYoloLoading || scannerYoloSaving}
+                  onClick={() => void loadScannerORTDesktopState()}
+                  disabled={scannerORTLoading || scannerORTSaving}
                 >
                   <RefreshCw
-                    className={`mr-2 h-4 w-4 ${(scannerYoloLoading || scannerYoloSaving) ? "animate-spin" : ""}`}
+                    className={`mr-2 h-4 w-4 ${(scannerORTLoading || scannerORTSaving) ? "animate-spin" : ""}`}
                   />
-                  {t("advanced.scanner-native-yolo-config.actions.reload")}
+                  {t("advanced.scanner-native-ort-config.actions.reload")}
                 </Button>
                 <Button
                   type="button"
-                  onClick={() => void handleScannerYoloSave()}
-                  disabled={!scannerYoloConfig || scannerYoloLoading || scannerYoloSaving}
+                  onClick={() => void handleScannerORTSave()}
+                  disabled={!scannerDetectConfig || scannerORTLoading || scannerORTSaving}
                 >
-                  {scannerYoloSaving
-                    ? t("advanced.scanner-native-yolo-config.actions.saving")
-                    : t("advanced.scanner-native-yolo-config.actions.save")}
+                  {scannerORTSaving
+                    ? t("advanced.scanner-native-ort-config.actions.saving")
+                    : t("advanced.scanner-native-ort-config.actions.save")}
                 </Button>
               </div>
 
-              {scannerYoloError ? (
-                <p className="text-sm text-destructive">{scannerYoloError}</p>
+              {scannerORTError ? (
+                <p className="text-sm text-destructive">{scannerORTError}</p>
               ) : null}
 
               <div className="grid gap-3 md:grid-cols-2">
                 <div className="space-y-2">
-                  <Label>{t("advanced.scanner-native-yolo-config.status.config-source")}</Label>
+                  <Label>{t("advanced.scanner-native-ort-config.status.config-source")}</Label>
                   <p className="break-all rounded-md border bg-muted/40 px-3 py-2 text-xs font-mono">
-                    {scannerYoloConfigMeta?.source ?? scannerYoloProbe?.configSource ?? "—"}
+                    {scannerDetectConfigMeta?.source ?? scannerORTProbe?.configSource ?? "—"}
                   </p>
                 </div>
                 <div className="space-y-2">
-                  <Label>{t("advanced.scanner-native-yolo-config.status.resolved-path")}</Label>
+                  <Label>{t("advanced.scanner-native-ort-config.status.resolved-path")}</Label>
                   <p className="break-all rounded-md border bg-muted/40 px-3 py-2 text-xs font-mono">
-                    {scannerYoloConfigMeta?.resolvedPath ?? scannerYoloProbe?.configPath ?? "—"}
+                    {scannerDetectConfigMeta?.resolvedPath ?? scannerORTProbe?.configPath ?? "—"}
                   </p>
                 </div>
                 <div className="space-y-2 md:col-span-2">
-                  <Label>{t("advanced.scanner-native-yolo-config.status.writable-path")}</Label>
+                  <Label>{t("advanced.scanner-native-ort-config.status.writable-path")}</Label>
                   <p className="break-all rounded-md border bg-muted/40 px-3 py-2 text-xs font-mono">
-                    {scannerYoloConfigMeta?.writablePath ?? "—"}
+                    {scannerDetectConfigMeta?.writablePath ?? "—"}
                   </p>
                 </div>
               </div>
 
-              {scannerYoloProbe ? (
+              {scannerORTProbe ? (
                 <div className="grid gap-3 md:grid-cols-2">
                   <div className="space-y-2">
-                    <Label>{t("advanced.scanner-native-yolo-config.status.runtime-ready")}</Label>
+                    <Label>{t("advanced.scanner-native-ort-config.status.runtime-ready")}</Label>
                     <p className="rounded-md border bg-muted/40 px-3 py-2 text-sm">
-                      {scannerYoloProbe.runtimeReady
-                        ? t("advanced.scanner-native-yolo-config.state.ready")
-                        : t("advanced.scanner-native-yolo-config.state.not-ready")}
+                      {scannerORTProbe.runtimeReady
+                        ? t("advanced.scanner-native-ort-config.state.ready")
+                        : t("advanced.scanner-native-ort-config.state.not-ready")}
                     </p>
                   </div>
                   <div className="space-y-2">
-                    <Label>{t("advanced.scanner-native-yolo-config.status.session-ready")}</Label>
+                    <Label>{t("advanced.scanner-native-ort-config.status.session-ready")}</Label>
                     <p className="rounded-md border bg-muted/40 px-3 py-2 text-sm">
-                      {scannerYoloProbe.sessionReady
-                        ? t("advanced.scanner-native-yolo-config.state.ready")
-                        : t("advanced.scanner-native-yolo-config.state.not-ready")}
+                      {scannerORTProbe.sessionReady
+                        ? t("advanced.scanner-native-ort-config.state.ready")
+                        : t("advanced.scanner-native-ort-config.state.not-ready")}
                     </p>
                   </div>
                   <div className="space-y-2">
-                    <Label>{t("advanced.scanner-native-yolo-config.status.provider")}</Label>
+                    <Label>{t("advanced.scanner-native-ort-config.status.provider")}</Label>
                     <p className="break-all rounded-md border bg-muted/40 px-3 py-2 text-sm">
-                      {scannerYoloProbe.preferredProvider || "—"}
+                      {scannerORTProbe.preferredProvider || "—"}
                     </p>
                   </div>
                   <div className="space-y-2">
-                    <Label>{t("advanced.scanner-native-yolo-config.status.model")}</Label>
+                    <Label>{t("advanced.scanner-native-ort-config.status.model")}</Label>
                     <p className="break-all rounded-md border bg-muted/40 px-3 py-2 text-sm">
-                      {scannerYoloProbe.selectedModelId || "—"}
+                      {scannerORTProbe.selectedModelId || "—"}
                     </p>
                   </div>
                   <div className="space-y-2 md:col-span-2">
-                    <Label>{t("advanced.scanner-native-yolo-config.status.message")}</Label>
+                    <Label>{t("advanced.scanner-native-ort-config.status.message")}</Label>
                     <p className="break-all rounded-md border bg-muted/40 px-3 py-2 text-sm">
-                      {scannerYoloProbe.message}
+                      {scannerORTProbe.message}
                     </p>
                   </div>
                 </div>
               ) : null}
 
-              {scannerYoloConfig ? (
+              {scannerDetectConfig ? (
                 <>
                   <div className="grid gap-3 md:grid-cols-2">
                     <div className="space-y-2">
-                      <Label htmlFor="scanner-yolo-stage">
-                        {t("advanced.scanner-native-yolo-config.fields.stage")}
+                      <Label htmlFor="scanner-detect-stage">
+                        {t("advanced.scanner-native-ort-config.fields.stage")}
                       </Label>
                       <Input
-                        id="scanner-yolo-stage"
-                        value={scannerYoloConfig.stage}
+                        id="scanner-detect-stage"
+                        value={scannerDetectConfig.stage}
                         onChange={(event) =>
-                          updateScannerYoloConfig((current) => ({
+                          updateScannerDetectConfig((current) => ({
                             ...current,
                             stage: event.target.value,
                           }))
@@ -1117,14 +1117,14 @@ export default function SettingsPage() {
                       />
                     </div>
                     <div className="space-y-2">
-                      <Label htmlFor="scanner-yolo-task">
-                        {t("advanced.scanner-native-yolo-config.fields.task")}
+                      <Label htmlFor="scanner-detect-task">
+                        {t("advanced.scanner-native-ort-config.fields.task")}
                       </Label>
                       <Input
-                        id="scanner-yolo-task"
-                        value={scannerYoloConfig.task}
+                        id="scanner-detect-task"
+                        value={scannerDetectConfig.task}
                         onChange={(event) =>
-                          updateScannerYoloConfig((current) => ({
+                          updateScannerDetectConfig((current) => ({
                             ...current,
                             task: event.target.value,
                           }))
@@ -1136,59 +1136,59 @@ export default function SettingsPage() {
                   <div className="grid gap-6 lg:grid-cols-2">
                     <div className="space-y-3 rounded-lg border p-4">
                       <h3 className="text-sm font-semibold">
-                        {t("advanced.scanner-native-yolo-config.fields.intended-primary.title")}
+                        {t("advanced.scanner-native-ort-config.fields.intended-primary.title")}
                       </h3>
                       <div className="space-y-2">
-                        <Label htmlFor="scanner-yolo-intended-id">
-                          {t("advanced.scanner-native-yolo-config.fields.id")}
+                        <Label htmlFor="scanner-detect-intended-id">
+                          {t("advanced.scanner-native-ort-config.fields.id")}
                         </Label>
                         <Input
-                          id="scanner-yolo-intended-id"
-                          value={scannerYoloConfig.intendedPrimaryModel.id}
+                          id="scanner-detect-intended-id"
+                          value={scannerDetectConfig.intendedPrimaryModel.id}
                           onChange={(event) =>
-                            updateScannerYoloModel("intendedPrimaryModel", {
+                            updateScannerDetectModel("intendedPrimaryModel", {
                               id: event.target.value,
                             })
                           }
                         />
                       </div>
                       <div className="space-y-2">
-                        <Label htmlFor="scanner-yolo-intended-kind">
-                          {t("advanced.scanner-native-yolo-config.fields.kind")}
+                        <Label htmlFor="scanner-detect-intended-kind">
+                          {t("advanced.scanner-native-ort-config.fields.kind")}
                         </Label>
                         <Input
-                          id="scanner-yolo-intended-kind"
-                          value={scannerYoloConfig.intendedPrimaryModel.kind}
+                          id="scanner-detect-intended-kind"
+                          value={scannerDetectConfig.intendedPrimaryModel.kind}
                           onChange={(event) =>
-                            updateScannerYoloModel("intendedPrimaryModel", {
+                            updateScannerDetectModel("intendedPrimaryModel", {
                               kind: event.target.value,
                             })
                           }
                         />
                       </div>
                       <div className="space-y-2">
-                        <Label htmlFor="scanner-yolo-intended-task">
-                          {t("advanced.scanner-native-yolo-config.fields.model-task")}
+                        <Label htmlFor="scanner-detect-intended-task">
+                          {t("advanced.scanner-native-ort-config.fields.model-task")}
                         </Label>
                         <Input
-                          id="scanner-yolo-intended-task"
-                          value={scannerYoloConfig.intendedPrimaryModel.task}
+                          id="scanner-detect-intended-task"
+                          value={scannerDetectConfig.intendedPrimaryModel.task}
                           onChange={(event) =>
-                            updateScannerYoloModel("intendedPrimaryModel", {
+                            updateScannerDetectModel("intendedPrimaryModel", {
                               task: event.target.value,
                             })
                           }
                         />
                       </div>
                       <div className="space-y-2">
-                        <Label htmlFor="scanner-yolo-intended-path">
-                          {t("advanced.scanner-native-yolo-config.fields.model-path")}
+                        <Label htmlFor="scanner-detect-intended-path">
+                          {t("advanced.scanner-native-ort-config.fields.model-path")}
                         </Label>
                         <Input
-                          id="scanner-yolo-intended-path"
-                          value={scannerYoloConfig.intendedPrimaryModel.modelPath}
+                          id="scanner-detect-intended-path"
+                          value={scannerDetectConfig.intendedPrimaryModel.modelPath}
                           onChange={(event) =>
-                            updateScannerYoloModel("intendedPrimaryModel", {
+                            updateScannerDetectModel("intendedPrimaryModel", {
                               modelPath: event.target.value,
                             })
                           }
@@ -1198,59 +1198,59 @@ export default function SettingsPage() {
 
                     <div className="space-y-3 rounded-lg border p-4">
                       <h3 className="text-sm font-semibold">
-                        {t("advanced.scanner-native-yolo-config.fields.active-public-baseline.title")}
+                        {t("advanced.scanner-native-ort-config.fields.active-public-baseline.title")}
                       </h3>
                       <div className="space-y-2">
-                        <Label htmlFor="scanner-yolo-baseline-id">
-                          {t("advanced.scanner-native-yolo-config.fields.id")}
+                        <Label htmlFor="scanner-detect-baseline-id">
+                          {t("advanced.scanner-native-ort-config.fields.id")}
                         </Label>
                         <Input
-                          id="scanner-yolo-baseline-id"
-                          value={scannerYoloConfig.activePublicBaseline.id}
+                          id="scanner-detect-baseline-id"
+                          value={scannerDetectConfig.activePublicBaseline.id}
                           onChange={(event) =>
-                            updateScannerYoloModel("activePublicBaseline", {
+                            updateScannerDetectModel("activePublicBaseline", {
                               id: event.target.value,
                             })
                           }
                         />
                       </div>
                       <div className="space-y-2">
-                        <Label htmlFor="scanner-yolo-baseline-kind">
-                          {t("advanced.scanner-native-yolo-config.fields.kind")}
+                        <Label htmlFor="scanner-detect-baseline-kind">
+                          {t("advanced.scanner-native-ort-config.fields.kind")}
                         </Label>
                         <Input
-                          id="scanner-yolo-baseline-kind"
-                          value={scannerYoloConfig.activePublicBaseline.kind}
+                          id="scanner-detect-baseline-kind"
+                          value={scannerDetectConfig.activePublicBaseline.kind}
                           onChange={(event) =>
-                            updateScannerYoloModel("activePublicBaseline", {
+                            updateScannerDetectModel("activePublicBaseline", {
                               kind: event.target.value,
                             })
                           }
                         />
                       </div>
                       <div className="space-y-2">
-                        <Label htmlFor="scanner-yolo-baseline-task">
-                          {t("advanced.scanner-native-yolo-config.fields.model-task")}
+                        <Label htmlFor="scanner-detect-baseline-task">
+                          {t("advanced.scanner-native-ort-config.fields.model-task")}
                         </Label>
                         <Input
-                          id="scanner-yolo-baseline-task"
-                          value={scannerYoloConfig.activePublicBaseline.task}
+                          id="scanner-detect-baseline-task"
+                          value={scannerDetectConfig.activePublicBaseline.task}
                           onChange={(event) =>
-                            updateScannerYoloModel("activePublicBaseline", {
+                            updateScannerDetectModel("activePublicBaseline", {
                               task: event.target.value,
                             })
                           }
                         />
                       </div>
                       <div className="space-y-2">
-                        <Label htmlFor="scanner-yolo-baseline-path">
-                          {t("advanced.scanner-native-yolo-config.fields.model-path")}
+                        <Label htmlFor="scanner-detect-baseline-path">
+                          {t("advanced.scanner-native-ort-config.fields.model-path")}
                         </Label>
                         <Input
-                          id="scanner-yolo-baseline-path"
-                          value={scannerYoloConfig.activePublicBaseline.modelPath}
+                          id="scanner-detect-baseline-path"
+                          value={scannerDetectConfig.activePublicBaseline.modelPath}
                           onChange={(event) =>
-                            updateScannerYoloModel("activePublicBaseline", {
+                            updateScannerDetectModel("activePublicBaseline", {
                               modelPath: event.target.value,
                             })
                           }
@@ -1258,28 +1258,28 @@ export default function SettingsPage() {
                       </div>
                       <div className="grid gap-3 md:grid-cols-2">
                         <div className="space-y-2">
-                          <Label htmlFor="scanner-yolo-baseline-input-name">
-                            {t("advanced.scanner-native-yolo-config.fields.input-name")}
+                          <Label htmlFor="scanner-detect-baseline-input-name">
+                            {t("advanced.scanner-native-ort-config.fields.input-name")}
                           </Label>
                           <Input
-                            id="scanner-yolo-baseline-input-name"
-                            value={scannerYoloConfig.activePublicBaseline.inputName ?? ""}
+                            id="scanner-detect-baseline-input-name"
+                            value={scannerDetectConfig.activePublicBaseline.inputName ?? ""}
                             onChange={(event) =>
-                              updateScannerYoloModel("activePublicBaseline", {
+                              updateScannerDetectModel("activePublicBaseline", {
                                 inputName: event.target.value || null,
                               })
                             }
                           />
                         </div>
                         <div className="space-y-2">
-                          <Label htmlFor="scanner-yolo-baseline-output-name">
-                            {t("advanced.scanner-native-yolo-config.fields.output-name")}
+                          <Label htmlFor="scanner-detect-baseline-output-name">
+                            {t("advanced.scanner-native-ort-config.fields.output-name")}
                           </Label>
                           <Input
-                            id="scanner-yolo-baseline-output-name"
-                            value={scannerYoloConfig.activePublicBaseline.outputName ?? ""}
+                            id="scanner-detect-baseline-output-name"
+                            value={scannerDetectConfig.activePublicBaseline.outputName ?? ""}
                             onChange={(event) =>
-                              updateScannerYoloModel("activePublicBaseline", {
+                              updateScannerDetectModel("activePublicBaseline", {
                                 outputName: event.target.value || null,
                               })
                             }
@@ -1288,28 +1288,28 @@ export default function SettingsPage() {
                       </div>
                       <div className="grid gap-3 md:grid-cols-2">
                         <div className="space-y-2">
-                          <Label htmlFor="scanner-yolo-baseline-input-width">
-                            {t("advanced.scanner-native-yolo-config.fields.input-width")}
+                          <Label htmlFor="scanner-detect-baseline-input-width">
+                            {t("advanced.scanner-native-ort-config.fields.input-width")}
                           </Label>
                           <Input
-                            id="scanner-yolo-baseline-input-width"
+                            id="scanner-detect-baseline-input-width"
                             type="number"
                             inputMode="numeric"
-                            value={scannerYoloConfig.activePublicBaseline.inputSize?.[0] ?? 0}
+                            value={scannerDetectConfig.activePublicBaseline.inputSize?.[0] ?? 0}
                             onChange={(event) =>
                               handleBaselineInputSizeChange(0, event.target.value)
                             }
                           />
                         </div>
                         <div className="space-y-2">
-                          <Label htmlFor="scanner-yolo-baseline-input-height">
-                            {t("advanced.scanner-native-yolo-config.fields.input-height")}
+                          <Label htmlFor="scanner-detect-baseline-input-height">
+                            {t("advanced.scanner-native-ort-config.fields.input-height")}
                           </Label>
                           <Input
-                            id="scanner-yolo-baseline-input-height"
+                            id="scanner-detect-baseline-input-height"
                             type="number"
                             inputMode="numeric"
-                            value={scannerYoloConfig.activePublicBaseline.inputSize?.[1] ?? 0}
+                            value={scannerDetectConfig.activePublicBaseline.inputSize?.[1] ?? 0}
                             onChange={(event) =>
                               handleBaselineInputSizeChange(1, event.target.value)
                             }
@@ -1321,28 +1321,28 @@ export default function SettingsPage() {
 
                   <div className="grid gap-3 md:grid-cols-2">
                     <div className="space-y-2">
-                      <Label htmlFor="scanner-yolo-windows-provider">
-                        {t("advanced.scanner-native-yolo-config.fields.windows-provider")}
+                      <Label htmlFor="scanner-detect-windows-provider">
+                        {t("advanced.scanner-native-ort-config.fields.windows-provider")}
                       </Label>
                       <Input
-                        id="scanner-yolo-windows-provider"
-                        value={scannerYoloConfig.windows?.preferredProvider ?? ""}
+                        id="scanner-detect-windows-provider"
+                        value={scannerDetectConfig.windows?.preferredProvider ?? ""}
                         onChange={(event) =>
-                          updateScannerYoloWindows({
+                          updateScannerDetectWindows({
                             preferredProvider: event.target.value,
                           })
                         }
                       />
                     </div>
                     <div className="space-y-2">
-                      <Label htmlFor="scanner-yolo-linux-providers">
-                        {t("advanced.scanner-native-yolo-config.fields.linux-providers")}
+                      <Label htmlFor="scanner-detect-linux-providers">
+                        {t("advanced.scanner-native-ort-config.fields.linux-providers")}
                       </Label>
                       <Input
-                        id="scanner-yolo-linux-providers"
-                        value={scannerYoloLinuxProviders}
+                        id="scanner-detect-linux-providers"
+                        value={scannerDetectLinuxProviders}
                         onChange={(event) =>
-                          updateScannerYoloLinux({
+                          updateScannerDetectLinux({
                             preferredProviders: event.target.value
                               .split(",")
                               .map((provider) => provider.trim())
@@ -1354,15 +1354,15 @@ export default function SettingsPage() {
                   </div>
 
                   <div className="space-y-2">
-                    <Label htmlFor="scanner-yolo-notes">
-                      {t("advanced.scanner-native-yolo-config.fields.notes")}
+                    <Label htmlFor="scanner-detect-notes">
+                      {t("advanced.scanner-native-ort-config.fields.notes")}
                     </Label>
                     <Textarea
-                      id="scanner-yolo-notes"
+                      id="scanner-detect-notes"
                       className="min-h-28"
-                      value={scannerYoloNotes}
+                      value={scannerDetectNotes}
                       onChange={(event) =>
-                        updateScannerYoloConfig((current) => ({
+                        updateScannerDetectConfig((current) => ({
                           ...current,
                           notes: event.target.value
                             .split("\n")
@@ -1375,7 +1375,7 @@ export default function SettingsPage() {
                 </>
               ) : (
                 <p className="text-sm text-muted-foreground">
-                  {t("advanced.scanner-native-yolo-config.empty")}
+                  {t("advanced.scanner-native-ort-config.empty")}
                 </p>
               )}
             </CardContent>

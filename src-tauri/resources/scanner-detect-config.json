@@ -1,0 +1,39 @@
+{
+  "stage": "runtime-plus-public-baseline",
+  "task": "document-boundary-stage1",
+  "intendedPrimaryModel": {
+    "id": "document-boundary-yolo-pose-4pt",
+    "kind": "planned-primary",
+    "task": "document-corner-keypoints",
+    "modelPath": "models/document-boundary-yolo-pose.onnx"
+  },
+  "activePublicBaseline": {
+    "id": "docaligner-fastvit-sa24",
+    "kind": "public-baseline",
+    "task": "document-corner-heatmap",
+    "modelPath": "models/docaligner-fastvit_sa24.onnx",
+    "inputName": "img",
+    "outputName": "heatmap",
+    "inputSize": [256, 256]
+  },
+  "windows": {
+    "preferredProvider": "directml",
+    "runtimeLibrary": "onnxruntime/windows/onnxruntime.dll",
+    "sharedLibrary": "onnxruntime/windows/onnxruntime_providers_shared.dll",
+    "providerLibrary": "onnxruntime/windows/DirectML.dll"
+  },
+  "linux": {
+    "preferredProviders": ["tensorrt", "cuda"],
+    "runtimeLibrary": "onnxruntime/linux/libonnxruntime.so",
+    "providerLibraries": [
+      "onnxruntime/linux/libonnxruntime_providers_tensorrt.so",
+      "onnxruntime/linux/libonnxruntime_providers_cuda.so"
+    ],
+    "officialGpuReleaseArtifact": "onnxruntime-linux-x64-gpu-1.24.4.tgz"
+  },
+  "notes": [
+    "The current Rust implementation performs real ORT runtime/session setup and DocAligner baseline inference.",
+    "The intended long-term stage-1 model remains YOLO pose with 4 document corner keypoints.",
+    "Stage-2 perspective correction and local flattening stay in the CV postprocess path."
+  ]
+}

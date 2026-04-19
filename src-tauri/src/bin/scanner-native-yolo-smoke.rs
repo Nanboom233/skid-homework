@@ -1,14 +1,14 @@
 use std::fs;
 use std::path::PathBuf;
 
-use app_lib::scanner_detect::{detect_document_native_yolo, ScannerDetectDocumentRequest};
+use app_lib::scanner_detect::{detect_document_native_ort, ScannerDetectDocumentRequest};
 
 fn main() {
     let mut args = std::env::args().skip(1);
     let image_path = args
         .next()
         .map(PathBuf::from)
-        .expect("usage: scanner-native-yolo-smoke <image-path> [--raw-rgba] [--max-width <px>] [--max-height <px>]");
+        .expect("usage: scanner-native-ort-smoke <image-path> [--raw-rgba] [--max-width <px>] [--max-height <px>]");
     let mut raw_rgba = false;
     let mut max_width = None;
     let mut max_height = None;
@@ -65,7 +65,7 @@ fn main() {
     };
 
     let response =
-        detect_document_native_yolo(request, None, None).expect("smoke inference should succeed");
+        detect_document_native_ort(request, None, None).expect("smoke inference should succeed");
 
     println!(
         "{}",

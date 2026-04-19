@@ -415,7 +415,7 @@
         "model-missing": "尚未选择模型",
         "options": {
           "opencv": "OpenCV 轮廓检测",
-          "native-yolo": "原生 ORT 运行时"
+          "native-ort": "原生 ORT 运行时"
         },
         "model-kind": {
           "public-baseline": "公共 baseline",
@@ -492,7 +492,7 @@
         "description": "轮廓检测、稳定性、角点信息与处理分辨率。",
         "badges": {
           "ready-opencv": "OpenCV 已就绪",
-          "ready-native-yolo": "原生运行时已就绪",
+          "ready-native-ort": "原生运行时已就绪",
           "unavailable": "检测器不可用",
           "requested": "期望: {{backend}}",
           "document-detected": "已检测到文档",
@@ -504,7 +504,7 @@
         },
         "backends": {
           "opencv": "OpenCV",
-          "native-yolo": "原生 ORT"
+          "native-ort": "原生 ORT"
         },
         "model-kind": {
           "public-baseline": "公共 baseline",
@@ -872,16 +872,16 @@
         "desc": "选择桌面扫描使用 OpenCV 轮廓检测，还是原生 Rust/ORT 运行时。",
         "options": {
           "opencv": "OpenCV 轮廓检测",
-          "native-yolo": "原生桌面运行时"
+          "native-ort": "原生桌面运行时"
         }
       },
-      "scanner-native-yolo-strict-mode": {
+      "scanner-native-ort-strict-mode": {
         "label": "原生运行时严格模式",
         "desc": "启用后，如果原生桌面运行时不可用，扫描检测将不会回退到 OpenCV。"
       },
-      "scanner-native-yolo-config": {
+      "scanner-native-ort-config": {
         "title": "原生桌面运行时配置",
-        "desc": "仅桌面端可用。读取内置扫描 YOLO 配置，并将覆盖配置写入可写的应用配置目录。",
+        "desc": "仅桌面端可用。读取内置扫描 ORT 配置，并将覆盖配置写入可写的应用配置目录。",
         "actions": {
           "reload": "重新加载配置",
           "save": "保存配置",

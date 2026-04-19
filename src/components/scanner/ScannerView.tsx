@@ -8,12 +8,8 @@ import {toast} from "sonner";
 import {Button} from "@/components/ui/button";
 import {Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle,} from "@/components/ui/dialog";
 import {
-  applyPerspectiveTransformToImageData,
   createFrameSource,
   DEFAULT_SCANNER_CONFIG,
-  detectDocumentContour,
-  DetectionPresenceTracker,
-  enhanceDocumentImageData,
   evaluateFrameMappingCompatibility,
   type FrameSource,
   type FrameSourceState,
@@ -21,33 +17,26 @@ import {
   scalePointsBetweenFrames,
   type ScannerConfig,
   type ScannerStillCapture,
-  StabilityTracker,
 } from "@/lib/scanner";
-import {createScannerCvWorkerClient, type ScannerCvWorkerClient} from "@/lib/scanner/cv-worker-client";
 import {
   decodeBlobToImageData,
-  encodeImageDataToPngBlob,
   type OrthogonalRotation,
-  rotateImageData,
 } from "@/lib/scanner/image-data";
-import {isOpenCvReady} from "@/lib/scanner/opencv-runtime";
-import {mapPointsFromRotatedFrameToSource, orientPointsForPreview} from "@/lib/scanner/preview-orientation";
-import {
-  createScannerPostProcessWorkerClient,
-  type ScannerPostProcessWorkerClient,
-} from "@/lib/scanner/scanner-postprocess-worker-client";
-import {assessDocumentQuad, validateQuadGeometry} from "@/lib/scanner/document-quad";
-import {refineDocumentQuadInImageData} from "@/lib/scanner/postprocess-corner-refinement";
-import {applyLocalSpineFlatteningToImageData} from "@/lib/scanner/postprocess-local-flattening";
+
+import {mapPointsFromRotatedFrameToSource} from "@/lib/scanner/preview-orientation";
+import {assessDocumentQuad} from "@/lib/scanner/document-quad";
 
 import {shellTauriAdbCommand} from "@/lib/tauri/adb";
 import {
-  detectDocumentWithTauriNativeYoloLatestPreview,
-  detectDocumentWithTauriNativeYoloRgba,
-  probeTauriScannerYolo,
-  type TauriScannerYoloProbeResult,
+  detectDocumentWithTauriNativeOrtRgba,
+  type DetectionResultEvent,
+  listenTauriDetectionEvents,
+  probeTauriScannerDetect,
+  startTauriDetectionLoop,
+  stopTauriDetectionLoop,
+  type TauriScannerDetectProbeResult,
 } from "@/lib/tauri/scanner-detect";
-import {isTauri} from "@/lib/tauri/platform";
+
 import {processTauriScannerPostProcessSourceFile} from "@/lib/tauri/scanner";
 import {getSelectedDesktopAdbSerial} from "@/lib/webadb/screenshot";
 import {useBlobDataUrl} from "@/hooks/use-blob-data-url";
@@ -63,7 +52,7 @@ import {
 } from "@/store/scanner-store";
 import {cn} from "@/lib/utils";
 
-import OpenCVLoader from "../OpenCVLoader";
+
 import {ScannerCapturedDocumentEditor, type PostProcessOptions} from "./ScannerCapturedDocumentEditor";
 import {ScannerControls} from "./ScannerControls";
 import {
@@ -98,7 +87,6 @@ interface PreparedCaptureArtifact {
   sourceBlob: Blob;
   sourceWidth: number;
   sourceHeight: number;
-  initialFrame: ImageData | null;
   points: Point[] | null;
   outputRotation: OrthogonalRotation;
   source?: string;
@@ -152,26 +140,15 @@ const FRONTEND_PERF_LOG_PATTERN =
   /\[perf:frontend\]\s+frame#(\d+)\s+\|\s+ipc=([\d.]+)ms\s+frame_decode=([\d.]+)ms\s+\|\s+([\d.]+)KB\s+\|\s+effective\s+([\d.]+)\s+fps\s+\((\d+)\s+polls\)/i;
 const PREVIEW_CAPTURE_COOLDOWN_MS = 1200;
 const RECOVERABLE_SIGNAL_DEDUPE_MS = 2000;
-const CV_PROCESS_INTERVAL_MS = 120;
-const CV_MAX_WIDTH = 320;
-const CV_MAX_HEIGHT = 180;
 const CAPTURE_CV_MAX_WIDTH = 1024;
 const CAPTURE_CV_MAX_HEIGHT = 1024;
-const AUTO_CAPTURE_STABLE_HOLD_MS = 1200;
-const AUTO_CAPTURE_STABLE_FRAMES = 8;
-const AUTO_CAPTURE_VARIANCE_THRESHOLD = 8;
-const CV_DETECTION_MISS_GRACE_FRAMES = 3;
-const CV_DETECTION_MISS_GRACE_MS = 360;
-const CV_EFFECTIVE_POINTS_SMOOTHING_THRESHOLD_PX = 18;
-const CV_EFFECTIVE_POINTS_SMOOTHING_FACTOR = 0.35;
 const STILL_CAPTURE_ROTATION_CANDIDATES: readonly OrthogonalRotation[] = [0, 90, 270, 180] as const;
 
 const resolveDetectionBackendState = (
   requestedBackend: ScannerDetectionBackend,
   strictMode: boolean,
-  openCvReady: boolean,
   nativeSupported: boolean,
-  nativeProbe: TauriScannerYoloProbeResult | null,
+  nativeProbe: TauriScannerDetectProbeResult | null,
 ): DetectionBackendState => {
   const nativeReady = Boolean(
     nativeProbe?.runtimeReady
@@ -179,11 +156,11 @@ const resolveDetectionBackendState = (
     && nativeProbe?.detectionImplemented,
   );
 
-  if (requestedBackend === "native-yolo") {
+  if (requestedBackend === "native-ort") {
     if (nativeSupported && nativeReady) {
       return {
         requestedBackend,
-        activeBackend: "native-yolo",
+        activeBackend: "native-ort",
         ready: true,
         strictMode,
         message: nativeProbe?.message
@@ -199,7 +176,7 @@ const resolveDetectionBackendState = (
     if (strictMode) {
       return {
         requestedBackend,
-        activeBackend: "native-yolo",
+        activeBackend: "native-ort",
         ready: false,
         strictMode,
         message: nativeProbe?.message
@@ -219,7 +196,7 @@ const resolveDetectionBackendState = (
     return {
       requestedBackend,
       activeBackend: "opencv",
-      ready: openCvReady,
+      ready: false,
       strictMode,
       message: nativeProbe?.message
         ?? (nativeSupported
@@ -236,7 +213,7 @@ const resolveDetectionBackendState = (
   return {
     requestedBackend,
     activeBackend: "opencv",
-    ready: openCvReady,
+    ready: false,
     strictMode,
     message: "OpenCV contour detection is active.",
     preferredProvider: nativeProbe?.preferredProvider ?? null,
@@ -257,7 +234,7 @@ const clonePoints = (points: Point[] | null): Point[] | null => {
 
 const describeHexWindow = (bytes: Uint8Array, count: number, fromEnd: boolean = false): string => {
   if (bytes.byteLength === 0) {
-    return "∅";
+    return "—";
   }
 
   const safeCount = Math.max(1, Math.min(count, bytes.byteLength));
@@ -311,9 +288,7 @@ const formatDiagnostics = (payload: Record<string, unknown>): string => {
   return JSON.stringify(payload);
 };
 
-const imageDataToPngBlob = async (frame: ImageData): Promise<Blob> => {
-  return await encodeImageDataToPngBlob(frame);
-};
+
 
 const readImageBlobDimensions = async (blob: Blob): Promise<{ width: number; height: number }> => {
   if (typeof createImageBitmap === "function") {
@@ -351,13 +326,7 @@ const combineOrthogonalRotations = (
   }
 };
 
-const shouldDisableNativePostProcess = (message: string): boolean => {
-  const normalized = message.toLowerCase();
-  return normalized.includes("only available in tauri")
-    || normalized.includes("unknown command")
-    || normalized.includes("not found")
-    || normalized.includes("unsupported invoke key");
-};
+
 
 const parseFrontendPerfLog = (value: string): FrontendPerfSample | null => {
   const match = FRONTEND_PERF_LOG_PATTERN.exec(value);
@@ -441,16 +410,7 @@ const toNullableMetric = (value: number): number | null => {
   return value;
 };
 
-const getCvProcessingSize = (
-  width: number,
-  height: number,
-): { width: number; height: number } => {
-  const scale = Math.min(1, CV_MAX_WIDTH / Math.max(1, width), CV_MAX_HEIGHT / Math.max(1, height));
-  return {
-    width: Math.max(1, Math.round(width * scale)),
-    height: Math.max(1, Math.round(height * scale)),
-  };
-};
+
 
 const getCapturedDocumentProcessingSize = (
   width: number,
@@ -536,19 +496,7 @@ const resolveStillFrameRotation = (
   };
 };
 
-const pointsEqual = (left: Point[] | null, right: Point[] | null): boolean => {
-  if (left === right) {
-    return true;
-  }
 
-  if (!left || !right || left.length !== right.length) {
-    return false;
-  }
-
-  return left.every((point, index) => (
-    point.x === right[index]?.x && point.y === right[index]?.y
-  ));
-};
 
 const formatPerfMetric = (value: number | null): string => {
   return value === null ? "—" : value.toFixed(1);
@@ -645,14 +593,9 @@ export default function ScannerView({
   const previewOrientationRef = useRef<"landscape" | "portrait">("landscape");
   const frameSourceRef = useRef<ReturnType<typeof createFrameSource> | null>(null);
   const frameSourceUnsubscribeRef = useRef<(() => void) | null>(null);
+  const detectionEventUnlistenRef = useRef<(() => void) | null>(null);
   const frameSourceSessionGenerationRef = useRef(0);
-  const cvLoopTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const cvWorkerRef = useRef<ScannerCvWorkerClient | null>(null);
-  const postProcessWorkerRef = useRef<ScannerPostProcessWorkerClient | null>(null);
-  const nativePostProcessUnavailableReasonRef = useRef<string | null>(null);
-  const cvWorkerReadyRef = useRef(false);
-  const cvDetectionInFlightRef = useRef(false);
-  const lastCvFrameVersionRef = useRef(0);
+
   const processingRef = useRef(false);
   const processingCooldownRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastRecoverableSignalRef = useRef<{ key: string; at: number } | null>(null);
@@ -662,25 +605,13 @@ export default function ScannerView({
   const unmountedRef = useRef(false);
   const stopScannerRef = useRef<((options?: { skipComponentState?: boolean }) => Promise<void>) | null>(null);
   const latestCvSnapshotRef = useRef<PreviewCaptureSnapshot | null>(null);
-  const nativeYoloProbeRef = useRef<TauriScannerYoloProbeResult | null>(null);
+  const nativeOrtProbeRef = useRef<TauriScannerDetectProbeResult | null>(null);
   const captureCommitGenerationRef = useRef(0);
   const captureCommitPendingRef = useRef(false);
-  const stableSinceRef = useRef<number | null>(null);
-  const detectionPresenceTrackerRef = useRef<DetectionPresenceTracker>(
-    new DetectionPresenceTracker(
-      CV_DETECTION_MISS_GRACE_FRAMES,
-      CV_DETECTION_MISS_GRACE_MS,
-      CV_EFFECTIVE_POINTS_SMOOTHING_THRESHOLD_PX,
-      CV_EFFECTIVE_POINTS_SMOOTHING_FACTOR,
-    ),
-  );
   const autoCaptureRef = useRef(true);
   const capturedDocumentProcessVersionsRef = useRef<Map<string, number>>(new Map());
   const capturedDocumentQueueGenerationRef = useRef(0);
   const capturedDocumentQueueRef = useRef<Promise<void>>(Promise.resolve());
-  const trackerRef = useRef<StabilityTracker>(
-    new StabilityTracker(AUTO_CAPTURE_STABLE_FRAMES, AUTO_CAPTURE_VARIANCE_THRESHOLD),
-  );
 
   const [serverJarPath, setServerJarPath] = useState<string>("");
   const [points, setPoints] = useState<Point[] | null>(null);
@@ -694,7 +625,7 @@ export default function ScannerView({
   const imageEnhancement = useSettingsStore((state) => state.imageEnhancement);
   const setImageEnhancement = useSettingsStore((state) => state.setImageEnhancement);
   const scannerDetectionBackend = useSettingsStore((state) => state.scannerDetectionBackend);
-  const scannerNativeYoloStrictMode = useSettingsStore((state) => state.scannerNativeYoloStrictMode);
+  const scannerNativeOrtStrictMode = useSettingsStore((state) => state.scannerNativeOrtStrictMode);
   const scannerPostProcessBackend = useSettingsStore((state) => state.scannerPostProcessBackend);
   const setScannerPostProcessBackend = useSettingsStore((state) => state.setScannerPostProcessBackend);
 
@@ -724,7 +655,7 @@ export default function ScannerView({
 
     return capturedDocuments.find((document) => document.id === editingCapturedDocumentId) ?? null;
   }, [capturedDocuments, editingCapturedDocumentId]);
-  const nativeBackendSupported = isTauri();
+  const nativeBackendSupported = true;
 
   useEffect(() => {
     if (
@@ -735,23 +666,19 @@ export default function ScannerView({
     }
   }, [capturedDocuments, editingCapturedDocumentId]);
 
-  const isOpenCvRuntimeReady = useCallback((): boolean => {
-    return isOpenCvReady() || cvWorkerReadyRef.current;
-  }, []);
+
 
   const getDetectionBackendState = useCallback((): DetectionBackendState => {
     return resolveDetectionBackendState(
       scannerDetectionBackend,
-      scannerNativeYoloStrictMode,
-      isOpenCvRuntimeReady(),
+      scannerNativeOrtStrictMode,
       nativeBackendSupported,
-      nativeYoloProbeRef.current,
+      nativeOrtProbeRef.current,
     );
   }, [
-    isOpenCvRuntimeReady,
     nativeBackendSupported,
     scannerDetectionBackend,
-    scannerNativeYoloStrictMode,
+    scannerNativeOrtStrictMode,
   ]);
 
   const syncDetectionBackendDebug = useCallback((patch: Partial<ScannerCvDebugState> = {}) => {
@@ -772,13 +699,13 @@ export default function ScannerView({
     });
   }, [getDetectionBackendState, setCvDebug]);
 
-  const applyNativeYoloProbe = useCallback((probe: TauriScannerYoloProbeResult | null) => {
-    nativeYoloProbeRef.current = probe;
+  const applyNativeORTProbe = useCallback((probe: TauriScannerDetectProbeResult | null) => {
+    nativeOrtProbeRef.current = probe;
     syncDetectionBackendDebug();
   }, [syncDetectionBackendDebug]);
 
-  const clearNativeYoloProbe = useCallback((message?: string) => {
-    nativeYoloProbeRef.current = null;
+  const clearNativeORTProbe = useCallback((message?: string) => {
+    nativeOrtProbeRef.current = null;
     syncDetectionBackendDebug(
       message
         ? {
@@ -788,34 +715,34 @@ export default function ScannerView({
     );
   }, [syncDetectionBackendDebug]);
 
-  const refreshNativeYoloProbe = useCallback(async (): Promise<TauriScannerYoloProbeResult | null> => {
+  const refreshNativeOrtProbe = useCallback(async (): Promise<TauriScannerDetectProbeResult | null> => {
     if (!nativeBackendSupported) {
-      clearNativeYoloProbe();
+      clearNativeORTProbe();
       return null;
     }
 
     try {
-      const probe = await probeTauriScannerYolo();
-      applyNativeYoloProbe(probe);
+      const probe = await probeTauriScannerDetect();
+      applyNativeORTProbe(probe);
       return probe;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      clearNativeYoloProbe(message);
+      clearNativeORTProbe(message);
       return null;
     }
-  }, [applyNativeYoloProbe, clearNativeYoloProbe, nativeBackendSupported]);
+  }, [applyNativeORTProbe, clearNativeORTProbe, nativeBackendSupported]);
 
   useEffect(() => {
     if (!isOpen) {
-      clearNativeYoloProbe();
+      clearNativeORTProbe();
       return;
     }
 
     let cancelled = false;
 
     void (async () => {
-      const probe = await refreshNativeYoloProbe();
-      if (!cancelled && !probe && scannerDetectionBackend === "native-yolo" && scannerNativeYoloStrictMode) {
+      const probe = await refreshNativeOrtProbe();
+      if (!cancelled && !probe && scannerDetectionBackend === "native-ort" && scannerNativeOrtStrictMode) {
         syncDetectionBackendDebug();
       }
     })();
@@ -824,11 +751,11 @@ export default function ScannerView({
       cancelled = true;
     };
   }, [
-    clearNativeYoloProbe,
+    clearNativeORTProbe,
     isOpen,
-    refreshNativeYoloProbe,
+    refreshNativeOrtProbe,
     scannerDetectionBackend,
-    scannerNativeYoloStrictMode,
+    scannerNativeOrtStrictMode,
     syncDetectionBackendDebug,
   ]);
 
@@ -876,59 +803,7 @@ export default function ScannerView({
     setFrameSource(null);
   }, [clearFrameSourceSubscription, setFrameSource]);
 
-  const clearCvLoop = useCallback(() => {
-    if (cvLoopTimeoutRef.current) {
-      clearTimeout(cvLoopTimeoutRef.current);
-      cvLoopTimeoutRef.current = null;
-    }
-    cvDetectionInFlightRef.current = false;
-  }, []);
 
-  const terminateCvWorker = useCallback(() => {
-    cvWorkerReadyRef.current = false;
-    const worker = cvWorkerRef.current;
-    cvWorkerRef.current = null;
-    worker?.terminate();
-  }, []);
-
-  const terminatePostProcessWorker = useCallback(() => {
-    const worker = postProcessWorkerRef.current;
-    postProcessWorkerRef.current = null;
-    worker?.terminate();
-  }, []);
-
-  const ensureCvWorker = useCallback(async (): Promise<ScannerCvWorkerClient | null> => {
-    let worker = cvWorkerRef.current;
-    if (!worker) {
-      worker = createScannerCvWorkerClient();
-      cvWorkerRef.current = worker;
-    }
-
-    const ready = await worker.ensureReady();
-    cvWorkerReadyRef.current = ready;
-    if (ready) {
-      return worker;
-    }
-
-    terminateCvWorker();
-    return null;
-  }, [terminateCvWorker]);
-
-  const ensurePostProcessWorker = useCallback(async (): Promise<ScannerPostProcessWorkerClient | null> => {
-    let worker = postProcessWorkerRef.current;
-    if (!worker) {
-      worker = createScannerPostProcessWorkerClient();
-      postProcessWorkerRef.current = worker;
-    }
-
-    const ready = await worker.ensureReady();
-    if (ready) {
-      return worker;
-    }
-
-    terminatePostProcessWorker();
-    return null;
-  }, [terminatePostProcessWorker]);
 
   const setProcessingState = useCallback((next: boolean) => {
     processingRef.current = next;
@@ -982,143 +857,7 @@ export default function ScannerView({
     });
   }, [autoCapture, syncDetectionBackendDebug]);
 
-  const detectDocumentContourWithFallback = useCallback(async (
-    frame: ImageData,
-    frameVersion: number,
-    processingSize: { width: number; height: number },
-    options?: {
-      useNativePreviewFrameCache?: boolean;
-    },
-  ): Promise<Point[] | null> => {
-    const backendState = getDetectionBackendState();
-    if (backendState.activeBackend === "native-yolo") {
-      try {
-        const nativeOptions = {
-          maxWidth: processingSize.width,
-          maxHeight: processingSize.height,
-        };
-        const nativeResult = options?.useNativePreviewFrameCache
-          ? await detectDocumentWithTauriNativeYoloLatestPreview(nativeOptions).catch(async (error) => {
-            console.warn(
-              "[Scanner] Cached preview native detect path failed, retrying this tick via RGBA invoke:",
-              error,
-            );
-            return await detectDocumentWithTauriNativeYoloRgba(frame, nativeOptions);
-          })
-          : await detectDocumentWithTauriNativeYoloRgba(frame, nativeOptions);
-        const nativeReady = Boolean(
-          nativeResult.runtimeReady
-          && nativeResult.sessionReady
-          && nativeResult.detectionImplemented,
-        );
-        const nativeBackendMessage = nativeResult.inputTransport
-          ? `${nativeResult.message} [input=${nativeResult.inputTransport}]`
-          : nativeResult.message;
 
-        lastDetectionBackendRef.current = nativeReady || backendState.strictMode
-          ? "native-yolo"
-          : "opencv";
-        syncDetectionBackendDebug({
-          activeBackend: lastDetectionBackendRef.current,
-          cvReady: nativeReady || (!backendState.strictMode && isOpenCvRuntimeReady()),
-          preferredProvider: nativeResult.preferredProvider,
-          preferredProviderReady: nativeResult.preferredProviderReady,
-          selectedModelId: nativeResult.selectedModelId,
-          selectedModelKind: nativeResult.selectedModelKind,
-          selectedModelTask: nativeResult.selectedModelTask,
-          backendMessage: nativeBackendMessage,
-        });
-
-        if (nativeReady) {
-          const nativeQuadAssessment = assessDocumentQuad(
-            nativeResult.points,
-            frame.width,
-            frame.height,
-          );
-          if (nativeQuadAssessment.trustworthy) {
-            return nativeResult.points;
-          }
-
-          const nativeQuadReason = nativeQuadAssessment.reason
-            ?? "Native detector produced an untrustworthy document quad.";
-          console.warn(
-            `[Scanner] ${nativeQuadReason} `
-            + `${backendState.strictMode ? "Native strict mode will reject this frame." : "Falling back to OpenCV."}`,
-            nativeResult.points,
-          );
-          lastDetectionBackendRef.current = backendState.strictMode ? "native-yolo" : "opencv";
-          syncDetectionBackendDebug({
-            activeBackend: lastDetectionBackendRef.current,
-            cvReady: backendState.strictMode ? nativeReady : isOpenCvRuntimeReady(),
-            preferredProvider: nativeResult.preferredProvider,
-            preferredProviderReady: nativeResult.preferredProviderReady,
-            selectedModelId: nativeResult.selectedModelId,
-            selectedModelKind: nativeResult.selectedModelKind,
-            selectedModelTask: nativeResult.selectedModelTask,
-            backendMessage: backendState.strictMode
-              ? nativeQuadReason
-              : `${nativeQuadReason} Falling back to OpenCV.`,
-          });
-          if (backendState.strictMode) {
-            return null;
-          }
-        }
-
-        if (backendState.strictMode) {
-          return null;
-        }
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        console.warn("[Scanner] Native detector failed, falling back to OpenCV:", error);
-
-        const refreshedProbe = await refreshNativeYoloProbe();
-        lastDetectionBackendRef.current = backendState.strictMode ? "native-yolo" : "opencv";
-        syncDetectionBackendDebug({
-          activeBackend: lastDetectionBackendRef.current,
-          backendMessage: backendState.strictMode
-            ? message
-            : `${message} Falling back to OpenCV.`,
-          preferredProvider: refreshedProbe?.preferredProvider ?? null,
-          preferredProviderReady: refreshedProbe?.preferredProviderReady ?? false,
-          selectedModelId: refreshedProbe?.selectedModelId ?? null,
-          selectedModelKind: refreshedProbe?.selectedModelKind ?? null,
-          selectedModelTask: refreshedProbe?.selectedModelTask ?? null,
-        });
-
-        if (backendState.strictMode) {
-          return null;
-        }
-      }
-    }
-
-    lastDetectionBackendRef.current = "opencv";
-    const worker = cvWorkerRef.current;
-    if (worker?.isReady()) {
-      try {
-        const result = await worker.detect(frame, {
-          frameVersion,
-          maxWidth: processingSize.width,
-          maxHeight: processingSize.height,
-        });
-        cvWorkerReadyRef.current = true;
-        return result.points;
-      } catch (error) {
-        console.warn("[Scanner] CV worker detection failed, falling back to main thread:", error);
-        terminateCvWorker();
-      }
-    }
-
-    return detectDocumentContour(frame, {
-      maxWidth: processingSize.width,
-      maxHeight: processingSize.height,
-    });
-  }, [
-    getDetectionBackendState,
-    isOpenCvRuntimeReady,
-    refreshNativeYoloProbe,
-    syncDetectionBackendDebug,
-    terminateCvWorker,
-  ]);
 
   const applyPerfSample = useCallback((sample: FrontendPerfSample) => {
     setPreviewDebug({
@@ -1356,242 +1095,7 @@ export default function ScannerView({
     maybeDebugSource.onPerformanceState?.(applyGuardedPayload);
   }, [applyFutureDebugPayload]);
 
-  const buildDocumentSourceArtifact = useCallback(async (
-    frame: ImageData,
-    documentPoints: Point[] | null,
-  ): Promise<PreparedCaptureArtifact> => {
-    const exportOrientation = previewOrientationRef.current;
-    const exportFrame = exportOrientation === "portrait"
-      ? rotateImageData(frame, 90)
-      : frame;
-    const exportPoints = documentPoints && documentPoints.length === 4
-      ? (
-          exportOrientation === "portrait"
-            ? orientPointsForPreview(documentPoints, frame.width, frame.height, "portrait")
-            : documentPoints
-        )
-      : null;
 
-    return {
-      sourceBlob: await imageDataToPngBlob(exportFrame),
-      sourceWidth: exportFrame.width,
-      sourceHeight: exportFrame.height,
-      initialFrame: isTauri() ? null : exportFrame,
-      points: exportPoints,
-      outputRotation: 0,
-    };
-  }, []);
-
-  const renderProcessedDocumentBlobLocally = useCallback(async (
-    frame: ImageData,
-    documentPoints: Point[] | null,
-    outputRotation: OrthogonalRotation = 0,
-    optionsOverride?: Partial<PostProcessOptions>,
-  ): Promise<ProcessedDocumentRenderResult> => {
-    const overrideEnhancement = optionsOverride?.imageEnhancement ?? imageEnhancement;
-    const overrideSpineFlattening = optionsOverride?.spineFlattening ?? true;
-    const overrideColorMode = optionsOverride?.colorMode ?? "auto";
-    const postprocessBackend = optionsOverride?.postprocessBackend ?? scannerPostProcessBackend;
-    let baseImage = frame;
-    let refineMs: number | null = null;
-    let perspectiveMs: number | null = null;
-    let flattenMs: number | null = null;
-    let enhanceMs: number | null = null;
-    const modelMs: number | null = null;
-    const residualWarpMs: number | null = null;
-    let rotateMs: number | null = null;
-    let effectiveDocumentPoints = clonePoints(documentPoints);
-    let refinementApplied = false;
-    let localFlatteningApplied = false;
-    const modelId: string | null = null;
-    const controlGridShape: string | null = null;
-    const residualWarpApplied = false;
-    const residualWarpFallbackReason = postprocessBackend === "native-ml-v1"
-      ? "Local fallback keeps the current heuristic phase-2 path; native residual-control-point inference is only attempted in Tauri."
-      : null;
-
-    if (documentPoints && documentPoints.length === 4) {
-      const refineStartedAt = performance.now();
-      const refinedQuad = refineDocumentQuadInImageData(frame, documentPoints);
-      refineMs = performance.now() - refineStartedAt;
-      effectiveDocumentPoints = refinedQuad.points;
-      refinementApplied = refinedQuad.applied;
-    }
-
-    const finalizeOutputBlob = async (resultImage: ImageData): Promise<ProcessedDocumentRenderResult> => {
-      const encodeStartedAt = performance.now();
-      const blob = await imageDataToPngBlob(resultImage);
-      return {
-        blob,
-        decodeMs: null,
-        refineMs,
-        inputWidth: frame.width,
-        inputHeight: frame.height,
-        outputWidth: resultImage.width,
-        outputHeight: resultImage.height,
-        perspectiveMs,
-        flattenMs,
-        enhanceMs,
-        modelMs,
-        residualWarpMs,
-        rotateMs,
-        encodeMs: performance.now() - encodeStartedAt,
-        postprocessBackend,
-        modelId,
-        controlGridShape,
-        effectiveDocumentPoints,
-        refinementApplied,
-        localFlatteningApplied,
-        residualWarpApplied,
-        residualWarpFallbackReason,
-      };
-    };
-
-    if (effectiveDocumentPoints && effectiveDocumentPoints.length === 4) {
-      const geometryCheck = validateQuadGeometry(effectiveDocumentPoints, frame.width, frame.height);
-      if (!geometryCheck.valid) {
-        effectiveDocumentPoints = null;
-      }
-    }
-
-    if (effectiveDocumentPoints && effectiveDocumentPoints.length === 4) {
-      const perspectiveStartedAt = performance.now();
-      baseImage = applyPerspectiveTransformToImageData(frame, effectiveDocumentPoints, 0.01);
-      perspectiveMs = performance.now() - perspectiveStartedAt;
-    }
-
-    if (overrideSpineFlattening && effectiveDocumentPoints && effectiveDocumentPoints.length === 4) {
-      const flattenStartedAt = performance.now();
-      const flattenResult = applyLocalSpineFlatteningToImageData(baseImage);
-      flattenMs = performance.now() - flattenStartedAt;
-      baseImage = flattenResult.imageData;
-      localFlatteningApplied = flattenResult.applied;
-    }
-
-    if (outputRotation !== 0) {
-      const rotateStartedAt = performance.now();
-      baseImage = rotateImageData(baseImage, outputRotation);
-      rotateMs = performance.now() - rotateStartedAt;
-    }
-
-    if (!overrideEnhancement) {
-      return await finalizeOutputBlob(baseImage);
-    }
-
-    const enhanceStartedAt = performance.now();
-    const enhancedImage = await enhanceDocumentImageData(baseImage, {
-      preferSoftTone: localFlatteningApplied,
-      colorMode: overrideColorMode,
-    });
-    enhanceMs = performance.now() - enhanceStartedAt;
-    return await finalizeOutputBlob(enhancedImage);
-  }, [imageEnhancement]);
-
-  const renderProcessedDocumentBlob = useCallback(async (
-    frame: ImageData,
-    documentPoints: Point[] | null,
-    outputRotation: OrthogonalRotation = 0,
-    optionsOverride?: Partial<PostProcessOptions>,
-  ): Promise<ProcessedDocumentRenderResult> => {
-    // In Tauri, try the native backend first (encode ImageData to PNG for the IPC).
-    const shouldTryNativePostProcess = isTauri() && !nativePostProcessUnavailableReasonRef.current;
-    if (shouldTryNativePostProcess) {
-      try {
-        const sourceBlob = await imageDataToPngBlob(frame);
-        const nativeResult = await processTauriScannerPostProcessSourceFile(sourceBlob, {
-          documentPoints,
-          outputRotation,
-          imageEnhancement: optionsOverride?.imageEnhancement ?? imageEnhancement,
-          colorMode: optionsOverride?.colorMode ?? "auto",
-          postprocessBackend: optionsOverride?.postprocessBackend ?? scannerPostProcessBackend,
-          spineFlattening: optionsOverride?.spineFlattening ?? true,
-          perspectiveTransform: optionsOverride?.perspectiveTransform ?? true,
-          gridPostprocess: optionsOverride?.gridPostprocess ?? "none",
-        });
-        const blob = new Blob([nativeResult.encodedBytes], {type: nativeResult.encodedMimeType});
-        return {
-          blob,
-          decodeMs: nativeResult.decodeMs,
-          refineMs: nativeResult.refineMs,
-          inputWidth: nativeResult.inputWidth,
-          inputHeight: nativeResult.inputHeight,
-          outputWidth: nativeResult.outputWidth,
-          outputHeight: nativeResult.outputHeight,
-          perspectiveMs: nativeResult.perspectiveMs,
-          flattenMs: nativeResult.flattenMs,
-          enhanceMs: nativeResult.enhanceMs,
-          modelMs: nativeResult.modelMs,
-          residualWarpMs: nativeResult.residualWarpMs,
-          rotateMs: nativeResult.rotateMs,
-          encodeMs: nativeResult.encodeMs,
-          postprocessBackend: nativeResult.postprocessBackend,
-          modelId: nativeResult.modelId,
-          controlGridShape: nativeResult.controlGridShape,
-          effectiveDocumentPoints: nativeResult.effectiveDocumentPoints,
-          refinementApplied: nativeResult.refinementApplied,
-          localFlatteningApplied: nativeResult.localFlatteningApplied,
-          residualWarpApplied: nativeResult.residualWarpApplied,
-          residualWarpFallbackReason: nativeResult.residualWarpFallbackReason,
-        };
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        if (shouldDisableNativePostProcess(message)) {
-          nativePostProcessUnavailableReasonRef.current = message;
-        }
-        console.warn("[Scanner] Native post-process failed in renderProcessedDocumentBlob, falling back to worker:", error);
-      }
-    }
-
-    const worker = await ensurePostProcessWorker();
-    if (worker) {
-      try {
-        const workerResult = await worker.process(frame, {
-          documentPoints,
-          outputRotation,
-          imageEnhancement: optionsOverride?.imageEnhancement ?? imageEnhancement,
-          colorMode: optionsOverride?.colorMode ?? "auto",
-          postprocessBackend: optionsOverride?.postprocessBackend ?? scannerPostProcessBackend,
-          spineFlattening: optionsOverride?.spineFlattening ?? true,
-        });
-        const blob = new Blob([workerResult.encodedBytes], { type: workerResult.encodedMimeType });
-        return {
-          blob,
-          decodeMs: workerResult.decodeMs,
-          refineMs: workerResult.refineMs,
-          inputWidth: workerResult.inputWidth,
-          inputHeight: workerResult.inputHeight,
-          outputWidth: workerResult.outputWidth,
-          outputHeight: workerResult.outputHeight,
-          perspectiveMs: workerResult.perspectiveMs,
-          flattenMs: workerResult.flattenMs,
-          enhanceMs: workerResult.enhanceMs,
-          modelMs: workerResult.modelMs,
-          residualWarpMs: workerResult.residualWarpMs,
-          rotateMs: workerResult.rotateMs,
-          encodeMs: workerResult.encodeMs,
-          postprocessBackend: workerResult.postprocessBackend,
-          modelId: workerResult.modelId,
-          controlGridShape: workerResult.controlGridShape,
-          effectiveDocumentPoints: workerResult.effectiveDocumentPoints,
-          refinementApplied: workerResult.refinementApplied,
-          localFlatteningApplied: workerResult.localFlatteningApplied,
-          residualWarpApplied: workerResult.residualWarpApplied,
-          residualWarpFallbackReason: workerResult.residualWarpFallbackReason,
-        };
-      } catch (error) {
-        console.warn("[Scanner] Post-process worker failed, falling back to main thread:", error);
-        terminatePostProcessWorker();
-      }
-    }
-
-    return await renderProcessedDocumentBlobLocally(frame, documentPoints, outputRotation, optionsOverride);
-  }, [
-    ensurePostProcessWorker,
-    imageEnhancement,
-    renderProcessedDocumentBlobLocally,
-    scannerPostProcessBackend,
-    terminatePostProcessWorker,
-  ]);
 
   const renderProcessedDocumentBlobFromSourceFile = useCallback(async (
     sourceFile: Blob,
@@ -1599,111 +1103,44 @@ export default function ScannerView({
     outputRotation: OrthogonalRotation = 0,
     optionsOverride?: Partial<PostProcessOptions>,
   ): Promise<ProcessedDocumentRenderResult> => {
-    const shouldTryNativePostProcess = !nativePostProcessUnavailableReasonRef.current;
-    if (shouldTryNativePostProcess) {
-      try {
-        const nativeResult = await processTauriScannerPostProcessSourceFile(sourceFile, {
-          documentPoints,
-          outputRotation,
-          imageEnhancement: optionsOverride?.imageEnhancement ?? imageEnhancement,
-          colorMode: optionsOverride?.colorMode ?? "auto",
-          postprocessBackend: optionsOverride?.postprocessBackend ?? scannerPostProcessBackend,
-          spineFlattening: optionsOverride?.spineFlattening ?? true,
-          perspectiveTransform: optionsOverride?.perspectiveTransform ?? true,
-          gridPostprocess: optionsOverride?.gridPostprocess ?? "none",
-        });
-        const blob = new Blob([nativeResult.encodedBytes], {type: nativeResult.encodedMimeType});
-        return {
-          blob,
-          decodeMs: nativeResult.decodeMs,
-          refineMs: nativeResult.refineMs,
-          inputWidth: nativeResult.inputWidth,
-          inputHeight: nativeResult.inputHeight,
-          outputWidth: nativeResult.outputWidth,
-          outputHeight: nativeResult.outputHeight,
-          perspectiveMs: nativeResult.perspectiveMs,
-          flattenMs: nativeResult.flattenMs,
-          enhanceMs: nativeResult.enhanceMs,
-          modelMs: nativeResult.modelMs,
-          residualWarpMs: nativeResult.residualWarpMs,
-          rotateMs: nativeResult.rotateMs,
-          encodeMs: nativeResult.encodeMs,
-          postprocessBackend: nativeResult.postprocessBackend,
-          modelId: nativeResult.modelId,
-          controlGridShape: nativeResult.controlGridShape,
-          effectiveDocumentPoints: nativeResult.effectiveDocumentPoints,
-          refinementApplied: nativeResult.refinementApplied,
-          localFlatteningApplied: nativeResult.localFlatteningApplied,
-          residualWarpApplied: nativeResult.residualWarpApplied,
-          residualWarpFallbackReason: nativeResult.residualWarpFallbackReason,
-        };
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        if (shouldDisableNativePostProcess(message)) {
-          nativePostProcessUnavailableReasonRef.current = message;
-        }
-        console.warn("[Scanner] Native post-process failed, falling back to worker:", error);
-      }
-    }
-
-    const worker = await ensurePostProcessWorker();
-    if (worker) {
-      try {
-        const workerResult = await worker.processSourceFile(sourceFile, {
-          documentPoints,
-          outputRotation,
-          imageEnhancement: optionsOverride?.imageEnhancement ?? imageEnhancement,
-          colorMode: optionsOverride?.colorMode ?? "auto",
-          postprocessBackend: optionsOverride?.postprocessBackend ?? scannerPostProcessBackend,
-          spineFlattening: optionsOverride?.spineFlattening ?? true,
-        });
-        const blob = new Blob([workerResult.encodedBytes], { type: workerResult.encodedMimeType });
-        return {
-          blob,
-          decodeMs: workerResult.decodeMs,
-          refineMs: workerResult.refineMs,
-          inputWidth: workerResult.inputWidth,
-          inputHeight: workerResult.inputHeight,
-          outputWidth: workerResult.outputWidth,
-          outputHeight: workerResult.outputHeight,
-          perspectiveMs: workerResult.perspectiveMs,
-          flattenMs: workerResult.flattenMs,
-          enhanceMs: workerResult.enhanceMs,
-          modelMs: workerResult.modelMs,
-          residualWarpMs: workerResult.residualWarpMs,
-          rotateMs: workerResult.rotateMs,
-          encodeMs: workerResult.encodeMs,
-          postprocessBackend: workerResult.postprocessBackend,
-          modelId: workerResult.modelId,
-          controlGridShape: workerResult.controlGridShape,
-          effectiveDocumentPoints: workerResult.effectiveDocumentPoints,
-          refinementApplied: workerResult.refinementApplied,
-          localFlatteningApplied: workerResult.localFlatteningApplied,
-          residualWarpApplied: workerResult.residualWarpApplied,
-          residualWarpFallbackReason: workerResult.residualWarpFallbackReason,
-        };
-      } catch (error) {
-        console.warn("[Scanner] Post-process worker source decode failed, falling back to main thread:", error);
-        terminatePostProcessWorker();
-      }
-    }
-
-    const decodeStartedAt = performance.now();
-    const decodedFrame = await decodeBlobToImageData(sourceFile);
-    const decodeMs = performance.now() - decodeStartedAt;
-    const localResult = await renderProcessedDocumentBlobLocally(decodedFrame, documentPoints, outputRotation, optionsOverride);
+    const nativeResult = await processTauriScannerPostProcessSourceFile(sourceFile, {
+      documentPoints,
+      outputRotation,
+      imageEnhancement: optionsOverride?.imageEnhancement ?? imageEnhancement,
+      colorMode: optionsOverride?.colorMode ?? "auto",
+      postprocessBackend: optionsOverride?.postprocessBackend ?? scannerPostProcessBackend,
+      spineFlattening: optionsOverride?.spineFlattening ?? true,
+      perspectiveTransform: optionsOverride?.perspectiveTransform ?? true,
+      gridPostprocess: optionsOverride?.gridPostprocess ?? "none",
+    });
+    const blob = new Blob([nativeResult.encodedBytes], {type: nativeResult.encodedMimeType});
     return {
-      ...localResult,
-      decodeMs,
-      inputWidth: decodedFrame.width,
-      inputHeight: decodedFrame.height,
+      blob,
+      decodeMs: nativeResult.decodeMs,
+      refineMs: nativeResult.refineMs,
+      inputWidth: nativeResult.inputWidth,
+      inputHeight: nativeResult.inputHeight,
+      outputWidth: nativeResult.outputWidth,
+      outputHeight: nativeResult.outputHeight,
+      perspectiveMs: nativeResult.perspectiveMs,
+      flattenMs: nativeResult.flattenMs,
+      enhanceMs: nativeResult.enhanceMs,
+      modelMs: nativeResult.modelMs,
+      residualWarpMs: nativeResult.residualWarpMs,
+      rotateMs: nativeResult.rotateMs,
+      encodeMs: nativeResult.encodeMs,
+      postprocessBackend: nativeResult.postprocessBackend,
+      modelId: nativeResult.modelId,
+      controlGridShape: nativeResult.controlGridShape,
+      effectiveDocumentPoints: nativeResult.effectiveDocumentPoints,
+      refinementApplied: nativeResult.refinementApplied,
+      localFlatteningApplied: nativeResult.localFlatteningApplied,
+      residualWarpApplied: nativeResult.residualWarpApplied,
+      residualWarpFallbackReason: nativeResult.residualWarpFallbackReason,
     };
   }, [
-    ensurePostProcessWorker,
     imageEnhancement,
-    renderProcessedDocumentBlobLocally,
     scannerPostProcessBackend,
-    terminatePostProcessWorker,
   ]);
 
   const logHighQualityStillFailureDiagnostics = useCallback(async (
@@ -1827,7 +1264,6 @@ export default function ScannerView({
       sourceBlob: stillCapture.file,
       sourceWidth: stillDimensions.width,
       sourceHeight: stillDimensions.height,
-      initialFrame: null,
       points: mappedPoints,
       outputRotation,
       source: stillCapture.source,
@@ -1856,7 +1292,6 @@ export default function ScannerView({
     outputNameBase: string,
     documentPoints: Point[] | null,
     outputRotation: OrthogonalRotation,
-    initialFrame?: ImageData,
     options?: {
       redetectPoints?: boolean;
       overrides?: Partial<PostProcessOptions>;
@@ -1899,8 +1334,8 @@ export default function ScannerView({
         postProcessUsedResidualWarp: false,
         postProcessFallbackReason: null,
         postProcessControlGridShape: null,
-        postProcessInputWidth: initialFrame?.width ?? null,
-        postProcessInputHeight: initialFrame?.height ?? null,
+        postProcessInputWidth: null,
+        postProcessInputHeight: null,
       postProcessOutputWidth: null,
       postProcessOutputHeight: null,
       postProcessUpdatedAt: Date.now(),
@@ -1909,16 +1344,13 @@ export default function ScannerView({
     const runProcessing = async (): Promise<void> => {
       const totalStartedAt = performance.now();
       let decodeMs: number | null = null;
-      let redetectFrame = initialFrame ?? null;
       let resolvedPoints = clonePoints(documentPoints);
       let redetectMs: number | null = null;
 
       if (shouldAttemptRedetect) {
-        if (!redetectFrame) {
-          const decodeStartedAt = performance.now();
-          redetectFrame = await decodeBlobToImageData(sourceFile);
-          decodeMs = performance.now() - decodeStartedAt;
-        }
+        const decodeStartedAt = performance.now();
+        const redetectFrame = await decodeBlobToImageData(sourceFile);
+        decodeMs = performance.now() - decodeStartedAt;
 
         try {
           const processingSize = getCapturedDocumentProcessingSize(
@@ -1926,12 +1358,11 @@ export default function ScannerView({
             redetectFrame.height,
           );
           const redetectStartedAt = performance.now();
-          const detectedPoints = await detectDocumentContourWithFallback(
-            redetectFrame,
-            nextVersion,
-            processingSize,
-            { useNativePreviewFrameCache: false },
-          );
+          const nativeResult = await detectDocumentWithTauriNativeOrtRgba(redetectFrame, {
+            maxWidth: processingSize.width,
+            maxHeight: processingSize.height,
+          });
+          const detectedPoints = nativeResult.points ?? null;
           redetectMs = performance.now() - redetectStartedAt;
           if (detectedPoints && detectedPoints.length === 4) {
             resolvedPoints = detectedPoints;
@@ -1941,22 +1372,15 @@ export default function ScannerView({
         }
       }
 
-      const processedDocument = initialFrame
-        ? await renderProcessedDocumentBlob(
-            initialFrame,
-            resolvedPoints,
-            outputRotation,
-            options?.overrides,
-          )
-        : await renderProcessedDocumentBlobFromSourceFile(
-            sourceFile,
-            resolvedPoints,
-            outputRotation,
-            options?.overrides,
-          );
+      const processedDocument = await renderProcessedDocumentBlobFromSourceFile(
+        sourceFile,
+        resolvedPoints,
+        outputRotation,
+        options?.overrides,
+      );
       const effectiveDecodeMs = decodeMs ?? processedDocument.decodeMs;
-      const inputWidth = initialFrame?.width ?? redetectFrame?.width ?? processedDocument.inputWidth;
-      const inputHeight = initialFrame?.height ?? redetectFrame?.height ?? processedDocument.inputHeight;
+      const inputWidth = processedDocument.inputWidth;
+      const inputHeight = processedDocument.inputHeight;
       const processedFile = buildCaptureFile(processedDocument.blob, outputNameBase);
       const effectivePoints = clonePoints(processedDocument.effectiveDocumentPoints ?? resolvedPoints);
 
@@ -2051,9 +1475,7 @@ export default function ScannerView({
       });
   }, [
     buildCaptureFile,
-    detectDocumentContourWithFallback,
     imageEnhancement,
-    renderProcessedDocumentBlob,
     renderProcessedDocumentBlobFromSourceFile,
     setCaptureDebug,
     t,
@@ -2120,7 +1542,6 @@ export default function ScannerView({
         outputNameBase,
         pointsForDocument,
         artifact.outputRotation,
-        artifact.initialFrame ?? undefined,
         {
           redetectPoints: !initialQuadAssessment.trustworthy,
         },
@@ -2237,7 +1658,7 @@ export default function ScannerView({
       }
 
       if (!captureArtifact) {
-        captureArtifact = await buildDocumentSourceArtifact(frame, sourcePoints);
+        throw new Error("Scanner capture requires a high-quality still source but none was available.");
       }
 
       if (!canCommitCaptureResult(captureGeneration)) {
@@ -2269,7 +1690,6 @@ export default function ScannerView({
       }
     }
   }, [
-    buildDocumentSourceArtifact,
     buildHighQualityCaptureArtifact,
     canCommitCaptureResult,
     publishCvDebug,
@@ -2281,141 +1701,7 @@ export default function ScannerView({
     t,
   ]);
 
-  const startCvLoop = useCallback(() => {
-    clearCvLoop();
 
-    const scheduleNextTick = (delayMs: number): void => {
-      if (cvLoopTimeoutRef.current) {
-        clearTimeout(cvLoopTimeoutRef.current);
-      }
-
-      cvLoopTimeoutRef.current = setTimeout(() => {
-        cvLoopTimeoutRef.current = null;
-        tick();
-      }, delayMs);
-    };
-
-    const tick = (): void => {
-      const frame = latestFrameRef.current;
-      if (!frame) {
-        scheduleNextTick(CV_PROCESS_INTERVAL_MS);
-        return;
-      }
-
-      if (processingRef.current) {
-        trackerRef.current.reset();
-        detectionPresenceTrackerRef.current.reset();
-        latestCvSnapshotRef.current = null;
-        setPoints(null);
-        setIsStable(false);
-        publishCvDebug(frame, null, false, "preview", true);
-        scheduleNextTick(CV_PROCESS_INTERVAL_MS);
-        return;
-      }
-
-      const frameVersion = latestFrameVersionRef.current;
-      if (
-        !cvDetectionInFlightRef.current
-        && frameVersion !== 0
-        && frameVersion !== lastCvFrameVersionRef.current
-      ) {
-        cvDetectionInFlightRef.current = true;
-        const processingSize = getCvProcessingSize(frame.width, frame.height);
-        const frameForDetection = frame;
-        const sessionGeneration = frameSourceSessionGenerationRef.current;
-        const detectionStartedAt = performance.now();
-
-        void (async () => {
-          try {
-            const detectedPoints = await detectDocumentContourWithFallback(
-              frameForDetection,
-              frameVersion,
-              processingSize,
-              { useNativePreviewFrameCache: true },
-            );
-            if (
-              !dialogOpenRef.current
-              || !isFrameSourceSessionCurrent(sessionGeneration)
-            ) {
-              return;
-            }
-
-            const stable = trackerRef.current.push(detectedPoints);
-            const now = Date.now();
-            const detectionPresenceState = detectionPresenceTrackerRef.current.push(
-              detectedPoints,
-              now,
-            );
-            const effectivePoints = detectionPresenceState.effectivePoints;
-            if (!stable || !detectedPoints) {
-              stableSinceRef.current = null;
-            } else if (stableSinceRef.current === null) {
-              stableSinceRef.current = now;
-            }
-
-            const stableHoldSatisfied = Boolean(
-              stable
-              && effectivePoints
-              && stableSinceRef.current !== null
-              && now - stableSinceRef.current >= AUTO_CAPTURE_STABLE_HOLD_MS,
-            );
-
-            latestCvSnapshotRef.current = effectivePoints
-              ? {
-                frame: frameForDetection,
-                points: clonePoints(effectivePoints),
-              }
-              : null;
-
-            setPoints((current) => (pointsEqual(current, effectivePoints) ? current : effectivePoints));
-            setIsStable((current) => (current === stable ? current : stable));
-            publishCvDebug(frameForDetection, effectivePoints, stable, "preview", false, processingSize);
-
-            if (
-              autoCaptureRef.current
-              && stableHoldSatisfied
-              && effectivePoints
-            ) {
-              void captureDocument(
-                createCaptureSnapshot(frameForDetection, effectivePoints),
-                "auto",
-              );
-            }
-
-            lastCvFrameVersionRef.current = frameVersion;
-          } catch (error) {
-            if (
-              dialogOpenRef.current
-              && isFrameSourceSessionCurrent(sessionGeneration)
-            ) {
-              console.error("[Scanner] CV detection failed:", error);
-            }
-          } finally {
-            cvDetectionInFlightRef.current = false;
-            if (
-              dialogOpenRef.current
-              && isFrameSourceSessionCurrent(sessionGeneration)
-              && latestFrameVersionRef.current !== frameVersion
-            ) {
-              const elapsedMs = performance.now() - detectionStartedAt;
-              scheduleNextTick(Math.max(0, CV_PROCESS_INTERVAL_MS - elapsedMs));
-            }
-          }
-        })();
-      }
-
-      scheduleNextTick(CV_PROCESS_INTERVAL_MS);
-    };
-
-    scheduleNextTick(0);
-  }, [
-    captureDocument,
-    clearCvLoop,
-    createCaptureSnapshot,
-    detectDocumentContourWithFallback,
-    isFrameSourceSessionCurrent,
-    publishCvDebug,
-  ]);
 
   const resolvePreviewCanvasContext = useCallback((canvas: HTMLCanvasElement) => {
     const cached = canvasContextRef.current;
@@ -2579,21 +1865,16 @@ export default function ScannerView({
 
     invalidatePendingCaptureCommits();
     clearProcessingCooldown();
-    clearCvLoop();
     setProcessingState(false);
     setStatus("connecting");
     setConfig(config);
     resetDebugState();
-    trackerRef.current.reset();
-    detectionPresenceTrackerRef.current.reset();
     latestCvSnapshotRef.current = null;
-    stableSinceRef.current = null;
     setPoints(null);
     setIsStable(false);
     latestFrameRef.current = null;
     latestFrameVersionRef.current = 0;
     renderedFrameVersionRef.current = 0;
-    lastCvFrameVersionRef.current = 0;
     lastCanvasMetricEmitAtRef.current = 0;
 
     setPreviewDebug({
@@ -2715,13 +1996,39 @@ export default function ScannerView({
         return;
       }
 
-      void ensureCvWorker();
       setStatus("streaming");
       setConnectionDebug({
         reconnectState: "connected",
         reconnectMessage: t("connection.started"),
       });
-      startCvLoop();
+
+      // --- Start Rust-driven detection loop ---
+      const detectionBackend = useSettingsStore.getState().scannerDetectionBackend;
+      try {
+        const detectionUnlisten = await listenTauriDetectionEvents(
+          (event: DetectionResultEvent) => {
+            if (!isCurrentSourceSession()) return;
+            setPoints(event.effectivePoints ?? event.points ?? null);
+            setIsStable(event.isStable);
+          },
+          (event: DetectionResultEvent) => {
+            if (!isCurrentSourceSession()) return;
+            // Auto-capture triggered by the Rust stability tracker
+            const frame = latestFrameRef.current;
+            if (frame && !processingRef.current) {
+              void captureDocument(
+                createCaptureSnapshot(frame, event.effectivePoints ?? event.points ?? null),
+                "auto",
+              );
+            }
+          },
+        );
+        detectionEventUnlistenRef.current = detectionUnlisten;
+
+        await startTauriDetectionLoop({ backend: detectionBackend });
+      } catch (detectionError) {
+        console.warn("[ScannerView] Failed to start detection loop:", detectionError);
+      }
     } catch (error) {
       if (!source || !isCurrentStartSession(source)) {
         releaseFrameSourceIfCurrent(source);
@@ -2746,8 +2053,6 @@ export default function ScannerView({
     beginFrameSourceSession,
     clearFrameSourceSubscription,
     clearProcessingCooldown,
-    clearCvLoop,
-    ensureCvWorker,
     isFrameSourceSessionCurrent,
     invalidatePendingCaptureCommits,
     publishCvDebug,
@@ -2762,7 +2067,6 @@ export default function ScannerView({
     setPreviewDebug,
     setProcessingState,
     setStatus,
-    startCvLoop,
     t,
   ]);
 
@@ -2775,10 +2079,14 @@ export default function ScannerView({
 
     invalidatePendingCaptureCommits();
     clearProcessingCooldown();
-    clearCvLoop();
     clearFrameSourceSubscription();
-    terminateCvWorker();
-    terminatePostProcessWorker();
+
+    // Stop Rust detection loop and unsubscribe events
+    if (detectionEventUnlistenRef.current) {
+      detectionEventUnlistenRef.current();
+      detectionEventUnlistenRef.current = null;
+    }
+    void stopTauriDetectionLoop();
 
     if (animationFrameRef.current) {
       cancelAnimationFrame(animationFrameRef.current);
@@ -2803,12 +2111,8 @@ export default function ScannerView({
     latestFrameRef.current = null;
     latestFrameVersionRef.current = 0;
     renderedFrameVersionRef.current = 0;
-    lastCvFrameVersionRef.current = 0;
     lastCanvasMetricEmitAtRef.current = 0;
-    trackerRef.current.reset();
-    detectionPresenceTrackerRef.current.reset();
     latestCvSnapshotRef.current = null;
-    stableSinceRef.current = null;
     processingRef.current = false;
 
     if (!skipComponentState && !unmountedRef.current) {
@@ -2839,7 +2143,6 @@ export default function ScannerView({
     setStatus("idle");
   }, [
     beginFrameSourceSession,
-    clearCvLoop,
     clearFrameSourceSubscription,
     clearProcessingCooldown,
     invalidatePendingCaptureCommits,
@@ -2850,8 +2153,6 @@ export default function ScannerView({
     setFrameSource,
     setStatus,
     t,
-    terminateCvWorker,
-    terminatePostProcessWorker,
   ]);
 
   // Keep a stable ref so the unmount-only cleanup always calls the latest version.
@@ -2913,7 +2214,6 @@ export default function ScannerView({
       document.outputNameBase,
       nextPoints,
       document.outputRotation,
-      undefined,
       {
         redetectPoints: false,
         overrides: _options,
@@ -3133,7 +2433,7 @@ export default function ScannerView({
 
   return (
     <Dialog open={isOpen} onOpenChange={onOpenChange}>
-      {isOpen ? <OpenCVLoader /> : null}
+      {null}
       <DialogContent
         size="scanner"
         className={cn("!flex h-[min(92vh,960px)] flex-col overflow-hidden p-0", dialogWidthClass)}

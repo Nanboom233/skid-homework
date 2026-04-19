@@ -417,7 +417,7 @@
         "model-missing": "No model selected",
         "options": {
           "opencv": "OpenCV Contours",
-          "native-yolo": "Native ORT Runtime"
+          "native-ort": "Native ORT Runtime"
         },
         "model-kind": {
           "public-baseline": "Public baseline",
@@ -494,7 +494,7 @@
         "description": "Contour detection, stability, corner points, and processing resolution.",
         "badges": {
           "ready-opencv": "OpenCV ready",
-          "ready-native-yolo": "Native runtime ready",
+          "ready-native-ort": "Native runtime ready",
           "unavailable": "Detector unavailable",
           "requested": "Requested: {{backend}}",
           "document-detected": "Document detected",
@@ -506,7 +506,7 @@
         },
         "backends": {
           "opencv": "OpenCV",
-          "native-yolo": "Native ORT"
+          "native-ort": "Native ORT"
         },
         "model-kind": {
           "public-baseline": "Public baseline",
@@ -874,16 +874,16 @@
         "desc": "Choose whether desktop scanning uses OpenCV contours or the native Rust/ORT runtime.",
         "options": {
           "opencv": "OpenCV contour detector",
-          "native-yolo": "Native desktop runtime"
+          "native-ort": "Native desktop runtime"
         }
       },
-      "scanner-native-yolo-strict-mode": {
+      "scanner-native-ort-strict-mode": {
         "label": "Strict native runtime mode",
         "desc": "When enabled, scanner detection will not fall back to OpenCV if the native desktop runtime is unavailable."
       },
-      "scanner-native-yolo-config": {
+      "scanner-native-ort-config": {
         "title": "Native Desktop Runtime Config",
-        "desc": "Desktop-only. Reads the bundled scanner YOLO config and writes overrides to the writable app config directory.",
+        "desc": "Desktop-only. Reads the bundled scanner ORT config and writes overrides to the writable app config directory.",
         "actions": {
           "reload": "Reload config",
           "save": "Save config",

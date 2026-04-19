@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use app_lib::scanner_detect::{
-    detect_document_native_yolo, ScannerDetectDocumentRequest, ScannerDetectDocumentResponse,
+    detect_document_native_ort, ScannerDetectDocumentRequest, ScannerDetectDocumentResponse,
     ScannerPoint,
 };
 use app_lib::scanner_postprocess::{
@@ -118,7 +118,7 @@ fn run() -> Result<(), String> {
             postprocess: None,
             status: "failed",
             error: Some(
-                "No document points were available from sidecar input or native YOLO detection."
+                "No document points were available from sidecar input or Native ORT detection."
                     .to_string(),
             ),
         };
@@ -347,7 +347,7 @@ fn resolve_document_points(
         return Ok(("none", None, None, None));
     }
 
-    let detection_response = detect_document_native_yolo(
+    let detection_response = detect_document_native_ort(
         ScannerDetectDocumentRequest {
             source_bytes: image_bytes.to_vec(),
             rgba_bytes: Vec::new(),
@@ -364,7 +364,7 @@ fn resolve_document_points(
         .detected_points()
         .map(|points| points.to_vec());
     Ok((
-        "native-yolo",
+        "native-ORT",
         None,
         resolved_points,
         Some(detection_response),

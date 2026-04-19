@@ -2,7 +2,7 @@ import type {Point} from "@/lib/scanner/document-detector";
 
 import {isTauri} from "./platform";
 
-export interface TauriScannerYoloResourceStatus {
+export interface TauriScannerDetectResourceStatus {
   key: string;
   relativePath: string;
   resolvedPath: string | null;
@@ -10,7 +10,7 @@ export interface TauriScannerYoloResourceStatus {
   required: boolean;
 }
 
-export interface TauriScannerYoloModelConfig {
+export interface TauriScannerDetectModelConfig {
   id: string;
   kind: string;
   task: string;
@@ -20,38 +20,38 @@ export interface TauriScannerYoloModelConfig {
   inputSize?: [number, number] | null;
 }
 
-export interface TauriScannerYoloWindowsConfig {
+export interface TauriScannerDetectWindowsConfig {
   preferredProvider: string;
   runtimeLibrary: string;
   sharedLibrary: string;
   providerLibrary: string;
 }
 
-export interface TauriScannerYoloLinuxConfig {
+export interface TauriScannerDetectLinuxConfig {
   preferredProviders: string[];
   runtimeLibrary: string;
   providerLibraries: string[];
   officialGpuReleaseArtifact: string;
 }
 
-export interface TauriScannerYoloConfig {
+export interface TauriScannerDetectConfig {
   stage: string;
   task: string;
-  intendedPrimaryModel: TauriScannerYoloModelConfig;
-  activePublicBaseline: TauriScannerYoloModelConfig;
-  windows?: TauriScannerYoloWindowsConfig | null;
-  linux?: TauriScannerYoloLinuxConfig | null;
+  intendedPrimaryModel: TauriScannerDetectModelConfig;
+  activePublicBaseline: TauriScannerDetectModelConfig;
+  windows?: TauriScannerDetectWindowsConfig | null;
+  linux?: TauriScannerDetectLinuxConfig | null;
   notes: string[];
 }
 
-export interface TauriScannerYoloConfigResponse {
-  config: TauriScannerYoloConfig;
+export interface TauriScannerDetectConfigResponse {
+  config: TauriScannerDetectConfig;
   source: string;
   resolvedPath: string;
   writablePath: string;
 }
 
-export interface TauriScannerYoloProbeResult {
+export interface TauriScannerDetectProbeResult {
   stage: string;
   platform: string;
   platformTarget: string;
@@ -73,11 +73,11 @@ export interface TauriScannerYoloProbeResult {
   sessionError: string | null;
   resourceResolutionSource: string;
   resourceBaseDir: string | null;
-  resources: TauriScannerYoloResourceStatus[];
+  resources: TauriScannerDetectResourceStatus[];
   message: string;
 }
 
-export interface TauriScannerNativeYoloDetectResult {
+export interface TauriScannerNativeOrtDetectResult {
   stage: string;
   processingMs: number;
   inputTransport: string;
@@ -113,52 +113,52 @@ const normalizeSourceBytes = async (
   return source;
 };
 
-export const probeTauriScannerYolo = async (): Promise<TauriScannerYoloProbeResult> => {
+export const probeTauriScannerDetect = async (): Promise<TauriScannerDetectProbeResult> => {
   if (!isTauri()) {
-    throw new Error("Native YOLO probe is only available in Tauri desktop builds.");
+    throw new Error("Native ORT probe is only available in Tauri desktop builds.");
   }
 
   const {invoke} = await import("@tauri-apps/api/core");
-  return await invoke<TauriScannerYoloProbeResult>("tauri_scanner_probe_yolo");
+  return await invoke<TauriScannerDetectProbeResult>("tauri_scanner_probe_detect");
 };
 
-export const readTauriScannerYoloConfig = async (): Promise<TauriScannerYoloConfigResponse> => {
+export const readTauriScannerDetectConfig = async (): Promise<TauriScannerDetectConfigResponse> => {
   if (!isTauri()) {
-    throw new Error("Scanner YOLO config is only available in Tauri desktop builds.");
+    throw new Error("Scanner ORT config is only available in Tauri desktop builds.");
   }
 
   const {invoke} = await import("@tauri-apps/api/core");
-  return await invoke<TauriScannerYoloConfigResponse>("tauri_scanner_read_yolo_config");
+  return await invoke<TauriScannerDetectConfigResponse>("tauri_scanner_read_detect_config");
 };
 
-export const writeTauriScannerYoloConfig = async (
-  config: TauriScannerYoloConfig,
-): Promise<TauriScannerYoloConfigResponse> => {
+export const writeTauriScannerDetectConfig = async (
+  config: TauriScannerDetectConfig,
+): Promise<TauriScannerDetectConfigResponse> => {
   if (!isTauri()) {
-    throw new Error("Scanner YOLO config is only available in Tauri desktop builds.");
+    throw new Error("Scanner ORT config is only available in Tauri desktop builds.");
   }
 
   const {invoke} = await import("@tauri-apps/api/core");
-  return await invoke<TauriScannerYoloConfigResponse>("tauri_scanner_write_yolo_config", {
+  return await invoke<TauriScannerDetectConfigResponse>("tauri_scanner_write_detect_config", {
     config,
   });
 };
 
-export const detectDocumentWithTauriNativeYolo = async (
+export const detectDocumentWithTauriNativeOrt = async (
   source: Blob | ArrayBuffer | Uint8Array,
   options?: {
     maxWidth?: number;
     maxHeight?: number;
   },
-): Promise<TauriScannerNativeYoloDetectResult> => {
+): Promise<TauriScannerNativeOrtDetectResult> => {
   if (!isTauri()) {
-    throw new Error("Native YOLO detection is only available in Tauri desktop builds.");
+    throw new Error("Native ORT detection is only available in Tauri desktop builds.");
   }
 
   const sourceBytes = await normalizeSourceBytes(source);
   const {invoke} = await import("@tauri-apps/api/core");
 
-  return await invoke<TauriScannerNativeYoloDetectResult>(
+  return await invoke<TauriScannerNativeOrtDetectResult>(
     "tauri_scanner_detect_document",
     {
       request: {
@@ -170,15 +170,15 @@ export const detectDocumentWithTauriNativeYolo = async (
   );
 };
 
-export const detectDocumentWithTauriNativeYoloRgba = async (
+export const detectDocumentWithTauriNativeOrtRgba = async (
   frame: ImageData,
   options?: {
     maxWidth?: number;
     maxHeight?: number;
   },
-): Promise<TauriScannerNativeYoloDetectResult> => {
+): Promise<TauriScannerNativeOrtDetectResult> => {
   if (!isTauri()) {
-    throw new Error("Native YOLO detection is only available in Tauri desktop builds.");
+    throw new Error("Native ORT detection is only available in Tauri desktop builds.");
   }
 
   const rgbaBytes = new Uint8Array(
@@ -188,7 +188,7 @@ export const detectDocumentWithTauriNativeYoloRgba = async (
   );
   const {invoke} = await import("@tauri-apps/api/core");
 
-  return await invoke<TauriScannerNativeYoloDetectResult>(
+  return await invoke<TauriScannerNativeOrtDetectResult>(
     "tauri_scanner_detect_document",
     {
       request: {
@@ -203,18 +203,18 @@ export const detectDocumentWithTauriNativeYoloRgba = async (
   );
 };
 
-export const detectDocumentWithTauriNativeYoloLatestPreview = async (
+export const detectDocumentWithTauriNativeOrtLatestPreview = async (
   options?: {
     maxWidth?: number;
     maxHeight?: number;
   },
-): Promise<TauriScannerNativeYoloDetectResult> => {
+): Promise<TauriScannerNativeOrtDetectResult> => {
   if (!isTauri()) {
-    throw new Error("Native YOLO detection is only available in Tauri desktop builds.");
+    throw new Error("Native ORT detection is only available in Tauri desktop builds.");
   }
 
   const {invoke} = await import("@tauri-apps/api/core");
-  return await invoke<TauriScannerNativeYoloDetectResult>(
+  return await invoke<TauriScannerNativeOrtDetectResult>(
     "tauri_scanner_detect_document",
     {
       request: {
@@ -224,4 +224,88 @@ export const detectDocumentWithTauriNativeYoloLatestPreview = async (
       },
     },
   );
+};
+
+// ---------------------------------------------------------------------------
+// Detection Loop (Rust-driven background detection)
+// ---------------------------------------------------------------------------
+
+export interface DetectionLoopConfig {
+  backend: string;
+  intervalMs?: number;
+  stableFrames?: number;
+  varianceThreshold?: number;
+  stableHoldMs?: number;
+  missGraceFrames?: number;
+  missGraceMs?: number;
+  smoothingThresholdPx?: number;
+  smoothingFactor?: number;
+}
+
+export interface DetectionResultEvent {
+  points: Point[] | null;
+  effectivePoints: Point[] | null;
+  isStable: boolean;
+  autoCaptureTriggered: boolean;
+  detectionMs: number;
+  backend: string;
+  frameWidth: number;
+  frameHeight: number;
+  message: string;
+}
+
+export const startTauriDetectionLoop = async (config: DetectionLoopConfig): Promise<void> => {
+  if (!isTauri()) {
+    throw new Error("Detection loop is only available in Tauri desktop builds.");
+  }
+
+  const {invoke} = await import("@tauri-apps/api/core");
+  await invoke("tauri_scanner_start_detection_loop", {config});
+};
+
+export const stopTauriDetectionLoop = async (): Promise<void> => {
+  if (!isTauri()) {
+    return;
+  }
+
+  const {invoke} = await import("@tauri-apps/api/core");
+  try {
+    await invoke("tauri_scanner_stop_detection_loop");
+  } catch {
+    // Silently ignore "no loop running" errors on stop
+  }
+};
+
+/**
+ * Subscribe to detection result events from the Rust detection loop.
+ * Returns an unsubscribe function.
+ */
+export const listenTauriDetectionEvents = async (
+  onDetection: (event: DetectionResultEvent) => void,
+  onAutoCapture?: (event: DetectionResultEvent) => void,
+): Promise<() => void> => {
+  if (!isTauri()) {
+    return () => {};
+  }
+
+  const {listen} = await import("@tauri-apps/api/event");
+  const unsubscribers: Array<() => void> = [];
+
+  const detectionUnsub = await listen<DetectionResultEvent>("scanner-detection", (event) => {
+    onDetection(event.payload);
+  });
+  unsubscribers.push(detectionUnsub);
+
+  if (onAutoCapture) {
+    const autoCaptureUnsub = await listen<DetectionResultEvent>("scanner-auto-capture", (event) => {
+      onAutoCapture(event.payload);
+    });
+    unsubscribers.push(autoCaptureUnsub);
+  }
+
+  return () => {
+    for (const unsub of unsubscribers) {
+      unsub();
+    }
+  };
 };

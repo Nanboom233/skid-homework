@@ -17,9 +17,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {useBlobDataUrl} from "@/hooks/use-blob-data-url";
-import {mapPointFromSourceToRotatedFrame} from "@/lib/scanner/preview-orientation";
+import {mapPointFromSourceToRotatedFrame, mapPointFromRotatedFrameToSource} from "@/lib/scanner/preview-orientation";
 import {refineDocumentCorners} from "@/lib/tauri/scanner";
-import {isTauri} from "@/lib/tauri/platform";
+
 import {
   Dialog,
   DialogContent,
@@ -123,6 +123,23 @@ const getInitialPoints = (document: ScannerCapturedDocument): Point[] => {
     document.sourceWidth,
     document.sourceHeight,
     document.outputRotation,
+  ));
+};
+
+/**
+ * Convert editor draft points (rotated display space) back to source-image
+ * coordinate space.  All outgoing calls (Apply, Refine, Preview) must funnel
+ * through this so the pipeline contract ("points are in source space") holds.
+ */
+const draftPointsToSourceSpace = (
+  points: Point[],
+  sourceWidth: number,
+  sourceHeight: number,
+  rotation: OrthogonalRotation,
+): Point[] => {
+  if (rotation === 0) return points.map((p) => ({...p}));
+  return points.map((p) => mapPointFromRotatedFrameToSource(
+    p, sourceWidth, sourceHeight, rotation,
   ));
 };
 
@@ -314,7 +331,10 @@ function ScannerCapturedDocumentEditorBody({
 
   const handleApply = (): void => {
     if (draftPoints.length !== 4) return;
-    onApply(document.id, draftPoints.map((point) => ({...point})), currentOptions);
+    const sourceSpacePoints = draftPointsToSourceSpace(
+      draftPoints, document.sourceWidth, document.sourceHeight, document.outputRotation,
+    );
+    onApply(document.id, sourceSpacePoints, currentOptions);
   };
 
   const handlePreview = useCallback(async () => {
@@ -327,7 +347,10 @@ function ScannerCapturedDocumentEditorBody({
     setPreviewProcessingMs(null);
 
     try {
-      const result = await onPreviewRequest(document, draftPoints, currentOptions);
+      const sourceSpacePoints = draftPointsToSourceSpace(
+        draftPoints, document.sourceWidth, document.sourceHeight, document.outputRotation,
+      );
+      const result = await onPreviewRequest(document, sourceSpacePoints, currentOptions);
 
       // Revoke previous custom URL
       if (previewUrl) {
@@ -503,7 +526,7 @@ function ScannerCapturedDocumentEditorBody({
           </div>
 
           {/* Refine Corners Button */}
-          {isTauri() && draftPoints.length === 4 ? (
+          {draftPoints.length === 4 ? (
             <Button
               variant="outline"
               size="sm"
@@ -512,9 +535,20 @@ function ScannerCapturedDocumentEditorBody({
               onClick={async () => {
                 setIsRefining(true);
                 try {
-                  const refined = await refineDocumentCorners(document.sourceFile, draftPoints);
+                  // Convert rotated display space → source space for the Rust backend
+                  const sourceSpaceInput = draftPointsToSourceSpace(
+                    draftPoints, document.sourceWidth, document.sourceHeight, document.outputRotation,
+                  );
+                  const refined = await refineDocumentCorners(document.sourceFile, sourceSpaceInput);
                   if (refined.length === 4) {
-                    setDraftPoints(refined);
+                    // Convert refined result (source space) back to rotated display space
+                    setDraftPoints(
+                      document.outputRotation === 0
+                        ? refined
+                        : refined.map((p) => mapPointFromSourceToRotatedFrame(
+                            p, document.sourceWidth, document.sourceHeight, document.outputRotation,
+                          )),
+                    );
                   }
                 } catch (error) {
                   console.error("Corner refinement failed:", error);

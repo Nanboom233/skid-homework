@@ -102,7 +102,7 @@ const useScannerDebugModel = () => {
   const translateBackendState = (value: string): string => {
     switch (value) {
       case "opencv":
-      case "native-yolo": return t(`debug.cv.backends.${value}`);
+      case "native-ort": return t(`debug.cv.backends.${value}`);
       default: return value;
     }
   };

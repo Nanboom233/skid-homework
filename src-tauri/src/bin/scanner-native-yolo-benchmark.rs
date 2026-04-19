@@ -2,7 +2,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use app_lib::scanner_detect::{
-    detect_document_native_yolo, reset_scanner_yolo_runtime_caches, ScannerDetectDocumentRequest,
+    detect_document_native_ort, reset_scanner_detect_runtime_caches, ScannerDetectDocumentRequest,
 };
 use serde::Serialize;
 
@@ -28,7 +28,7 @@ fn main() {
     let image_path = args
         .next()
         .map(PathBuf::from)
-        .expect("usage: scanner-native-yolo-benchmark <image-path> [--iterations <n>]");
+        .expect("usage: scanner-native-ort-benchmark <image-path> [--iterations <n>]");
     let mut iterations = 3usize;
 
     while let Some(arg) = args.next() {
@@ -114,7 +114,7 @@ fn benchmark_mode(
     iterations: usize,
     reset_before_each_run: bool,
 ) -> BenchmarkSample {
-    // `detect_document_native_yolo` consumes rgba_bytes / source_bytes via
+    // `detect_document_native_ort` consumes rgba_bytes / source_bytes via
     // `std::mem::take`, so we must reconstruct the request from the original
     // data for each invocation rather than relying on clone-after-take.
     let frozen_rgba = request_template.rgba_bytes.clone();
@@ -130,17 +130,17 @@ fn benchmark_mode(
     };
 
     if reset_before_each_run {
-        reset_scanner_yolo_runtime_caches();
+        reset_scanner_detect_runtime_caches();
     }
-    let warmup = detect_document_native_yolo(rebuild(), None, None)
+    let warmup = detect_document_native_ort(rebuild(), None, None)
         .unwrap_or_else(|error| panic!("warmup for {mode} failed: {error}"));
     let mut total_processing_ms = 0.0;
 
     for _ in 0..iterations {
         if reset_before_each_run {
-            reset_scanner_yolo_runtime_caches();
+            reset_scanner_detect_runtime_caches();
         }
-        let response = detect_document_native_yolo(rebuild(), None, None)
+        let response = detect_document_native_ort(rebuild(), None, None)
             .unwrap_or_else(|error| panic!("benchmark run for {mode} failed: {error}"));
         total_processing_ms += extract_processing_ms(&response);
     }
