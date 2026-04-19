@@ -193,7 +193,6 @@ export const detectDocumentWithTauriNativeOrtRgba = async (
     {
       request: {
         rgbaBytes,
-        useLatestPreviewFrame: false,
         rgbaWidth: frame.width,
         rgbaHeight: frame.height,
         maxWidth: options?.maxWidth,
@@ -203,28 +202,6 @@ export const detectDocumentWithTauriNativeOrtRgba = async (
   );
 };
 
-export const detectDocumentWithTauriNativeOrtLatestPreview = async (
-  options?: {
-    maxWidth?: number;
-    maxHeight?: number;
-  },
-): Promise<TauriScannerNativeOrtDetectResult> => {
-  if (!isTauri()) {
-    throw new Error("Native ORT detection is only available in Tauri desktop builds.");
-  }
-
-  const {invoke} = await import("@tauri-apps/api/core");
-  return await invoke<TauriScannerNativeOrtDetectResult>(
-    "tauri_scanner_detect_document",
-    {
-      request: {
-        useLatestPreviewFrame: true,
-        maxWidth: options?.maxWidth,
-        maxHeight: options?.maxHeight,
-      },
-    },
-  );
-};
 
 // ---------------------------------------------------------------------------
 // Detection Loop (Rust-driven background detection)
