@@ -50,6 +50,9 @@ const FRAME_PACKET_TELEMETRY_SIZE: usize = 12;
 const FRAME_CODEC_I420_TELEMETRY: u8 = 4;
 
 /// Keep live preview under roughly 640x360 to reduce IPC overhead and frontend decode cost.
+/// NOTE: These must match the frontend settings defaults (scannerPreviewWidth/Height).
+/// TODO: Receive target preview dimensions from `tauri_scanner_start_stream` args
+/// instead of hardcoding, so the frontend settings are the single source of truth.
 const MAX_PREVIEW_WIDTH: usize = 640;
 const MAX_PREVIEW_HEIGHT: usize = 360;
 

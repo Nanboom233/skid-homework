@@ -175,6 +175,15 @@ export interface ScannerConfig {
   framerate: number;
   cameraId: string;
 }
+/**
+ * Compute a reasonable H.264 bitrate from resolution and framerate.
+ * Targets roughly 0.15 bits per pixel per frame and clamps to [500_000, 8_000_000].
+ */
+export const computeScannerBitrate = (width: number, height: number, framerate: number): number => {
+  const bitsPerPixelPerFrame = 0.15;
+  const raw = Math.round(width * height * framerate * bitsPerPixelPerFrame);
+  return Math.max(500_000, Math.min(8_000_000, raw));
+};
 
 /** Default scanner configuration values. */
 export const DEFAULT_SCANNER_CONFIG: Omit<ScannerConfig, "serial" | "serverJarPath"> = {
@@ -183,9 +192,29 @@ export const DEFAULT_SCANNER_CONFIG: Omit<ScannerConfig, "serial" | "serverJarPa
   localPort: 27184,
   width: 640,
   height: 360,
-  bitrate: 2_000_000,
+  bitrate: computeScannerBitrate(640, 360, 30),
   framerate: 30,
   cameraId: "0",
+};
+
+/**
+ * Build a scanner config by merging settings store values over defaults.
+ * Bitrate is always dynamically computed from width × height × framerate.
+ */
+export const makeScannerConfigFromSettings = (
+  settings: { scannerPreviewWidth: number; scannerPreviewHeight: number; scannerFramerate: number; scannerCameraId: string },
+): Omit<ScannerConfig, "serial" | "serverJarPath"> => {
+  const width = settings.scannerPreviewWidth;
+  const height = settings.scannerPreviewHeight;
+  const framerate = settings.scannerFramerate;
+  return {
+    ...DEFAULT_SCANNER_CONFIG,
+    width,
+    height,
+    framerate,
+    bitrate: computeScannerBitrate(width, height, framerate),
+    cameraId: settings.scannerCameraId,
+  };
 };
 
 const SERVER_MAIN_CLASS = "com.skidhomework.server.Server";
@@ -514,7 +543,6 @@ const INITIAL_RECONNECT_DELAY_MS = 250;
 const MAX_RECONNECT_DELAY_MS = 5000;
 const RECONNECT_BACKOFF_MULTIPLIER = 1.6;
 const DECODE_RESTART_MAX_ATTEMPTS = 2;
-const FORWARD_RESTART_MAX_ATTEMPTS = 3;
 const RECOVERY_EVENT_SUPPRESSION_MS = 2500;
 const STEADY_STATE_STALL_MIN_GRACE_MS = 4500;
 const STEADY_STATE_STALL_FRAME_MULTIPLIER = 48;
@@ -524,8 +552,7 @@ const FORWARD_PORT_FALLBACK_OFFSETS = [0, 1, 2, 3, 4, 5, 10, 20, 50, 100, 200, 5
 type RecoveryMode =
   | "cold-start"
   | "decode-restart"
-  | "server-restart"
-  | "forward-restart";
+  | "full-restart";
 
 interface CleanupTransportOptions {
   stopDecoder: boolean;
@@ -889,18 +916,14 @@ const selectRecoveryMode = (
       || stopReason === "poll-error"
     )
   ) {
-    return "server-restart";
+    return "full-restart";
   }
 
   if (attempt <= DECODE_RESTART_MAX_ATTEMPTS) {
     return "decode-restart";
   }
 
-  if (attempt <= FORWARD_RESTART_MAX_ATTEMPTS) {
-    return "forward-restart";
-  }
-
-  return "server-restart";
+  return "full-restart";
 };
 
 const createEmptyBenchmarkSnapshot = (): FrameSourceBenchmarkSnapshot => {
@@ -1476,25 +1499,15 @@ export class TauriNativeFrameSource implements FrameSource {
       case "decode-restart":
         await this.ensureDecodeStream(true);
         return;
-      case "forward-restart":
-        await this.stopDecodeStream();
-        await this.cleanupTransport({
-          stopDecoder: false,
-          stopServer: false,
-          removeForward: true,
-        });
-        await this.ensureForward();
-        await this.ensureStillForwardBestEffort();
-        await this.ensureDecodeStream();
-        return;
-      case "server-restart":
+      case "full-restart":
         await this.stopDecodeStream();
         await this.cleanupTransport({
           stopDecoder: false,
           stopServer: true,
-          removeForward: false,
+          removeForward: true,
         });
         await this.ensureForward();
+        await this.ensureStillForwardBestEffort();
         await this.ensureServerRunning();
         await this.ensureDecodeStream();
         return;
@@ -1574,7 +1587,7 @@ export class TauriNativeFrameSource implements FrameSource {
           },
           true,
         );
-        if (recoveryMode === "forward-restart") {
+        if (recoveryMode === "full-restart") {
           this.serverRunning = false;
         }
         this.emitRecoverableError(message);

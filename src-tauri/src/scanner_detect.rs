@@ -18,7 +18,7 @@ use tauri::{command, AppHandle, Manager};
 use crate::stream_decoder::get_latest_preview_frame_packet;
 
 const STAGE: &str = "ort-runtime";
-const CONFIG_RELATIVE_PATH: &str = "scanner-yolo-config.json";
+const CONFIG_RELATIVE_PATH: &str = "scanner-detect-config.json";
 const WINDOWS_ORT_RELATIVE_PATH: &str = "onnxruntime/windows/onnxruntime.dll";
 const WINDOWS_ORT_SHARED_RELATIVE_PATH: &str =
     "onnxruntime/windows/onnxruntime_providers_shared.dll";
@@ -53,7 +53,7 @@ impl ScannerModelVariant {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ScannerYoloModelConfig {
+pub struct ScannerDetectModelConfig {
     id: String,
     kind: String,
     task: String,
@@ -68,7 +68,7 @@ pub struct ScannerYoloModelConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ScannerYoloWindowsConfig {
+pub struct ScannerDetectWindowsConfig {
     preferred_provider: String,
     runtime_library: String,
     shared_library: String,
@@ -77,7 +77,7 @@ pub struct ScannerYoloWindowsConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ScannerYoloLinuxConfig {
+pub struct ScannerDetectLinuxConfig {
     preferred_providers: Vec<String>,
     runtime_library: String,
     #[serde(default)]
@@ -87,15 +87,15 @@ pub struct ScannerYoloLinuxConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ScannerYoloConfig {
+pub struct ScannerDetectConfig {
     stage: String,
     task: String,
-    intended_primary_model: ScannerYoloModelConfig,
-    active_public_baseline: ScannerYoloModelConfig,
+    intended_primary_model: ScannerDetectModelConfig,
+    active_public_baseline: ScannerDetectModelConfig,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    windows: Option<ScannerYoloWindowsConfig>,
+    windows: Option<ScannerDetectWindowsConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    linux: Option<ScannerYoloLinuxConfig>,
+    linux: Option<ScannerDetectLinuxConfig>,
     #[serde(default)]
     notes: Vec<String>,
 }
@@ -103,12 +103,12 @@ pub struct ScannerYoloConfig {
 #[derive(Debug, Clone)]
 struct ResolvedScannerModel {
     variant: ScannerModelVariant,
-    config: ScannerYoloModelConfig,
+    config: ScannerDetectModelConfig,
 }
 
 #[derive(Debug, Clone)]
-struct ScannerYoloConfigHandle {
-    config: ScannerYoloConfig,
+struct ScannerDetectConfigHandle {
+    config: ScannerDetectConfig,
     resolved_path: PathBuf,
     source: &'static str,
 }
@@ -165,7 +165,7 @@ struct OrtSessionSnapshot {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ScannerYoloResourceStatus {
+pub struct ScannerDetectResourceStatus {
     key: String,
     relative_path: String,
     resolved_path: Option<String>,
@@ -175,7 +175,7 @@ pub struct ScannerYoloResourceStatus {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ScannerYoloProbeResponse {
+pub struct ScannerDetectProbeResponse {
     stage: &'static str,
     platform: String,
     platform_target: String,
@@ -197,24 +197,24 @@ pub struct ScannerYoloProbeResponse {
     session_error: Option<String>,
     resource_resolution_source: String,
     resource_base_dir: Option<String>,
-    resources: Vec<ScannerYoloResourceStatus>,
+    resources: Vec<ScannerDetectResourceStatus>,
     message: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ScannerYoloConfigResponse {
-    config: ScannerYoloConfig,
+pub struct ScannerDetectConfigResponse {
+    config: ScannerDetectConfig,
     source: String,
     resolved_path: String,
     writable_path: String,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ScannerPoint {
-    x: f32,
-    y: f32,
+    pub x: f32,
+    pub y: f32,
 }
 
 impl ScannerPoint {
@@ -288,25 +288,25 @@ struct DetectionContextCacheState {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScannerDetectDocumentResponse {
-    stage: &'static str,
-    processing_ms: f64,
-    input_transport: String,
-    input_width: Option<u32>,
-    input_height: Option<u32>,
-    selected_model_id: Option<String>,
-    selected_model_kind: Option<String>,
-    selected_model_task: Option<String>,
-    runtime_ready: bool,
-    preferred_provider: String,
-    preferred_provider_ready: bool,
-    model_ready: bool,
-    session_ready: bool,
-    detection_implemented: bool,
-    ort_build_info: Option<String>,
-    runtime_error: Option<String>,
-    session_error: Option<String>,
-    points: Option<Vec<ScannerPoint>>,
-    message: String,
+    pub stage: &'static str,
+    pub processing_ms: f64,
+    pub input_transport: String,
+    pub input_width: Option<u32>,
+    pub input_height: Option<u32>,
+    pub selected_model_id: Option<String>,
+    pub selected_model_kind: Option<String>,
+    pub selected_model_task: Option<String>,
+    pub runtime_ready: bool,
+    pub preferred_provider: String,
+    pub preferred_provider_ready: bool,
+    pub model_ready: bool,
+    pub session_ready: bool,
+    pub detection_implemented: bool,
+    pub ort_build_info: Option<String>,
+    pub runtime_error: Option<String>,
+    pub session_error: Option<String>,
+    pub points: Option<Vec<ScannerPoint>>,
+    pub message: String,
 }
 
 impl ScannerDetectDocumentResponse {
@@ -316,10 +316,10 @@ impl ScannerDetectDocumentResponse {
 }
 
 #[command]
-pub async fn tauri_scanner_probe_yolo(app: AppHandle) -> Result<ScannerYoloProbeResponse, String> {
+pub async fn tauri_scanner_probe_detect(app: AppHandle) -> Result<ScannerDetectProbeResponse, String> {
     let resource_dir_hint = app.path().resource_dir().ok();
     let app_config_dir_hint = app.path().app_config_dir().ok();
-    Ok(probe_native_yolo_runtime_with_hints(
+    Ok(probe_native_ort_runtime_with_hints(
         resource_dir_hint,
         app_config_dir_hint,
     ))
@@ -333,36 +333,36 @@ pub async fn tauri_scanner_detect_document(
     let resource_dir_hint = app.path().resource_dir().ok();
     let app_config_dir_hint = app.path().app_config_dir().ok();
     tauri::async_runtime::spawn_blocking(move || {
-        detect_document_native_yolo(request, resource_dir_hint, app_config_dir_hint)
+        detect_document_native_ort(request, resource_dir_hint, app_config_dir_hint)
     })
     .await
-    .map_err(|error| format!("Native YOLO task failed: {error}"))?
+    .map_err(|error| format!("Native ORT task failed: {error}"))?
 }
 
 #[command]
-pub async fn tauri_scanner_read_yolo_config(
+pub async fn tauri_scanner_read_detect_config(
     app: AppHandle,
-) -> Result<ScannerYoloConfigResponse, String> {
+) -> Result<ScannerDetectConfigResponse, String> {
     let resource_dir_hint = app.path().resource_dir().ok();
     let app_config_dir_hint = app.path().app_config_dir().ok();
-    let resolved = resolve_scanner_yolo_config(resource_dir_hint, app_config_dir_hint)?;
-    Ok(build_scanner_yolo_config_response(
+    let resolved = resolve_scanner_detect_config(resource_dir_hint, app_config_dir_hint)?;
+    Ok(build_scanner_detect_config_response(
         &resolved,
-        build_scanner_yolo_config_writable_path(app.path().app_config_dir().ok())?,
+        build_scanner_detect_config_writable_path(app.path().app_config_dir().ok())?,
     ))
 }
 
 #[command]
-pub async fn tauri_scanner_write_yolo_config(
+pub async fn tauri_scanner_write_detect_config(
     app: AppHandle,
-    config: ScannerYoloConfig,
-) -> Result<ScannerYoloConfigResponse, String> {
-    let writable_path = build_scanner_yolo_config_writable_path(app.path().app_config_dir().ok())?;
-    validate_scanner_yolo_config(&config)?;
-    write_scanner_yolo_config(&writable_path, &config)?;
-    reset_scanner_yolo_runtime_caches();
+    config: ScannerDetectConfig,
+) -> Result<ScannerDetectConfigResponse, String> {
+    let writable_path = build_scanner_detect_config_writable_path(app.path().app_config_dir().ok())?;
+    validate_scanner_detect_config(&config)?;
+    write_scanner_detect_config(&writable_path, &config)?;
+    reset_scanner_detect_runtime_caches();
 
-    Ok(ScannerYoloConfigResponse {
+    Ok(ScannerDetectConfigResponse {
         config,
         source: "app-config-override".to_string(),
         resolved_path: path_to_string(&writable_path),
@@ -370,14 +370,14 @@ pub async fn tauri_scanner_write_yolo_config(
     })
 }
 
-pub fn probe_native_yolo_runtime() -> ScannerYoloProbeResponse {
-    probe_native_yolo_runtime_with_hints(None, None)
+pub fn probe_native_ort_runtime() -> ScannerDetectProbeResponse {
+    probe_native_ort_runtime_with_hints(None, None)
 }
 
-pub fn probe_native_yolo_runtime_with_hints(
+pub fn probe_native_ort_runtime_with_hints(
     resource_dir_hint: Option<PathBuf>,
     app_config_dir_hint: Option<PathBuf>,
-) -> ScannerYoloProbeResponse {
+) -> ScannerDetectProbeResponse {
     let platform = std::env::consts::OS.to_string();
     let platform_target = platform_target_for_current_platform().to_string();
     let provider_candidates = provider_candidates_for_current_platform()
@@ -391,10 +391,10 @@ pub fn probe_native_yolo_runtime_with_hints(
         .as_ref()
         .map(|candidate| candidate.path.clone());
     let config_handle = resource_base_dir.as_ref().and_then(|base_dir| {
-        resolve_scanner_yolo_config(Some(base_dir.clone()), app_config_dir_hint.clone()).ok()
+        resolve_scanner_detect_config(Some(base_dir.clone()), app_config_dir_hint.clone()).ok()
     });
     let config_error = if resource_base_dir.is_some() && config_handle.is_none() {
-        resolve_scanner_yolo_config(resource_base_dir.clone(), app_config_dir_hint.clone()).err()
+        resolve_scanner_detect_config(resource_base_dir.clone(), app_config_dir_hint.clone()).err()
     } else {
         None
     };
@@ -425,7 +425,7 @@ pub fn probe_native_yolo_runtime_with_hints(
         OrtSessionSnapshot {
             ready: false,
             session_error: Some(
-                "No supported stage-1 model was found. Install the public baseline model or provide the planned YOLO model."
+                "No supported stage-1 model was found. Install the public baseline model or provide the planned ORT model."
                     .to_string(),
             ),
         }
@@ -461,7 +461,7 @@ pub fn probe_native_yolo_runtime_with_hints(
         "No supported stage-1 model was found under the resolved resource directory.".to_string()
     };
 
-    ScannerYoloProbeResponse {
+    ScannerDetectProbeResponse {
         stage: STAGE,
         platform,
         platform_target,
@@ -505,7 +505,7 @@ pub fn probe_native_yolo_runtime_with_hints(
     }
 }
 
-pub fn detect_document_native_yolo(
+pub fn detect_document_native_ort(
     mut request: ScannerDetectDocumentRequest,
     resource_dir_hint: Option<PathBuf>,
     app_config_dir_hint: Option<PathBuf>,
@@ -766,11 +766,11 @@ fn resolve_detect_input_image_owned(
     };
 
     Ok(ResolvedDetectInput {
-        // Skip the max_width/max_height pre-shrink for the native YOLO path.
+        // Skip the max_width/max_height pre-shrink for the Native ORT path.
         // The model function (`run_docaligner_fastvit_sa24`) will resize the
         // image to the model's input_size (e.g. 256×256) in a single step.
         // Applying the frontend's processing bounds here would create a wasteful
-        // double-resize chain (e.g. 640×360 → 320×180 → 256×256) that degrades
+        // double-resize chain (e.g. 640×360 →320×180 →256×256) that degrades
         // the heatmap quality through accumulated interpolation blur.
         prepared_image: decoded_image.map(|image| prepare_inference_image(image, None, None)),
         input_transport,
@@ -825,7 +825,7 @@ fn parse_preview_frame_packet(packet: &[u8]) -> Result<(u32, u32, &[u8]), String
     let codec = packet[0];
     if codec != FRAME_CODEC_I420 && codec != FRAME_CODEC_I420_TELEMETRY {
         return Err(format!(
-            "Native YOLO preview detect expected an I420 preview packet, got codec {codec}."
+            "Native ORT preview detect expected an I420 preview packet, got codec {codec}."
         ));
     }
 
@@ -916,7 +916,7 @@ fn prepare_inference_image(
     let working_image = if working_width == original_width && working_height == original_height {
         image
     } else {
-        // Resize in RGB to avoid unnecessary RGBA roundtrip — the downstream
+        // Resize in RGB to avoid unnecessary RGBA roundtrip →the downstream
         // inference path (`run_docaligner_fastvit_sa24`) converts to RGB anyway.
         DynamicImage::ImageRgb8(image::imageops::resize(
             &image.to_rgb8(),
@@ -975,11 +975,11 @@ fn scale_points_between_dimensions(
         .collect()
 }
 
-fn build_scanner_yolo_config_response(
-    handle: &ScannerYoloConfigHandle,
+fn build_scanner_detect_config_response(
+    handle: &ScannerDetectConfigHandle,
     writable_path: PathBuf,
-) -> ScannerYoloConfigResponse {
-    ScannerYoloConfigResponse {
+) -> ScannerDetectConfigResponse {
+    ScannerDetectConfigResponse {
         config: handle.config.clone(),
         source: handle.source.to_string(),
         resolved_path: path_to_string(&handle.resolved_path),
@@ -987,7 +987,7 @@ fn build_scanner_yolo_config_response(
     }
 }
 
-fn build_scanner_yolo_config_writable_path(
+fn build_scanner_detect_config_writable_path(
     app_config_dir_hint: Option<PathBuf>,
 ) -> Result<PathBuf, String> {
     let Some(app_config_dir) = app_config_dir_hint else {
@@ -997,20 +997,20 @@ fn build_scanner_yolo_config_writable_path(
     Ok(app_config_dir.join(CONFIG_RELATIVE_PATH))
 }
 
-fn resolve_scanner_yolo_config(
+fn resolve_scanner_detect_config(
     resource_dir_hint: Option<PathBuf>,
     app_config_dir_hint: Option<PathBuf>,
-) -> Result<ScannerYoloConfigHandle, String> {
+) -> Result<ScannerDetectConfigHandle, String> {
     let resource_root_candidates = build_resource_root_candidates(resource_dir_hint);
     let selected_resource_root = select_resource_root(&resource_root_candidates)
         .ok_or_else(|| "Could not resolve the scanner resource directory.".to_string())?;
     let default_config_path = selected_resource_root.path.join(CONFIG_RELATIVE_PATH);
-    let override_config_path = build_scanner_yolo_config_writable_path(app_config_dir_hint).ok();
+    let override_config_path = build_scanner_detect_config_writable_path(app_config_dir_hint).ok();
 
     if let Some(override_path) = override_config_path.as_ref() {
         if override_path.exists() {
-            let config = load_scanner_yolo_config_from_path(override_path)?;
-            return Ok(ScannerYoloConfigHandle {
+            let config = load_scanner_detect_config_from_path(override_path)?;
+            return Ok(ScannerDetectConfigHandle {
                 config,
                 resolved_path: override_path.clone(),
                 source: "app-config-override",
@@ -1018,54 +1018,54 @@ fn resolve_scanner_yolo_config(
         }
     }
 
-    let config = load_scanner_yolo_config_from_path(&default_config_path)?;
-    Ok(ScannerYoloConfigHandle {
+    let config = load_scanner_detect_config_from_path(&default_config_path)?;
+    Ok(ScannerDetectConfigHandle {
         config,
         resolved_path: default_config_path,
         source: "bundled-resource-default",
     })
 }
 
-fn load_scanner_yolo_config_from_path(path: &Path) -> Result<ScannerYoloConfig, String> {
+fn load_scanner_detect_config_from_path(path: &Path) -> Result<ScannerDetectConfig, String> {
     let raw = fs::read_to_string(path).map_err(|error| {
         format!(
-            "Failed to read scanner YOLO config {}: {error}",
+            "Failed to read scanner ORT config {}: {error}",
             path_to_string(path)
         )
     })?;
-    let config = serde_json::from_str::<ScannerYoloConfig>(&raw).map_err(|error| {
+    let config = serde_json::from_str::<ScannerDetectConfig>(&raw).map_err(|error| {
         format!(
-            "Failed to parse scanner YOLO config {}: {error}",
+            "Failed to parse scanner ORT config {}: {error}",
             path_to_string(path)
         )
     })?;
-    validate_scanner_yolo_config(&config)?;
+    validate_scanner_detect_config(&config)?;
     Ok(config)
 }
 
-fn write_scanner_yolo_config(path: &Path, config: &ScannerYoloConfig) -> Result<(), String> {
+fn write_scanner_detect_config(path: &Path, config: &ScannerDetectConfig) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| {
             format!(
-                "Failed to create scanner YOLO config directory {}: {error}",
+                "Failed to create scanner ORT config directory {}: {error}",
                 path_to_string(parent)
             )
         })?;
     }
 
     let payload = serde_json::to_string_pretty(config)
-        .map_err(|error| format!("Failed to serialize scanner YOLO config: {error}"))?;
+        .map_err(|error| format!("Failed to serialize scanner ORT config: {error}"))?;
     fs::write(path, payload + "\n").map_err(|error| {
         format!(
-            "Failed to write scanner YOLO config {}: {error}",
+            "Failed to write scanner ORT config {}: {error}",
             path_to_string(path)
         )
     })
 }
 
-fn validate_scanner_yolo_config(config: &ScannerYoloConfig) -> Result<(), String> {
-    validate_scanner_yolo_model_config(&config.intended_primary_model, "intendedPrimaryModel")?;
-    validate_scanner_yolo_model_config(&config.active_public_baseline, "activePublicBaseline")?;
+fn validate_scanner_detect_config(config: &ScannerDetectConfig) -> Result<(), String> {
+    validate_scanner_detect_model_config(&config.intended_primary_model, "intendedPrimaryModel")?;
+    validate_scanner_detect_model_config(&config.active_public_baseline, "activePublicBaseline")?;
 
     if let Some(windows) = config.windows.as_ref() {
         if windows.preferred_provider.trim().is_empty() {
@@ -1089,8 +1089,8 @@ fn validate_scanner_yolo_config(config: &ScannerYoloConfig) -> Result<(), String
     Ok(())
 }
 
-fn validate_scanner_yolo_model_config(
-    config: &ScannerYoloModelConfig,
+fn validate_scanner_detect_model_config(
+    config: &ScannerDetectModelConfig,
     label: &str,
 ) -> Result<(), String> {
     if config.id.trim().is_empty()
@@ -1110,7 +1110,7 @@ fn validate_scanner_yolo_model_config(
     Ok(())
 }
 
-pub fn reset_scanner_yolo_runtime_caches() {
+pub fn reset_scanner_detect_runtime_caches() {
     reset_detection_context_cache();
     reset_ort_session_cache();
 }
@@ -1172,7 +1172,7 @@ fn score_resource_root(root: &Path) -> usize {
     let interesting_paths = [
         CONFIG_RELATIVE_PATH,
         "models/docaligner-fastvit_sa24.onnx",
-        "models/document-boundary-yolo-pose.onnx",
+        "models/document-boundary-ORT-pose.onnx",
         WINDOWS_ORT_RELATIVE_PATH,
         WINDOWS_ORT_SHARED_RELATIVE_PATH,
         WINDOWS_DIRECTML_RELATIVE_PATH,
@@ -1187,7 +1187,7 @@ fn score_resource_root(root: &Path) -> usize {
         .count()
 }
 
-fn resource_specs_for_current_platform(config: Option<&ScannerYoloConfig>) -> Vec<ResourceSpec> {
+fn resource_specs_for_current_platform(config: Option<&ScannerDetectConfig>) -> Vec<ResourceSpec> {
     let mut specs = vec![ResourceSpec {
         key: "config".to_string(),
         relative_path: CONFIG_RELATIVE_PATH.to_string(),
@@ -1248,7 +1248,7 @@ fn resource_specs_for_current_platform(config: Option<&ScannerYoloConfig>) -> Ve
 fn build_resource_statuses(
     resource_base_dir: Option<&Path>,
     specs: &[ResourceSpec],
-) -> Vec<ScannerYoloResourceStatus> {
+) -> Vec<ScannerDetectResourceStatus> {
     specs
         .iter()
         .map(|spec| {
@@ -1259,7 +1259,7 @@ fn build_resource_statuses(
                 .map(|path| path.exists())
                 .unwrap_or(false);
 
-            ScannerYoloResourceStatus {
+            ScannerDetectResourceStatus {
                 key: spec.key.clone(),
                 relative_path: spec.relative_path.clone(),
                 resolved_path: resolved_path.as_deref().map(path_to_string),
@@ -1270,7 +1270,7 @@ fn build_resource_statuses(
         .collect()
 }
 
-fn resource_exists(resources: &[ScannerYoloResourceStatus], key: &str) -> bool {
+fn resource_exists(resources: &[ScannerDetectResourceStatus], key: &str) -> bool {
     resources
         .iter()
         .find(|resource| resource.key == key)
@@ -1302,7 +1302,7 @@ fn default_preferred_provider_for_current_platform() -> &'static str {
     }
 }
 
-fn preferred_provider_from_config(config: &ScannerYoloConfig) -> String {
+fn preferred_provider_from_config(config: &ScannerDetectConfig) -> String {
     match std::env::consts::OS {
         "windows" => config
             .windows
@@ -1335,7 +1335,7 @@ fn is_provider_available(preferred_provider: &str, available_providers: &[String
         .any(|provider| normalize_provider_name(provider) == normalized)
 }
 
-fn candidate_model_variants(config: &ScannerYoloConfig) -> Vec<ResolvedScannerModel> {
+fn candidate_model_variants(config: &ScannerDetectConfig) -> Vec<ResolvedScannerModel> {
     vec![
         ResolvedScannerModel {
             variant: ScannerModelVariant::IntendedPrimaryModel,
@@ -1349,8 +1349,8 @@ fn candidate_model_variants(config: &ScannerYoloConfig) -> Vec<ResolvedScannerMo
 }
 
 fn select_model_variant(
-    handle: &ScannerYoloConfigHandle,
-    resources: &[ScannerYoloResourceStatus],
+    handle: &ScannerDetectConfigHandle,
+    resources: &[ScannerDetectResourceStatus],
 ) -> Option<ResolvedScannerModel> {
     candidate_model_variants(&handle.config)
         .into_iter()
@@ -1413,7 +1413,7 @@ fn build_detection_runtime_context(
         .ok_or_else(|| "Could not resolve the scanner resource directory.".to_string())?;
     let resource_base_dir = selected_resource_root.path;
     let config_handle =
-        resolve_scanner_yolo_config(Some(resource_base_dir.clone()), app_config_dir_hint)?;
+        resolve_scanner_detect_config(Some(resource_base_dir.clone()), app_config_dir_hint)?;
     let resource_specs = resource_specs_for_current_platform(Some(&config_handle.config));
     let resources = build_resource_statuses(Some(&resource_base_dir), &resource_specs);
     let selected_model = select_model_variant(&config_handle, &resources);
@@ -1499,7 +1499,7 @@ fn probe_ort_runtime(resource_base_dir: Option<&Path>) -> OrtRuntimeSnapshot {
         let init_result = ort::init_from(&runtime_library_path)
             .map(|builder| {
                 builder
-                    .with_name("scanner-native-yolo")
+                    .with_name("scanner-native-ort")
                     .with_telemetry(false)
                     .commit()
             })
@@ -1636,7 +1636,7 @@ fn run_selected_model_inference(
     match model.variant {
         ScannerModelVariant::ActivePublicBaseline => run_docaligner_fastvit_sa24(model, image),
         ScannerModelVariant::IntendedPrimaryModel => Err(
-            "The planned YOLO pose model can be loaded, but Rust-side output decoding for it is not implemented yet."
+            "The planned ORT pose model can be loaded, but Rust-side output decoding for it is not implemented yet."
                 .to_string(),
         ),
     }
@@ -1700,7 +1700,7 @@ fn run_docaligner_fastvit_sa24(
             .map_err(|error| format!("Failed to extract heatmap tensor: {error}"))?;
         // Copy tensor data into an owned Vec so we can drop the MutexGuard.
         (tensor_view.to_vec(), shape.to_vec())
-        // MutexGuard is dropped here — lock is released before post-processing.
+        // MutexGuard is dropped here →lock is released before post-processing.
     };
 
     decode_docaligner_heatmap_output(
@@ -1974,20 +1974,20 @@ mod tests {
     use super::*;
     use crate::stream_decoder::replace_latest_preview_frame_packet;
 
-    fn sample_scanner_yolo_config() -> ScannerYoloConfig {
-        ScannerYoloConfig {
+    fn sample_scanner_detect_config() -> ScannerDetectConfig {
+        ScannerDetectConfig {
             stage: "runtime-plus-public-baseline".to_string(),
             task: "document-boundary-stage1".to_string(),
-            intended_primary_model: ScannerYoloModelConfig {
-                id: "document-boundary-yolo-pose-4pt".to_string(),
+            intended_primary_model: ScannerDetectModelConfig {
+                id: "document-boundary-ORT-pose-4pt".to_string(),
                 kind: "planned-primary".to_string(),
                 task: "document-corner-keypoints".to_string(),
-                model_path: "models/document-boundary-yolo-pose.onnx".to_string(),
+                model_path: "models/document-boundary-ORT-pose.onnx".to_string(),
                 input_name: None,
                 output_name: None,
                 input_size: None,
             },
-            active_public_baseline: ScannerYoloModelConfig {
+            active_public_baseline: ScannerDetectModelConfig {
                 id: "docaligner-fastvit-sa24".to_string(),
                 kind: "public-baseline".to_string(),
                 task: "document-corner-heatmap".to_string(),
@@ -1996,13 +1996,13 @@ mod tests {
                 output_name: Some("heatmap".to_string()),
                 input_size: Some([256, 256]),
             },
-            windows: Some(ScannerYoloWindowsConfig {
+            windows: Some(ScannerDetectWindowsConfig {
                 preferred_provider: "directml".to_string(),
                 runtime_library: WINDOWS_ORT_RELATIVE_PATH.to_string(),
                 shared_library: WINDOWS_ORT_SHARED_RELATIVE_PATH.to_string(),
                 provider_library: WINDOWS_DIRECTML_RELATIVE_PATH.to_string(),
             }),
-            linux: Some(ScannerYoloLinuxConfig {
+            linux: Some(ScannerDetectLinuxConfig {
                 preferred_providers: vec!["tensorrt".to_string(), "cuda".to_string()],
                 runtime_library: LINUX_ORT_RELATIVE_PATH.to_string(),
                 provider_libraries: vec![
@@ -2043,7 +2043,7 @@ mod tests {
 
     #[test]
     fn current_platform_has_config_and_model_specs() {
-        let config = sample_scanner_yolo_config();
+        let config = sample_scanner_detect_config();
         let specs = resource_specs_for_current_platform(Some(&config));
         assert!(specs
             .iter()
@@ -2063,13 +2063,13 @@ mod tests {
     }
 
     #[test]
-    fn validate_scanner_yolo_config_rejects_empty_linux_provider_entries() {
-        let mut config = sample_scanner_yolo_config();
+    fn validate_scanner_detect_config_rejects_empty_linux_provider_entries() {
+        let mut config = sample_scanner_detect_config();
         if let Some(linux) = config.linux.as_mut() {
             linux.preferred_providers = vec!["cuda".to_string(), "".to_string()];
         }
 
-        let error = validate_scanner_yolo_config(&config)
+        let error = validate_scanner_detect_config(&config)
             .expect_err("config with empty provider should fail");
         assert!(error.contains("linux.preferredProviders"));
     }
