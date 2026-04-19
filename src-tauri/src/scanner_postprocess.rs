@@ -20,12 +20,8 @@ use crate::scanner_postprocess_model::{
     run_native_postprocess_model_with_runtime_hints,
 };
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct ScannerPoint {
-    pub x: f32,
-    pub y: f32,
-}
+use crate::scanner_detect::ScannerPoint;
+
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -312,20 +308,10 @@ fn process_image_request(
         request.grid_postprocess,
     );
 
-    // ── Step 1: Rotation ──
-    // The image is rotated first.  The front-end sends document_points that are
-    // already in the rotated coordinate space, so no point transformation is
-    // needed here.
-    if request.output_rotation != 0 {
-        let rotate_started_at = Instant::now();
-        current = rotate_image(current, request.output_rotation)?;
-        rotate_ms = Some(rotate_started_at.elapsed().as_secs_f64() * 1000.0);
-        eprintln!("[Pipeline] step1:rotate {}° → {}x{} ({:.1}ms)", request.output_rotation, current.width(), current.height(), rotate_ms.unwrap());
-        // [DEBUG/TEST ONLY] Step 1: After rotation.
-        current.save(debug_dir.join("step1_rotated.png")).ok();
-    }
-
-    // ── Step 2: Perspective Transform / Crop ──
+    // ── Step 1: Perspective Transform / Crop ──
+    // document_points are in source-image coordinate space.  Geometric
+    // operations execute on the unrotated source image directly, so no
+    // coordinate transformation is ever needed.
     let effective_document_points =
         normalize_document_points(request.document_points.as_deref())?;
 
@@ -347,9 +333,9 @@ fn process_image_request(
                 &mut warped,
             );
             current = warped;
-            eprintln!("[Pipeline] step2:perspective → {}x{} ({:.1}ms)", current.width(), current.height(), perspective_ms.unwrap());
-            // [DEBUG/TEST ONLY] Step 2: After perspective warp.
-            current.save(debug_dir.join("step2_perspective.png")).ok();
+            eprintln!("[Pipeline] step1:perspective → {}x{} ({:.1}ms)", current.width(), current.height(), perspective_ms.unwrap());
+            // [DEBUG/TEST ONLY] Step 1: After perspective warp.
+            current.save(debug_dir.join("step1_perspective.png")).ok();
         } else {
             // Perspective is off — still crop to the bounding box of the 4 corner points.
             let min_x = points.iter().map(|p| p.x).fold(f32::INFINITY, f32::min).max(0.0) as u32;
@@ -361,12 +347,12 @@ fn process_image_request(
             if max_x > min_x && max_y > min_y {
                 let cropped = image::imageops::crop_imm(&current, min_x, min_y, max_x - min_x, max_y - min_y).to_image();
                 current = cropped;
-                eprintln!("[Pipeline] step2:crop → {}x{}", current.width(), current.height());
+                eprintln!("[Pipeline] step1:crop → {}x{}", current.width(), current.height());
             }
         }
     }
 
-    // ── Step 3: Spine Flattening ──
+    // ── Step 2: Spine Flattening ──
     if request.spine_flattening {
         if postprocess_backend == ScannerPostProcessBackend::NativeMlV1 {
             let result = attempt_residual_control_point_stage(
@@ -387,16 +373,16 @@ fn process_image_request(
             if let Some(image) = result.image {
                 current = image;
                 eprintln!(
-                    "[Pipeline] step3:flatten(ML) → {}x{} (model={:.1}ms warp={:.1}ms)",
+                    "[Pipeline] step2:flatten(ML) → {}x{} (model={:.1}ms warp={:.1}ms)",
                     current.width(), current.height(),
                     model_ms.unwrap_or(0.0), residual_warp_ms.unwrap_or(0.0),
                 );
-                // [DEBUG/TEST ONLY] Step 3: After UVDoc flatten.
-                current.save(debug_dir.join("step3_flatten.png")).ok();
+                // [DEBUG/TEST ONLY] Step 2: After UVDoc flatten.
+                current.save(debug_dir.join("step2_flatten.png")).ok();
             } else {
                 let reason = result.fallback_reason
                     .unwrap_or_else(|| "Unknown ML pipeline error".to_string());
-                eprintln!("[Pipeline] step3:flatten(ML) FAILED: {}", reason);
+                eprintln!("[Pipeline] step2:flatten(ML) FAILED: {}", reason);
                 return Err(reason);
             }
         } else {
@@ -406,10 +392,24 @@ fn process_image_request(
             current = flatten_result.image;
             local_flattening_applied = flatten_result.applied;
             eprintln!(
-                "[Pipeline] step3:flatten(heuristic) applied={} ({:.1}ms)",
+                "[Pipeline] step2:flatten(heuristic) applied={} ({:.1}ms)",
                 local_flattening_applied, flatten_ms.unwrap(),
             );
         }
+    }
+
+    // ── Step 3: Rotation ──
+    // Output rotation is a presentation concern.  It runs after all geometric
+    // and content-analysis operations are complete — document_points have
+    // already been consumed by the perspective step above, so no coordinate
+    // transformation is needed.
+    if request.output_rotation != 0 {
+        let rotate_started_at = Instant::now();
+        current = rotate_image(current, request.output_rotation)?;
+        rotate_ms = Some(rotate_started_at.elapsed().as_secs_f64() * 1000.0);
+        eprintln!("[Pipeline] step3:rotate {}° → {}x{} ({:.1}ms)", request.output_rotation, current.width(), current.height(), rotate_ms.unwrap());
+        // [DEBUG/TEST ONLY] Step 3: After rotation.
+        current.save(debug_dir.join("step3_rotated.png")).ok();
     }
 
     // ── Step 4: Enhancement ──
@@ -556,7 +556,7 @@ const REFINE_MAX_SEARCH_RADIUS_PX: f32 = 160.0;
 const REFINE_MAX_CORNER_SHIFT_RATIO: f32 = 0.10;
 const REFINE_MIN_CORNER_SHIFT_PX: f32 = 8.0;
 const REFINE_MAX_CORNER_SHIFT_PX: f32 = 220.0;
-const REFINE_APPLIED_DELTA_PX: f32 = 0.75;
+
 const FLATTEN_DETECTION_BAND_RATIO: f32 = 0.35;
 const FLATTEN_APPLY_BAND_RATIO: f32 = 0.35;
 const FLATTEN_MIN_BAND_PX: usize = 24;
@@ -1021,15 +1021,7 @@ fn validate_quad_geometry(
     Ok(())
 }
 
-fn refinement_applied_between(
-    coarse_points: &[ScannerPoint; 4],
-    refined_points: &[ScannerPoint; 4],
-) -> bool {
-    coarse_points
-        .iter()
-        .zip(refined_points.iter())
-        .any(|(coarse, refined)| point_distance(*coarse, *refined) >= REFINE_APPLIED_DELTA_PX)
-}
+
 
 fn apply_local_spine_flattening(source: &RgbaImage) -> FlattenResult {
     let Some(content_bbox) = alpha_content_bbox(source) else {
