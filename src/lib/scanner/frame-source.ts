@@ -7,13 +7,16 @@
  */
 
 import {
+  awaitTauriAdbServerReady,
   captureTauriAdbStill,
   captureTauriAdbStillStream,
   forwardTauriAdbPort,
   pushTauriAdbFile,
   removeForwardTauriAdbPort,
+  startTauriAdbLogTailer,
   startTauriAdbServer,
   startTauriDecodeStream,
+  stopTauriAdbLogTailer,
   stopTauriAdbServer,
   stopTauriDecodeStream,
   type TauriDecodeStreamHandle,
@@ -543,6 +546,8 @@ const INITIAL_RECONNECT_DELAY_MS = 250;
 const MAX_RECONNECT_DELAY_MS = 5000;
 const RECONNECT_BACKOFF_MULTIPLIER = 1.6;
 const DECODE_RESTART_MAX_ATTEMPTS = 2;
+const SERVER_READY_TIMEOUT_MS = 8000;
+const MAX_CONNECTION_LOOP_ATTEMPTS = 10;
 const RECOVERY_EVENT_SUPPRESSION_MS = 2500;
 const STEADY_STATE_STALL_MIN_GRACE_MS = 4500;
 const STEADY_STATE_STALL_FRAME_MULTIPLIER = 48;
@@ -1122,7 +1127,11 @@ export class TauriNativeFrameSource implements FrameSource {
         try {
           await this.ensureStillForward();
         } catch (error) {
-          console.warn("[Scanner][StillPerf] Failed to establish still-stream forward, falling back:", error);
+          console.warn(
+            `[Scanner][StillDiag] Still-stream forward failed for port ${this.stillLocalPort}: `
+            + `${error instanceof Error ? error.message : String(error)}. `
+            + `Falling back to device-file transfer.`
+          );
         }
       }
 
@@ -1131,7 +1140,11 @@ export class TauriNativeFrameSource implements FrameSource {
           stillPayload = await captureTauriAdbStillStream(this.stillLocalPort);
         } catch (error) {
           await this.invalidateStillForward();
-          console.warn("[Scanner][StillPerf] Forwarded still-stream capture failed, falling back:", error);
+          console.warn(
+            `[Scanner][StillDiag] Still-stream capture failed on tcp://127.0.0.1:${this.stillLocalPort}: `
+            + `${error instanceof Error ? error.message : String(error)}. `
+            + `Falling back to device-file transfer via adb shell.`
+          );
         }
       }
 
@@ -1416,12 +1429,24 @@ export class TauriNativeFrameSource implements FrameSource {
     }
 
     await this.ensureServerJarDeployed();
+
+    // Start the log tailer BEFORE the server so we don't miss the
+    // readiness sentinel that the server prints right after socket bind.
+    startTauriAdbLogTailer(this.config.serial).catch(() => {});
+
     await startTauriAdbServer(
       this.config.serial,
       this.config.remoteJarPath,
       SERVER_MAIN_CLASS,
       this.createServerArgs(),
     );
+
+    // Wait for the server to print "[Server] READY" in its log file.
+    // This is a zero-side-effect readiness check — no TCP connections are
+    // made through the ADB forward, so the server's accept loop is never
+    // disturbed. The decoder will be the first and only connection.
+    await awaitTauriAdbServerReady(this.config.serial, SERVER_READY_TIMEOUT_MS);
+
     this.serverRunning = true;
   }
 
@@ -1540,6 +1565,17 @@ export class TauriNativeFrameSource implements FrameSource {
   private async connectionLoop(reason: string): Promise<void> {
     while (this.desiredRunning) {
       const attempt = this.state.reconnectAttempt;
+
+      if (attempt >= MAX_CONNECTION_LOOP_ATTEMPTS) {
+        const message = `Recovery failed after ${attempt} attempts. Last reason: ${reason}`;
+        console.error(`[FrameSource] ${message}`);
+        this.updateState(
+          { status: "error", lastError: message, stopReason: reason },
+          true,
+        );
+        return;
+      }
+
       const reconnectDelayMs = computeReconnectDelay(attempt);
       const nextStatus: FrameSourceStatus = attempt === 0 ? "starting" : "reconnecting";
       const recoveryMode = selectRecoveryMode(
@@ -2009,6 +2045,8 @@ export class TauriNativeFrameSource implements FrameSource {
       } catch {
         // Ignore server shutdown errors so recovery can proceed.
       }
+      // Stop the log tailer when the server is stopped.
+      stopTauriAdbLogTailer().catch(() => {});
       this.serverRunning = false;
     }
 

@@ -98,23 +98,12 @@ public final class Server {
                 closeQuietly(serverSocketRef.getAndSet(null));
             }, "ServerShutdownHook"));
 
-            // Create a LocalServerSocket to accept the host connection
+            // Create a LocalServerSocket -- kept open for the server's lifetime
+            // so that TCP probe connections and client reconnects are possible.
             LocalServerSocket serverSocket = new LocalServerSocket(config.socketName);
             serverSocketRef.set(serverSocket);
-            System.out.println("[Server] Waiting for client connection...");
 
-            LocalSocket clientSocket = serverSocket.accept();
-            clientSocketRef.set(clientSocket);
-            clientSocket.setSendBufferSize(1024 * 1024);
-            System.out.println("[Server] Client connected.");
-            closeQuietly(serverSocket);
-            serverSocketRef.set(null);
-
-            OutputStream outputStream = clientSocket.getOutputStream();
-
-            // Create the socket relay that writes length-prefixed NAL units
-            relay = new SocketRelay(outputStream, requestTerminalStop);
-            relayRef.set(relay);
+            // Still capture servers are independent (own accept loops) -- start once.
             stillCaptureServer = new StillCaptureSocketServer(
                     config.stillSocketName,
                     () -> {
@@ -138,16 +127,75 @@ public final class Server {
             );
             stillCaptureStreamServer.start();
 
-            StopReason lastReason = runStreamingLoop(
-                    config,
-                    relay,
-                    activeCaptureRef,
-                    shutdownRequested,
-                    activeStopSignal,
-                    terminalStopReason
-            );
-            finalStopReason.set(lastReason.toString());
-            logFinalStopReason(lastReason);
+            // Readiness sentinel — the host watches the log file for this exact
+            // line to know the server is ready to accept the real client.
+            // This eliminates destructive TCP probing through ADB forward.
+            System.out.println("SCANNER_SERVER_READY");
+
+            // --- Accept loop: handles probe connections and real streaming clients ---
+            while (!shutdownRequested.get()) {
+                System.out.println("[Server] Waiting for client connection...");
+
+                LocalSocket clientSocket = serverSocket.accept();
+                clientSocketRef.set(clientSocket);
+
+                // --- Handshake: write 0x00 BEFORE camera startup ---
+                // Sleep 100ms to let TCP probe connections close their end,
+                // then write a 1-byte handshake. If the write throws, it's a probe.
+                OutputStream outputStream;
+                try {
+                    clientSocket.setSendBufferSize(1024 * 1024);
+                    Thread.sleep(100);
+                    outputStream = clientSocket.getOutputStream();
+                    outputStream.write(0x00);
+                    outputStream.flush();
+                } catch (IOException e) {
+                    System.out.println("[Server] Probe connection detected (write failed). Re-accepting...");
+                    closeQuietly(clientSocket);
+                    clientSocketRef.set(null);
+                    continue;
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+
+                System.out.println("[Server] Client connected (handshake OK).");
+
+                // Create a fresh relay for this client connection.
+                relay = new SocketRelay(outputStream, requestTerminalStop);
+                relayRef.set(relay);
+
+                // Reset terminal stop reason for the new connection.
+                terminalStopReason.set(null);
+
+                StopReason lastReason = runStreamingLoop(
+                        config,
+                        relay,
+                        activeCaptureRef,
+                        shutdownRequested,
+                        activeStopSignal,
+                        terminalStopReason
+                );
+
+                // Cleanup this client's relay and socket before re-accepting.
+                relayRef.set(null);
+                relay.close();
+                relay = null;
+                closeQuietly(clientSocket);
+                clientSocketRef.set(null);
+
+                finalStopReason.set(lastReason.toString());
+                logFinalStopReason(lastReason);
+
+                // Socket-terminal stops (client disconnect) are recoverable via re-accept.
+                if (!lastReason.isRecoverable() && lastReason.isSocketTerminal()) {
+                    System.out.println("[Server] Client disconnected (socket closed). Waiting for reconnect...");
+                    continue;
+                }
+                if (!lastReason.isRecoverable()) {
+                    break;
+                }
+            }
 
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -206,6 +254,7 @@ public final class Server {
                 Consumer<StopReason> requestSessionStop = sessionStopSignal::request;
 
                 if (useLegacyPreviewFallback) {
+                    System.out.println("[Server] Using Camera1 (legacy) + ByteBufferVideoEncoder pipeline.");
                     LegacyCameraCapture legacyCapture = new LegacyCameraCapture(
                             config.cameraId,
                             config.width,
@@ -227,6 +276,7 @@ public final class Server {
                     encoder = legacyEncoder;
                     legacyCapture.attachEncoder(legacyEncoder);
                 } else {
+                    System.out.println("[Server] Using Camera2 + Surface VideoEncoder pipeline.");
                     System.out.println("[Server] Creating VideoEncoder with size: " + config.width + "x" + config.height);
                     VideoEncoder surfaceEncoder = new VideoEncoder(
                             config.width,

@@ -376,3 +376,32 @@ export const startTauriDecodeStream = async (
 export const stopTauriDecodeStream = async (): Promise<void> => {
   return await invokeTauriCommand<void>("tauri_scanner_stop_stream");
 };
+
+/**
+ * Wait for the server to print its READY sentinel in the log file.
+ * Polls via `adb shell grep` — zero side effects on the server's accept loop.
+ */
+export const awaitTauriAdbServerReady = async (
+  serial: string,
+  timeoutMs: number,
+): Promise<void> => {
+  return await invokeTauriCommand<void>("tauri_adb_await_server_ready", {
+    serial,
+    timeoutMs,
+  });
+};
+
+/**
+ * Start tailing the Android server log file.
+ * Lines are forwarded through Rust log to appear in the Tauri console.
+ */
+export const startTauriAdbLogTailer = async (serial: string): Promise<void> => {
+  return await invokeTauriCommand<void>("tauri_adb_start_log_tailer", { serial });
+};
+
+/**
+ * Stop the running server log tailer.
+ */
+export const stopTauriAdbLogTailer = async (): Promise<void> => {
+  return await invokeTauriCommand<void>("tauri_adb_stop_log_tailer");
+};

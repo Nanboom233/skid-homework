@@ -36,8 +36,10 @@ static MAX_PREVIEW_H: AtomicUsize = AtomicUsize::new(DEFAULT_MAX_PREVIEW_HEIGHT)
 
 /// Emit the aggregate throughput log every N seconds.
 const OVERALL_LOG_INTERVAL_SECS: u64 = 5;
-/// Retry a fresh decoder connection briefly to avoid startup churn.
-const STARTUP_CONNECT_MAX_ATTEMPTS: usize = 24;
+/// Safety-net retry for a fresh decoder connection. The upstream readiness
+/// probe should guarantee the server is accepting before we connect, so this
+/// should rarely (if ever) fire during normal startup.
+const STARTUP_CONNECT_MAX_ATTEMPTS: usize = 3;
 /// Retry a dropped preview socket before surfacing a fatal stop.
 const STREAM_RECONNECT_MAX_ATTEMPTS: usize = 12;
 /// Base reconnect delay.
@@ -692,7 +694,12 @@ fn is_stream_session_current(session_id: u64) -> bool {
     STREAMING.load(Ordering::SeqCst) && STREAM_SESSION_ID.load(Ordering::SeqCst) == session_id
 }
 
-/// Connect to the local forwarded preview socket, retrying briefly when the server is healthy but not yet ready.
+/// Connect to the local forwarded preview socket, retrying briefly when the
+/// server is healthy but not yet ready.
+///
+/// The upstream readiness probe and post-probe settle delay should guarantee
+/// the server is accepting connections before this function is called, so the
+/// retry loop here is a safety net rather than the primary startup mechanism.
 async fn connect_decoder_stream(
     address: &str,
     max_attempts: usize,
@@ -709,13 +716,41 @@ async fn connect_decoder_stream(
         }
 
         match TcpStream::connect(address).await {
-            Ok(stream) => {
+            Ok(mut stream) => {
+                // Read and discard the 1-byte server handshake (0x00).
+                // The server sends this BEFORE starting the camera to prove
+                // the connection is live (not a probe).
+                let mut handshake = [0u8; 1];
+                if let Err(e) = stream.read_exact(&mut handshake).await {
+                    // Handshake failed -- server may be processing a probe teardown.
+                    attempts += 1;
+                    if attempts >= max_attempts {
+                        return Err(format!(
+                            "{detail_prefix} Handshake failed after {attempts} attempts: {e}"
+                        ));
+                    }
+                    let delay_ms = reconnect_delay_ms(attempts);
+                    let detail = format!(
+                        "{detail_prefix} Handshake attempt {attempts}/{max_attempts} failed: {e}. Retrying in {delay_ms}ms."
+                    );
+                    log::warn!("{detail}");
+                    send_decoder_status(
+                        status_channel,
+                        "connecting",
+                        detail,
+                        true,
+                        reconnect_attempt.max(attempts),
+                    );
+                    sleep(Duration::from_millis(delay_ms)).await;
+                    continue;
+                }
+
                 if reconnect_attempt > 0 || attempts > 0 {
                     send_decoder_status(
                         status_channel,
                         "connected",
                         format!(
-                            "Decoder connected to {address} after {} reconnect attempt(s).",
+                            "Decoder connected to {address} after {} attempt(s).",
                             reconnect_attempt.max(attempts)
                         ),
                         true,
@@ -739,7 +774,7 @@ async fn connect_decoder_stream(
                 log::warn!("{detail}");
                 send_decoder_status(
                     status_channel,
-                    "reconnecting",
+                    "connecting",
                     detail,
                     true,
                     reconnect_attempt.max(attempts),
@@ -749,3 +784,4 @@ async fn connect_decoder_stream(
         }
     }
 }
+
