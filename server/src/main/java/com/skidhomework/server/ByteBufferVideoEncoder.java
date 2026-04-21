@@ -41,6 +41,9 @@ public final class ByteBufferVideoEncoder implements PreviewStreamEncoder {
     private volatile boolean running;
     private Thread drainThread;
     private long startedAtMs = -1L;
+    private final boolean forceSemiPlanarConversion;
+    private int nalDiagCount = 0;
+    private static final int NAL_DIAG_LIMIT = 5;
 
     public ByteBufferVideoEncoder(
             int width,
@@ -80,6 +83,25 @@ public final class ByteBufferVideoEncoder implements PreviewStreamEncoder {
                         + height
                         + "."
         );
+        System.out.println("[EncoderDiag] Backend: Camera1 ByteBuffer (NV21)");
+        System.out.println("[EncoderDiag] Codec: " + codec.getName());
+        System.out.println("[EncoderDiag] Supported color formats: "
+                + java.util.Arrays.toString(capabilities.colorFormats));
+        System.out.println("[EncoderDiag] Selected input format: "
+                + describeColorFormat(inputColorFormat) + " (" + inputColorFormat + ")");
+        System.out.println("[EncoderDiag] Config: " + width + "x" + height
+                + ", bitrate=" + bitrate + ", fps=" + framerate
+                + ", frameByteCount=" + frameByteCount);
+
+        // MTK codecs claim COLOR_FormatYUV420Planar but internally expect
+        // semi-planar (NV12) layout. Detect and force NV12 conversion path.
+        String codecName = codec.getCodecInfo().getCanonicalName().toLowerCase();
+        this.forceSemiPlanarConversion = codecName.startsWith("c2.mtk")
+                || codecName.contains(".mtk.");
+        if (forceSemiPlanarConversion) {
+            System.out.println("[EncoderDiag] MTK codec detected — forcing NV12 conversion path"
+                    + " (ignoring claimed Planar support).");
+        }
     }
 
     @Override
@@ -153,6 +175,11 @@ public final class ByteBufferVideoEncoder implements PreviewStreamEncoder {
             }
 
             convertNv21ToCodecInput(nv21Frame, conversionBuffer);
+
+            // [EncoderDiag] Structured color pipeline diagnostic on first frame.
+            if (!firstFrameReported.get()) {
+                logColorPipelineDiagnostics(nv21Frame, conversionBuffer);
+            }
             inputBuffer.clear();
             inputBuffer.put(conversionBuffer, 0, frameByteCount);
             codec.queueInputBuffer(
@@ -231,6 +258,18 @@ public final class ByteBufferVideoEncoder implements PreviewStreamEncoder {
                         outputBuffer.limit(bufferInfo.offset + bufferInfo.size);
                         outputBuffer.get(nalData);
 
+                        // [EncoderDiag] Log first NAL unit metadata for diagnostics.
+                        if (nalDiagCount < NAL_DIAG_LIMIT
+                                && firstFrameReported.get()
+                                && isFramePayload(bufferInfo)
+                                && nalData.length > 0) {
+                            nalDiagCount++;
+                            int nalType = (nalData[0] & 0x1F);
+                            System.out.println("[EncoderDiag] First NAL: type="
+                                    + nalType
+                                    + ", size=" + nalData.length);
+                        }
+
                         try {
                             relay.sendNalUnit(nalData);
                         } catch (IOException e) {
@@ -268,8 +307,10 @@ public final class ByteBufferVideoEncoder implements PreviewStreamEncoder {
         int lumaByteCount = width * height;
         System.arraycopy(sourceNv21, 0, targetBuffer, 0, lumaByteCount);
 
-        if (inputColorFormat == MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar
-                || inputColorFormat == MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible) {
+        if (!forceSemiPlanarConversion
+                && (inputColorFormat == MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar
+                    || inputColorFormat == MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible)) {
+            // I420 path: de-interleave NV21 VU pairs → separate U + V planes.
             int chromaPlaneByteCount = lumaByteCount / 4;
             int uPlaneOffset = lumaByteCount;
             int vPlaneOffset = lumaByteCount + chromaPlaneByteCount;
@@ -281,10 +322,122 @@ public final class ByteBufferVideoEncoder implements PreviewStreamEncoder {
             return;
         }
 
+        // NV12 path: swap interleaved VU → UV pairs (semi-planar).
         for (int index = lumaByteCount; index < frameByteCount; index += 2) {
             targetBuffer[index] = sourceNv21[index + 1];
             targetBuffer[index + 1] = sourceNv21[index];
         }
+    }
+
+    /**
+     * Log a structured color pipeline diagnostic block on the first encoded frame.
+     *
+     * <p>Covers: source/target format, conversion path, frame geometry,
+     * spatial Y sampling, interleaved chroma input, separated chroma output,
+     * and an explicit UV swap correctness check.
+     */
+    private void logColorPipelineDiagnostics(byte[] nv21Input, byte[] convertedOutput) {
+        int lumaBytes = width * height;
+        int chromaPlaneBytes = lumaBytes / 4;
+        boolean isPlanar = (inputColorFormat == MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar
+                || inputColorFormat == MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible);
+
+        String conversionPath = isPlanar
+                ? "NV21 → I420 (de-interleave VU → separate U + V planes)"
+                : "NV21 → NV12 (swap interleaved VU → UV pairs)";
+
+        System.out.println("[EncoderDiag] ─── Color Pipeline Summary ───");
+        System.out.println("[EncoderDiag] Source format: NV21 (Y plane + interleaved VU)");
+        System.out.println("[EncoderDiag] Target format: " + describeColorFormat(inputColorFormat)
+                + " (0x" + Integer.toHexString(inputColorFormat) + ")");
+        System.out.println("[EncoderDiag] Conversion path: " + conversionPath);
+        System.out.println("[EncoderDiag] Frame: " + width + "x" + height
+                + ", lumaBytes=" + lumaBytes
+                + ", chromaPlaneBytes=" + chromaPlaneBytes
+                + ", totalBytes=" + frameByteCount);
+
+        // Spatial Y sampling: sample at multiple positions to detect blank/constant frames.
+        int[] yPositions = {
+                0,
+                width / 4,
+                width / 2,
+                (width * 3) / 4,
+                lumaBytes / 4,
+                lumaBytes / 2,
+        };
+        StringBuilder ySamples = new StringBuilder("[EncoderDiag] NV21 Y spatial sample: ");
+        for (int pos : yPositions) {
+            if (pos >= 0 && pos < lumaBytes && pos < nv21Input.length) {
+                ySamples.append(String.format("@%d=%02X ", pos, nv21Input[pos] & 0xFF));
+            }
+        }
+        System.out.println(ySamples.toString().trim());
+
+        // NV21 interleaved chroma input: first 8 bytes (4 VU pairs).
+        StringBuilder chromaIn = new StringBuilder("[EncoderDiag] NV21 chroma input (first 8 VU bytes): ");
+        for (int i = lumaBytes; i < Math.min(lumaBytes + 8, nv21Input.length); i++) {
+            chromaIn.append(String.format("%02X ", nv21Input[i] & 0xFF));
+        }
+        System.out.println(chromaIn.toString().trim());
+
+        // Converted output chroma sampling.
+        if (isPlanar) {
+            int uPlaneOffset = lumaBytes;
+            int vPlaneOffset = lumaBytes + chromaPlaneBytes;
+
+            StringBuilder uOut = new StringBuilder("[EncoderDiag] Converted U plane (first 4 bytes @" + uPlaneOffset + "): ");
+            for (int i = 0; i < Math.min(4, chromaPlaneBytes); i++) {
+                if (uPlaneOffset + i < convertedOutput.length) {
+                    uOut.append(String.format("%02X ", convertedOutput[uPlaneOffset + i] & 0xFF));
+                }
+            }
+            System.out.println(uOut.toString().trim());
+
+            StringBuilder vOut = new StringBuilder("[EncoderDiag] Converted V plane (first 4 bytes @" + vPlaneOffset + "): ");
+            for (int i = 0; i < Math.min(4, chromaPlaneBytes); i++) {
+                if (vPlaneOffset + i < convertedOutput.length) {
+                    vOut.append(String.format("%02X ", convertedOutput[vPlaneOffset + i] & 0xFF));
+                }
+            }
+            System.out.println(vOut.toString().trim());
+
+            // UV swap verification: NV21 stores V,U interleaved; I420 stores U plane, then V plane.
+            if (lumaBytes + 1 < nv21Input.length
+                    && uPlaneOffset < convertedOutput.length
+                    && vPlaneOffset < convertedOutput.length) {
+                int srcV = nv21Input[lumaBytes] & 0xFF;
+                int srcU = nv21Input[lumaBytes + 1] & 0xFF;
+                int outU = convertedOutput[uPlaneOffset] & 0xFF;
+                int outV = convertedOutput[vPlaneOffset] & 0xFF;
+                boolean swapCorrect = (srcU == outU) && (srcV == outV);
+                System.out.println("[EncoderDiag] UV swap check: NV21[" + lumaBytes + "]=V("
+                        + String.format("%02X", srcV) + ") NV21[" + (lumaBytes + 1) + "]=U("
+                        + String.format("%02X", srcU) + ") → out_U=" + String.format("%02X", outU)
+                        + " out_V=" + String.format("%02X", outV)
+                        + " [" + (swapCorrect ? "OK" : "MISMATCH") + "]");
+            }
+        } else {
+            // NV12 semi-planar: output interleaves UV (swapped from VU).
+            StringBuilder uvOut = new StringBuilder("[EncoderDiag] Converted UV interleaved (first 8 bytes @" + lumaBytes + "): ");
+            for (int i = lumaBytes; i < Math.min(lumaBytes + 8, convertedOutput.length); i++) {
+                uvOut.append(String.format("%02X ", convertedOutput[i] & 0xFF));
+            }
+            System.out.println(uvOut.toString().trim());
+
+            // UV swap verification for semi-planar.
+            if (lumaBytes + 1 < nv21Input.length && lumaBytes + 1 < convertedOutput.length) {
+                int srcV = nv21Input[lumaBytes] & 0xFF;
+                int srcU = nv21Input[lumaBytes + 1] & 0xFF;
+                int outFirst = convertedOutput[lumaBytes] & 0xFF;
+                int outSecond = convertedOutput[lumaBytes + 1] & 0xFF;
+                boolean swapCorrect = (srcU == outFirst) && (srcV == outSecond);
+                System.out.println("[EncoderDiag] UV swap check: NV21[VU]=("
+                        + String.format("%02X,%02X", srcV, srcU) + ") → NV12[UV]=("
+                        + String.format("%02X,%02X", outFirst, outSecond) + ")"
+                        + " [" + (swapCorrect ? "OK" : "MISMATCH") + "]");
+            }
+        }
+        System.out.println("[EncoderDiag] ──────────────────────────────");
     }
 
     private boolean isFramePayload(MediaCodec.BufferInfo bufferInfo) {
