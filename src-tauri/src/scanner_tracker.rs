@@ -9,14 +9,18 @@ pub struct StabilityTracker {
     history: Vec<[ScannerPoint; 4]>,
     max_frames: usize,
     variance_threshold: f32,
+    consecutive_nones: u32,
+    miss_grace_frames: u32,
 }
 
 impl StabilityTracker {
-    pub fn new(max_frames: usize, variance_threshold: f32) -> Self {
+    pub fn new(max_frames: usize, variance_threshold: f32, miss_grace_frames: u32) -> Self {
         Self {
             history: Vec::with_capacity(max_frames),
             max_frames,
             variance_threshold,
+            consecutive_nones: 0,
+            miss_grace_frames,
         }
     }
 
@@ -24,10 +28,15 @@ impl StabilityTracker {
     /// Returns `true` if the document is stable across the tracked window.
     pub fn push(&mut self, points: Option<[ScannerPoint; 4]>) -> bool {
         let Some(pts) = points else {
-            self.history.clear();
+            self.consecutive_nones += 1;
+            if self.consecutive_nones > self.miss_grace_frames {
+                self.history.clear();
+            }
+            // Never stable when missing input.
             return false;
         };
 
+        self.consecutive_nones = 0;
         self.history.push(pts);
         if self.history.len() > self.max_frames {
             self.history.remove(0);

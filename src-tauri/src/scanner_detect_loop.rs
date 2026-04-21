@@ -9,11 +9,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use tauri::{command, AppHandle, Emitter, Manager};
 
+use crate::scanner_cv_detect;
 use crate::scanner_detect::{
     detect_document_native_ort, ScannerDetectDocumentRequest, ScannerPoint,
 };
 use crate::scanner_tracker::{DetectionPresenceTracker, StabilityTracker};
-use crate::stream_decoder::get_latest_preview_frame_packet;
 
 // ---------------------------------------------------------------------------
 // State
@@ -169,6 +169,7 @@ async fn detection_loop(
     let mut stability_tracker = StabilityTracker::new(
         config.stable_frames,
         config.variance_threshold,
+        1, // miss_grace_frames: tolerate 1 consecutive None before clearing history
     );
     let mut presence_tracker = DetectionPresenceTracker::new(
         config.miss_grace_frames,
@@ -188,12 +189,15 @@ async fn detection_loop(
         config.stable_hold_ms,
     );
 
+    let mut tick = tokio::time::interval(interval);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
     loop {
+        tick.tick().await;
+
         if !is_loop_current(generation) {
             break;
         }
-
-        let tick_start = Instant::now();
 
         let (points, detection_ms, frame_width, frame_height, message) =
             if backend == "native-ort" {
@@ -258,11 +262,7 @@ async fn detection_loop(
             let _ = app.emit(AUTO_CAPTURE_EVENT, serde_json::json!({}));
         }
 
-        // Wait for the remainder of the interval.
-        let elapsed = tick_start.elapsed();
-        if elapsed < interval {
-            tokio::time::sleep(interval - elapsed).await;
-        }
+
     }
 
     log::info!("[DetectionLoop] Stopped (generation={generation}).");
@@ -303,16 +303,5 @@ fn run_native_ort_detect(
 }
 
 fn run_opencv_detect() -> (Option<Vec<ScannerPoint>>, f64, u32, u32, String) {
-    // TODO: Implement native OpenCV detection via scanner_cv_detect.rs
-    // For now, attempt to decode the latest preview frame and return no detection.
-    let started = Instant::now();
-
-    let packet = get_latest_preview_frame_packet();
-    if packet.is_none() {
-        let ms = started.elapsed().as_secs_f64() * 1000.0;
-        return (None, ms, 0, 0, "No preview frame available for OpenCV detection.".to_string());
-    }
-
-    let ms = started.elapsed().as_secs_f64() * 1000.0;
-    (None, ms, 0, 0, "Native OpenCV detection is not yet implemented.".to_string())
+    scanner_cv_detect::detect_document_opencv(None, None)
 }

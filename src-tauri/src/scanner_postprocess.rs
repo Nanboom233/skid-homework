@@ -57,7 +57,7 @@ fn default_true() -> bool {
 }   
 
 fn default_color_mode() -> String {
-    "auto".to_string()
+    "none".to_string()
 }
 
 fn default_postprocess_backend() -> String {
@@ -572,9 +572,11 @@ const FLATTEN_DOMINANT_EDGE_ANCHOR_RATIO: f32 = 1.35;
 const FLATTEN_DOMINANT_SCORE_RATIO: f32 = 1.15;
 const FLATTEN_GRADIENT_WINDOW: usize = 5;
 const PAPER_CROP_MIN_COMPONENT_AREA_RATIO: f32 = 0.12;
+#[allow(dead_code)] // Was used by removed "auto" enhancement mode.
 const PAPER_CROP_MIN_SCORE_THRESHOLD: u8 = 160;
 const PAPER_SCORE_BLUR_SIGMA: f32 = 6.0;
 const PAPER_SCORE_LOCAL_CONTRAST_WEIGHT: f32 = 1.15;
+#[allow(dead_code)] // Was used by removed "auto" enhancement mode.
 const ENHANCE_MIN_PAPER_BBOX_RATIO: f32 = 0.55;
 
 
@@ -1724,30 +1726,23 @@ fn point_distance(a: ScannerPoint, b: ScannerPoint) -> f32 {
 
 fn enhance_document_image(
     source: &RgbaImage,
-    prefer_soft_tone: bool,
+    _prefer_soft_tone: bool,
     color_mode: &str,
 ) -> RgbaImage {
+    // "none" or unrecognized → return source unchanged.
+    let effective_mode = match color_mode {
+        "normalize" | "color" => "normalize",
+        "grayscale" => "grayscale",
+        "binary" => "binary",
+        _ => return source.clone(),
+    };
+
     let gray = rgba_to_gray(source);
     let background_sigma = compute_background_sigma(source.width(), source.height());
     let background = gaussian_blur_f32(&gray, background_sigma);
 
-    // Determine effective color mode.
-    let effective_mode = match color_mode {
-        "color" => "color",
-        "grayscale" => "grayscale",
-        "binary" => "binary",
-        _ => {
-            // "auto" — decide based on content analysis.
-            if should_prefer_soft_tone(source, prefer_soft_tone) {
-                "grayscale"
-            } else {
-                "binary"
-            }
-        }
-    };
-
     match effective_mode {
-        "color" => {
+        "normalize" => {
             // Preserve color: flatten background luminance per-channel.
             enhance_preserve_color(source, &background)
         }
@@ -1765,7 +1760,7 @@ fn enhance_document_image(
             gray_to_rgba(&selected)
         }
         _ => {
-            // "grayscale" or fallback
+            // "grayscale"
             let flattened = flatten_background(&gray, &background);
             let denoised = gaussian_blur_f32(&flattened, 0.8);
             let normalized = normalize_gray(&denoised);
@@ -1796,6 +1791,7 @@ fn enhance_preserve_color(source: &RgbaImage, background: &GrayImage) -> RgbaIma
     output
 }
 
+#[allow(dead_code)] // Was used by removed "auto" enhancement mode.
 fn should_prefer_soft_tone(source: &RgbaImage, prefer_soft_tone: bool) -> bool {
     if prefer_soft_tone {
         return true;
@@ -1808,6 +1804,7 @@ fn should_prefer_soft_tone(source: &RgbaImage, prefer_soft_tone: bool) -> bool {
     paper_bbox_ratio < ENHANCE_MIN_PAPER_BBOX_RATIO
 }
 
+#[allow(dead_code)] // Was used by removed "auto" enhancement mode.
 fn measure_paper_bbox_ratio(source: &RgbaImage) -> Option<f32> {
     let score_image = build_paper_score_image(source);
     let threshold = otsu_level(&score_image).max(PAPER_CROP_MIN_SCORE_THRESHOLD);

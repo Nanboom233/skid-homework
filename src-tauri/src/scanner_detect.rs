@@ -715,50 +715,15 @@ fn resolve_detect_input_image_owned(
     request: &mut ScannerDetectDocumentRequest,
 ) -> Result<ResolvedDetectInput, String> {
     let (decoded_image, input_transport) = if request.use_latest_preview_frame {
-        let cached_preview_packet = get_latest_preview_frame_packet();
-        (
-            cached_preview_packet
-                .as_deref()
-                .map(build_dynamic_image_from_preview_frame_packet)
-                .transpose()?,
-            "latest-preview-cache",
-        )
+        (resolve_detect_from_preview_cache()?, "latest-preview-cache")
     } else if !request.rgba_bytes.is_empty() {
-        let width = request
-            .rgba_width
-            .ok_or_else(|| "RGBA native scanner request is missing rgbaWidth.".to_string())?;
-        let height = request
-            .rgba_height
-            .ok_or_else(|| "RGBA native scanner request is missing rgbaHeight.".to_string())?;
-
-        if width == 0 || height == 0 {
-            return Err("RGBA native scanner dimensions must be greater than zero.".to_string());
-        }
-
-        let expected_len = (width as usize)
-            .checked_mul(height as usize)
-            .and_then(|pixels| pixels.checked_mul(4))
-            .ok_or_else(|| "RGBA native scanner dimensions overflowed.".to_string())?;
-
-        if request.rgba_bytes.len() != expected_len {
-            return Err(format!(
-                "RGBA native scanner payload length mismatch: expected {expected_len} bytes for {width}x{height}, got {}.",
-                request.rgba_bytes.len()
-            ));
-        }
-
-        // Take ownership to avoid cloning the large pixel buffer.
-        let rgba_bytes = std::mem::take(&mut request.rgba_bytes);
-        let image = RgbaImage::from_raw(width, height, rgba_bytes).ok_or_else(|| {
-            "Failed to materialize RGBA source frame for native scanner inference.".to_string()
-        })?;
-        (Some(DynamicImage::ImageRgba8(image)), "rgba-ipc")
-    } else if !request.source_bytes.is_empty() {
-        let source_bytes = std::mem::take(&mut request.source_bytes);
         (
-            Some(image::load_from_memory(&source_bytes).map_err(|error| {
-                format!("Failed to decode source image for native scanner inference: {error}")
-            })?),
+            Some(resolve_detect_from_rgba_owned(request)?),
+            "rgba-ipc",
+        )
+    } else if !request.source_bytes.is_empty() {
+        (
+            Some(resolve_detect_from_encoded_owned(request)?),
             "source-bytes",
         )
     } else {
@@ -774,6 +739,60 @@ fn resolve_detect_input_image_owned(
         // the heatmap quality through accumulated interpolation blur.
         prepared_image: decoded_image.map(|image| prepare_inference_image(image, None, None)),
         input_transport,
+    })
+}
+
+/// Resolve detection input from the latest preview frame cache.
+fn resolve_detect_from_preview_cache() -> Result<Option<DynamicImage>, String> {
+    let cached_preview_packet = get_latest_preview_frame_packet();
+    cached_preview_packet
+        .as_deref()
+        .map(build_dynamic_image_from_preview_frame_packet)
+        .transpose()
+}
+
+/// Resolve detection input from raw RGBA bytes in the request (takes ownership).
+fn resolve_detect_from_rgba_owned(
+    request: &mut ScannerDetectDocumentRequest,
+) -> Result<DynamicImage, String> {
+    let width = request
+        .rgba_width
+        .ok_or_else(|| "RGBA native scanner request is missing rgbaWidth.".to_string())?;
+    let height = request
+        .rgba_height
+        .ok_or_else(|| "RGBA native scanner request is missing rgbaHeight.".to_string())?;
+
+    if width == 0 || height == 0 {
+        return Err("RGBA native scanner dimensions must be greater than zero.".to_string());
+    }
+
+    let expected_len = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or_else(|| "RGBA native scanner dimensions overflowed.".to_string())?;
+
+    if request.rgba_bytes.len() != expected_len {
+        return Err(format!(
+            "RGBA native scanner payload length mismatch: expected {expected_len} bytes for {width}x{height}, got {}.",
+            request.rgba_bytes.len()
+        ));
+    }
+
+    // Take ownership to avoid cloning the large pixel buffer.
+    let rgba_bytes = std::mem::take(&mut request.rgba_bytes);
+    let image = RgbaImage::from_raw(width, height, rgba_bytes).ok_or_else(|| {
+        "Failed to materialize RGBA source frame for native scanner inference.".to_string()
+    })?;
+    Ok(DynamicImage::ImageRgba8(image))
+}
+
+/// Resolve detection input from encoded image bytes (PNG/JPEG) in the request (takes ownership).
+fn resolve_detect_from_encoded_owned(
+    request: &mut ScannerDetectDocumentRequest,
+) -> Result<DynamicImage, String> {
+    let source_bytes = std::mem::take(&mut request.source_bytes);
+    image::load_from_memory(&source_bytes).map_err(|error| {
+        format!("Failed to decode source image for native scanner inference: {error}")
     })
 }
 
@@ -811,7 +830,7 @@ fn build_dynamic_image_from_rgba_request(
     Ok(DynamicImage::ImageRgba8(image))
 }
 
-fn build_dynamic_image_from_preview_frame_packet(packet: &[u8]) -> Result<DynamicImage, String> {
+pub(crate) fn build_dynamic_image_from_preview_frame_packet(packet: &[u8]) -> Result<DynamicImage, String> {
     let (width, height, payload) = parse_preview_frame_packet(packet)?;
     let rgb = decode_i420_payload_to_rgb_image(payload, width, height)?;
     Ok(DynamicImage::ImageRgb8(rgb))

@@ -3,9 +3,16 @@
 Currently staged:
 
 - `models/docaligner-fastvit_sa24.onnx`
-  - Source: DocsaidLab DocAligner
+  - Source: [DocsaidLab/DocAligner](https://github.com/DocsaidLab/DocAligner)
+  - License: Apache-2.0 (see [LICENSE-docaligner](LICENSE-docaligner))
   - Task: document corner heatmap regression
   - Role: current public baseline for the desktop native backend
+
+- UVDoc flatten model (used by `scanner_postprocess_model.rs`)
+  - Source: [tanguymagne/UVDoc](https://github.com/tanguymagne/UVDoc)
+  - License: MIT (see [LICENSE-uvdoc](LICENSE-uvdoc))
+  - Task: neural grid-based document unwarping
+  - Role: spine flattening via learned deformation grid
 
 Planned primary model path:
 

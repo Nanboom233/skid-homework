@@ -65,6 +65,14 @@ public final class VideoEncoder implements PreviewStreamEncoder {
         format.setInteger(KEY_PREPEND_SPS_PPS_TO_IDR_FRAMES, 1);
 
         codec = MediaCodec.createEncoderByType(MIME_TYPE);
+
+        // [EncoderDiag] Diagnostic logging for remote debugging.
+        System.out.println("[EncoderDiag] Backend: Camera2 Surface");
+        System.out.println("[EncoderDiag] Codec: " + codec.getName());
+        System.out.println("[EncoderDiag] Input: COLOR_FormatSurface");
+        System.out.println("[EncoderDiag] Config: " + width + "x" + height
+                + " @" + bitrate + "bps " + framerate + "fps");
+
         codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
         inputSurface = codec.createInputSurface();
     }
@@ -170,6 +178,11 @@ public final class VideoEncoder implements PreviewStreamEncoder {
                     ByteBuffer outputBuffer = codec.getOutputBuffer(outputIndex);
 
                     if (outputBuffer != null && bufferInfo.size > 0) {
+                        byte[] nalData = new byte[bufferInfo.size];
+                        outputBuffer.position(bufferInfo.offset);
+                        outputBuffer.limit(bufferInfo.offset + bufferInfo.size);
+                        outputBuffer.get(nalData);
+
                         if (isFramePayload(bufferInfo)
                                 && firstFrameReported.compareAndSet(false, true)) {
                             System.out.println(
@@ -177,13 +190,11 @@ public final class VideoEncoder implements PreviewStreamEncoder {
                                             + (SystemClock.elapsedRealtime() - startedAtMs)
                                             + "ms."
                             );
+                            int nalType = (nalData.length > 0) ? (nalData[0] & 0x1F) : -1;
+                            System.out.println("[EncoderDiag] First NAL: type=" + nalType
+                                    + " size=" + nalData.length);
                             firstFrameLatch.countDown();
                         }
-
-                        byte[] nalData = new byte[bufferInfo.size];
-                        outputBuffer.position(bufferInfo.offset);
-                        outputBuffer.limit(bufferInfo.offset + bufferInfo.size);
-                        outputBuffer.get(nalData);
 
                         try {
                             relay.sendNalUnit(nalData);

@@ -47,7 +47,7 @@ public final class CameraCapture implements CameraCaptureBackend {
     private static final int CAMERA_OPEN_TIMEOUT_SECONDS = 5;
     private static final int MAX_INTERNAL_CAMERA_RECOVERY_ATTEMPTS = 4;
     private static final long CAMERA_RECOVERY_DELAY_BASE_MS = 150L;
-    private static final long CAMERA_RECOVERY_DELAY_MAX_MS = 1_000L;
+    private static final long CAMERA_RECOVERY_DELAY_MAX_MS = 5_000L;
     private static final long FIRST_CAPTURE_START_TIMEOUT_MS = 1_500L;
     private static final long STILL_CAPTURE_TIMEOUT_MS = 4_000L;
     private static final byte JPEG_QUALITY = (byte) 95;

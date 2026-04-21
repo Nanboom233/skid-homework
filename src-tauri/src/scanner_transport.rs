@@ -1,8 +1,8 @@
-/// Scanner-specific ADB transport commands.
+/// Scanner still-image capture commands.
 ///
-/// These Tauri commands handle camera server lifecycle and still image
-/// capture. They are separated from the generic ADB primitives in
-/// `adb_plugin.rs` for clearer responsibility boundaries.
+/// These Tauri commands handle high-resolution still image capture via
+/// device-file transfer or forwarded TCP socket. Server lifecycle and
+/// generic ADB operations live in `adb_plugin.rs`.
 use std::{
     io::{BufReader, Read},
     net::{SocketAddr, TcpStream as StdTcpStream},
@@ -21,74 +21,13 @@ use crate::adb_plugin::{
 };
 
 const DEVICE_TMP_DIR: &str = "/data/local/tmp";
-const SCANNER_SERVER_PID_PATH: &str = "/data/local/tmp/skid-scanner-server.pid";
-const SCANNER_SERVER_LOG_PATH: &str = "/data/local/tmp/skid-scanner-server.log";
 const STILL_CAPTURE_MAIN_CLASS: &str = "com.skidhomework.server.StillCapture";
 const STILL_STREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const STILL_STREAM_READ_TIMEOUT: Duration = Duration::from_secs(20);
 
 // ---------------------------------------------------------------------------
-// Helper functions (scanner-specific)
+// Helper functions (still capture)
 // ---------------------------------------------------------------------------
-
-fn build_scanner_server_kill_script(main_class: &str) -> String {
-    format!(
-        "killed=0; \
-for pid in $(ps -A -o PID,ARGS 2>/dev/null | grep {main_class} | grep -v grep | awk '{{print $1}}'); do \
-  kill \"$pid\" >/dev/null 2>&1 && killed=1; \
-done; \
-sleep 1; \
-for pid in $(ps -A -o PID,ARGS 2>/dev/null | grep {main_class} | grep -v grep | awk '{{print $1}}'); do \
-  kill -9 \"$pid\" >/dev/null 2>&1 && killed=1; \
-done; \
-if [ \"$killed\" -eq 1 ]; then \
-  sleep 1; \
-fi",
-        main_class = shell_single_quote(main_class),
-    )
-}
-
-fn build_scanner_server_start_script(
-    classpath: &str,
-    main_class: &str,
-    server_args: &[String],
-) -> String {
-    let app_process_command = build_app_process_shell_command(classpath, main_class, server_args);
-    let kill_command = build_scanner_server_kill_script(main_class);
-
-    format!(
-        "{kill_command}; \
-rm -f {pidfile}; \
-: >{logfile}; \
-{} </dev/null >>{logfile} 2>&1 & echo $! > {pidfile}",
-        app_process_command,
-        kill_command = kill_command,
-        pidfile = shell_single_quote(SCANNER_SERVER_PID_PATH),
-        logfile = shell_single_quote(SCANNER_SERVER_LOG_PATH),
-    )
-}
-
-fn build_scanner_server_stop_script(main_class: &str) -> String {
-    let kill_command = build_scanner_server_kill_script(main_class);
-
-    format!(
-        "pidfile={pidfile}; \
-stopped=0; \
-if [ -f \"$pidfile\" ]; then \
-  pid=$(cat \"$pidfile\"); \
-  if [ -n \"$pid\" ]; then \
-    kill \"$pid\" >/dev/null 2>&1 && stopped=1; \
-  fi; \
-  rm -f \"$pidfile\"; \
-fi; \
-{kill_command}; \
-if [ \"$stopped\" -eq 1 ]; then \
-  echo \"Camera server stopped.\"; \
-fi",
-        pidfile = shell_single_quote(SCANNER_SERVER_PID_PATH),
-        kill_command = kill_command,
-    )
-}
 
 fn build_still_capture_script(
     classpath: &str,
@@ -342,32 +281,8 @@ fn capture_still_via_forwarded_socket(port: u16) -> Result<Vec<u8>, String> {
 }
 
 // ---------------------------------------------------------------------------
-// Tauri Commands (scanner-specific transport)
+// Tauri Commands (still capture)
 // ---------------------------------------------------------------------------
-
-/// Capture a device screenshot via `adb exec-out screencap -p`.
-#[command]
-pub async fn tauri_adb_screenshot(
-    serial: String,
-    payload_channel: Channel<InvokeResponseBody>,
-) -> Result<(), String> {
-    let png_bytes: Result<Vec<u8>, String> = tauri::async_runtime::spawn_blocking(move || {
-        let serial = ensure_non_empty(&serial, "ADB serial")?;
-        let args = vec![
-            "-s".to_string(),
-            serial.clone(),
-            "exec-out".to_string(),
-            "screencap".to_string(),
-            "-p".to_string(),
-        ];
-        let output = run_adb_checked(&args, &format!("adb -s {serial} exec-out screencap -p"))?;
-        Ok(output.stdout)
-    })
-    .await
-    .map_err(|error| format!("ADB screenshot task failed: {error}"))?;
-
-    send_raw_payload(&payload_channel, png_bytes?, "ADB screenshot")
-}
 
 /// Capture a full-resolution still image via device-file transfer.
 #[command]
@@ -412,71 +327,4 @@ pub async fn tauri_adb_capture_still_stream(
         jpeg_bytes?,
         "ADB forwarded still-stream capture",
     )
-}
-
-/// Start the Android Camera Server on the device.
-#[command]
-pub async fn tauri_adb_start_server(
-    serial: String,
-    classpath: String,
-    main_class: String,
-    server_args: Vec<String>,
-) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let serial = ensure_non_empty(&serial, "ADB serial")?;
-        let classpath = ensure_non_empty(&classpath, "Server classpath")?;
-        let main_class = ensure_non_empty(&main_class, "Server main class")?;
-        let shell_command =
-            build_scanner_server_start_script(&classpath, &main_class, &server_args);
-        let args = vec![
-            "-s".to_string(),
-            serial.clone(),
-            "shell".to_string(),
-            "sh".to_string(),
-            "-c".to_string(),
-            wrap_shell_c_script(&shell_command),
-        ];
-        let output = run_adb_checked(
-            &args,
-            &format!("adb -s {serial} shell sh -c <start scanner server>"),
-        )?;
-        let message = combine_command_output(&output);
-
-        if message.is_empty() {
-            Ok(format!("Camera server started on {serial}."))
-        } else {
-            Ok(message)
-        }
-    })
-    .await
-    .map_err(|error| format!("ADB start-server task failed: {error}"))?
-}
-
-/// Stop the Android Camera Server running on the device.
-#[command]
-pub async fn tauri_adb_stop_server(serial: String, classpath: String) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let serial = ensure_non_empty(&serial, "ADB serial")?;
-        let _classpath = ensure_non_empty(&classpath, "Server classpath")?;
-        let kill_command = build_scanner_server_stop_script("com.skidhomework.server.Server");
-        let args = vec![
-            "-s".to_string(),
-            serial.clone(),
-            "shell".to_string(),
-            "sh".to_string(),
-            "-c".to_string(),
-            wrap_shell_c_script(&kill_command),
-        ];
-
-        let output = run_adb_command(&args)?;
-        let message = combine_command_output(&output);
-
-        if message.is_empty() {
-            Ok(format!("Camera server stopped on {serial}."))
-        } else {
-            Ok(message)
-        }
-    })
-    .await
-    .map_err(|error| format!("ADB stop-server task failed: {error}"))?
 }
