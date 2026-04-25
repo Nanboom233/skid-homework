@@ -2,6 +2,7 @@ package com.skidhomework.server;
 
 import android.media.MediaCodec;
 import android.media.MediaCodecInfo;
+import android.media.MediaCodecInfo.EncoderCapabilities;
 import android.media.MediaFormat;
 import android.os.Bundle;
 import android.os.SystemClock;
@@ -71,6 +72,22 @@ public final class ByteBufferVideoEncoder implements PreviewStreamEncoder {
         format.setInteger(MediaFormat.KEY_FRAME_RATE, framerate);
         format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, I_FRAME_INTERVAL);
         format.setInteger(KEY_PREPEND_SPS_PPS_TO_IDR_FRAMES, 1);
+
+        // CBR: eliminate I-frame traffic spikes that congest the ADB tunnel.
+        try {
+            format.setInteger(MediaFormat.KEY_BITRATE_MODE,
+                    EncoderCapabilities.BITRATE_MODE_CBR);
+        } catch (RuntimeException e) {
+            System.out.println("[EncoderDiag] CBR bitrate mode not supported, using default VBR.");
+        }
+
+        // Low-latency hints: reduce encoder-internal buffering for real-time preview.
+        try {
+            format.setInteger("low-latency", 1);          // KEY_LOW_LATENCY (API 30)
+            format.setInteger("priority", 0);              // KEY_PRIORITY realtime (API 31)
+        } catch (RuntimeException e) {
+            // Older devices may reject these keys; non-fatal.
+        }
 
         codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
 
@@ -253,25 +270,24 @@ public final class ByteBufferVideoEncoder implements PreviewStreamEncoder {
                             firstFrameLatch.countDown();
                         }
 
-                        byte[] nalData = new byte[bufferInfo.size];
                         outputBuffer.position(bufferInfo.offset);
                         outputBuffer.limit(bufferInfo.offset + bufferInfo.size);
-                        outputBuffer.get(nalData);
 
                         // [EncoderDiag] Log first NAL unit metadata for diagnostics.
                         if (nalDiagCount < NAL_DIAG_LIMIT
                                 && firstFrameReported.get()
                                 && isFramePayload(bufferInfo)
-                                && nalData.length > 0) {
+                                && bufferInfo.size > 0) {
                             nalDiagCount++;
-                            int nalType = (nalData[0] & 0x1F);
+                            int nalType = (outputBuffer.get(bufferInfo.offset) & 0x1F);
                             System.out.println("[EncoderDiag] First NAL: type="
                                     + nalType
-                                    + ", size=" + nalData.length);
+                                    + ", size=" + bufferInfo.size);
                         }
 
                         try {
-                            relay.sendNalUnit(nalData);
+                            // Zero-copy: send directly from MediaCodec ByteBuffer.
+                            relay.sendNalUnit(outputBuffer, bufferInfo.offset, bufferInfo.size);
                         } catch (IOException e) {
                             System.err.println("[Encoder] Failed to send NAL unit: " + e.getMessage());
                             running = false;

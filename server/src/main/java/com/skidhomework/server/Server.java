@@ -144,7 +144,7 @@ public final class Server {
                 // then write a 1-byte handshake. If the write throws, it's a probe.
                 OutputStream outputStream;
                 try {
-                    clientSocket.setSendBufferSize(1024 * 1024);
+                    clientSocket.setSendBufferSize(128 * 1024);
                     Thread.sleep(100);
                     outputStream = clientSocket.getOutputStream();
                     outputStream.write(0x00);
