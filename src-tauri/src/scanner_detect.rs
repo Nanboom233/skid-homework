@@ -1,4 +1,4 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::VecDeque;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -15,6 +15,9 @@ use ort::{
 use serde::{Deserialize, Serialize};
 use tauri::{command, AppHandle, Manager};
 
+use crate::scanner_frame_protocol;
+use crate::scanner_platform;
+use crate::scanner_resource;
 use crate::stream_decoder::get_latest_preview_frame_packet;
 
 const STAGE: &str = "ort-runtime";
@@ -26,11 +29,7 @@ const WINDOWS_DIRECTML_RELATIVE_PATH: &str = "onnxruntime/windows/DirectML.dll";
 const LINUX_ORT_RELATIVE_PATH: &str = "onnxruntime/linux/libonnxruntime.so";
 const LINUX_TENSORRT_RELATIVE_PATH: &str = "onnxruntime/linux/libonnxruntime_providers_tensorrt.so";
 const LINUX_CUDA_RELATIVE_PATH: &str = "onnxruntime/linux/libonnxruntime_providers_cuda.so";
-// Must stay in sync with the preview packet protocol emitted from stream_decoder.rs.
-const FRAME_PACKET_HEADER_SIZE: usize = 9;
-const FRAME_PACKET_TELEMETRY_SIZE: usize = 12;
-const FRAME_CODEC_I420: u8 = 3;
-const FRAME_CODEC_I420_TELEMETRY: u8 = 4;
+
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ScannerModelVariant {
@@ -113,11 +112,6 @@ struct ScannerDetectConfigHandle {
     source: &'static str,
 }
 
-#[derive(Debug, Clone)]
-struct ResourceRootCandidate {
-    source: &'static str,
-    path: PathBuf,
-}
 
 #[derive(Debug, Clone)]
 struct ResourceSpec {
@@ -244,6 +238,9 @@ pub struct ScannerDetectDocumentRequest {
     pub max_width: Option<u32>,
     #[serde(default)]
     pub max_height: Option<u32>,
+    /// Detection backend: `"native-ort"` (default) or `"opencv"`.
+    #[serde(default)]
+    pub backend: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -328,15 +325,33 @@ pub async fn tauri_scanner_probe_detect(app: AppHandle) -> Result<ScannerDetectP
 #[command]
 pub async fn tauri_scanner_detect_document(
     app: AppHandle,
-    request: ScannerDetectDocumentRequest,
+    source_bytes: Option<Vec<u8>>,
+    mut request: ScannerDetectDocumentRequest,
 ) -> Result<ScannerDetectDocumentResponse, String> {
-    let resource_dir_hint = app.path().resource_dir().ok();
-    let app_config_dir_hint = app.path().app_config_dir().ok();
-    tauri::async_runtime::spawn_blocking(move || {
-        detect_document_native_ort(request, resource_dir_hint, app_config_dir_hint)
-    })
-    .await
-    .map_err(|error| format!("Native ORT task failed: {error}"))?
+    if let Some(bytes) = source_bytes {
+        if !bytes.is_empty() && request.source_bytes.is_empty() {
+            request.source_bytes = bytes;
+        }
+    }
+    let backend = request.backend.as_deref().unwrap_or("native-ort");
+    match backend {
+        "opencv" => {
+            tauri::async_runtime::spawn_blocking(move || {
+                detect_document_opencv_from_bytes(request)
+            })
+            .await
+            .map_err(|error| format!("OpenCV detect task failed: {error}"))?
+        }
+        _ => {
+            let resource_dir_hint = app.path().resource_dir().ok();
+            let app_config_dir_hint = app.path().app_config_dir().ok();
+            tauri::async_runtime::spawn_blocking(move || {
+                detect_document_native_ort(request, resource_dir_hint, app_config_dir_hint)
+            })
+            .await
+            .map_err(|error| format!("Native ORT task failed: {error}"))?
+        }
+    }
 }
 
 #[command]
@@ -365,8 +380,8 @@ pub async fn tauri_scanner_write_detect_config(
     Ok(ScannerDetectConfigResponse {
         config,
         source: "app-config-override".to_string(),
-        resolved_path: path_to_string(&writable_path),
-        writable_path: path_to_string(&writable_path),
+        resolved_path: scanner_resource::path_to_string(&writable_path),
+        writable_path: scanner_resource::path_to_string(&writable_path),
     })
 }
 
@@ -379,14 +394,14 @@ pub fn probe_native_ort_runtime_with_hints(
     app_config_dir_hint: Option<PathBuf>,
 ) -> ScannerDetectProbeResponse {
     let platform = std::env::consts::OS.to_string();
-    let platform_target = platform_target_for_current_platform().to_string();
-    let provider_candidates = provider_candidates_for_current_platform()
+    let platform_target = scanner_platform::platform_target().to_string();
+    let provider_candidates = scanner_platform::provider_candidates()
         .into_iter()
         .map(str::to_string)
         .collect::<Vec<_>>();
 
-    let resource_root_candidates = build_resource_root_candidates(resource_dir_hint);
-    let selected_resource_root = select_resource_root(&resource_root_candidates);
+    let resource_root_candidates = scanner_resource::build_resource_root_candidates(resource_dir_hint);
+    let selected_resource_root = scanner_resource::select_resource_root(&resource_root_candidates, &DETECT_INTERESTING_PATHS);
     let resource_base_dir = selected_resource_root
         .as_ref()
         .map(|candidate| candidate.path.clone());
@@ -407,7 +422,7 @@ pub fn probe_native_ort_runtime_with_hints(
     let preferred_provider = config_handle
         .as_ref()
         .map(|handle| preferred_provider_from_config(&handle.config))
-        .unwrap_or_else(|| default_preferred_provider_for_current_platform().to_string());
+        .unwrap_or_else(|| scanner_platform::default_preferred_provider().to_string());
     let runtime_snapshot = probe_ort_runtime(resource_base_dir.as_deref());
     let session_snapshot = if let Some(ref model) = selected_model {
         if runtime_snapshot.ready {
@@ -431,7 +446,7 @@ pub fn probe_native_ort_runtime_with_hints(
         }
     };
     let preferred_provider_ready =
-        is_provider_available(&preferred_provider, &runtime_snapshot.available_providers);
+        scanner_platform::is_provider_available(&preferred_provider, &runtime_snapshot.available_providers);
 
     let message = if !runtime_snapshot.ready {
         runtime_snapshot
@@ -471,7 +486,7 @@ pub fn probe_native_ort_runtime_with_hints(
             .unwrap_or_else(|| "unresolved".to_string()),
         config_path: config_handle
             .as_ref()
-            .map(|handle| path_to_string(&handle.resolved_path)),
+            .map(|handle| scanner_resource::path_to_string(&handle.resolved_path)),
         preferred_provider,
         provider_candidates,
         selected_model_id: selected_model.as_ref().map(|model| model.config.id.clone()),
@@ -484,7 +499,7 @@ pub fn probe_native_ort_runtime_with_hints(
         selected_model_path: selected_model.as_ref().and_then(|model| {
             resource_base_dir
                 .as_deref()
-                .map(|base_dir| path_to_string(&base_dir.join(model.config.model_path.as_str())))
+                .map(|base_dir| scanner_resource::path_to_string(&base_dir.join(model.config.model_path.as_str())))
         }),
         runtime_ready: runtime_snapshot.ready,
         preferred_provider_ready,
@@ -499,10 +514,51 @@ pub fn probe_native_ort_runtime_with_hints(
         resource_resolution_source: selected_resource_root
             .map(|candidate| candidate.source.to_string())
             .unwrap_or_else(|| "unresolved".to_string()),
-        resource_base_dir: resource_base_dir.as_deref().map(path_to_string),
+        resource_base_dir: resource_base_dir.as_deref().map(scanner_resource::path_to_string),
         resources,
         message,
     }
+}
+
+/// Run OpenCV contour-based detection on encoded source bytes.
+/// Used for redetect when the user has selected the `"opencv"` backend.
+fn detect_document_opencv_from_bytes(
+    request: ScannerDetectDocumentRequest,
+) -> Result<ScannerDetectDocumentResponse, String> {
+    let started_at = Instant::now();
+    let dynamic_image = image::load_from_memory(&request.source_bytes)
+        .map_err(|e| format!("Failed to decode source for OpenCV detect: {e}"))?;
+    let (w, h) = (dynamic_image.width(), dynamic_image.height());
+    let points = crate::scanner_cv_detect::detect_contour_quad(
+        &dynamic_image, request.max_width, request.max_height,
+    );
+    let ms = started_at.elapsed().as_secs_f64() * 1000.0;
+    let message = if points.is_some() {
+        format!("OpenCV contour redetect completed in {ms:.1}ms.")
+    } else {
+        format!("No document detected via OpenCV redetect ({ms:.1}ms).")
+    };
+    Ok(ScannerDetectDocumentResponse {
+        stage: "opencv-redetect",
+        processing_ms: ms,
+        input_transport: "source_bytes".to_string(),
+        input_width: Some(w),
+        input_height: Some(h),
+        selected_model_id: None,
+        selected_model_kind: None,
+        selected_model_task: None,
+        runtime_ready: false,
+        preferred_provider: String::new(),
+        preferred_provider_ready: false,
+        model_ready: false,
+        session_ready: false,
+        detection_implemented: true,
+        ort_build_info: None,
+        runtime_error: None,
+        session_error: None,
+        points,
+        message,
+    })
 }
 
 pub fn detect_document_native_ort(
@@ -514,7 +570,7 @@ pub fn detect_document_native_ort(
     let ResolvedDetectInput {
         prepared_image,
         input_transport: input_transport_kind,
-    } = resolve_detect_input_image_owned(&mut request)?;
+    } = resolve_detect_input(&mut request)?;
     let input_transport = input_transport_kind.to_string();
 
     let (input_width, input_height) = prepared_image
@@ -524,7 +580,7 @@ pub fn detect_document_native_ort(
 
     let detection_context_result =
         resolve_detection_runtime_context(resource_dir_hint, app_config_dir_hint);
-    let default_provider = default_preferred_provider_for_current_platform().to_string();
+    let default_provider = scanner_platform::default_preferred_provider().to_string();
     let (selected_model, preferred_provider, runtime_snapshot, session_snapshot, context_error) =
         match detection_context_result {
             Ok(context) => {
@@ -580,7 +636,7 @@ pub fn detect_document_native_ort(
             ),
         };
     let preferred_provider_ready =
-        is_provider_available(&preferred_provider, &runtime_snapshot.available_providers);
+        scanner_platform::is_provider_available(&preferred_provider, &runtime_snapshot.available_providers);
 
     let (points, message) = if !runtime_snapshot.ready {
         (
@@ -672,46 +728,11 @@ pub fn detect_document_native_ort(
     })
 }
 
-#[allow(dead_code)] // Retained for unit tests; production code uses resolve_detect_input_image_owned.
-fn resolve_detect_input_image(
-    request: &ScannerDetectDocumentRequest,
-) -> Result<ResolvedDetectInput, String> {
-    let (decoded_image, input_transport) = if request.use_latest_preview_frame {
-        let cached_preview_packet = get_latest_preview_frame_packet();
-        (
-            cached_preview_packet
-                .as_deref()
-                .map(build_dynamic_image_from_preview_frame_packet)
-                .transpose()?,
-            "latest-preview-cache",
-        )
-    } else if !request.rgba_bytes.is_empty() {
-        (
-            Some(build_dynamic_image_from_rgba_request(request)?),
-            "rgba-ipc",
-        )
-    } else if !request.source_bytes.is_empty() {
-        (
-            Some(
-                image::load_from_memory(&request.source_bytes).map_err(|error| {
-                    format!("Failed to decode source image for native scanner inference: {error}")
-                })?,
-            ),
-            "source-bytes",
-        )
-    } else {
-        (None, "none")
-    };
-
-    Ok(ResolvedDetectInput {
-        prepared_image: decoded_image
-            .map(|image| prepare_inference_image(image, request.max_width, request.max_height)),
-        input_transport,
-    })
-}
-
-/// Consume `rgba_bytes` from the request to avoid a large clone.
-fn resolve_detect_input_image_owned(
+/// Resolve the input image for native ORT detection.
+///
+/// Takes `&mut` to move large pixel buffers out of the request (via `std::mem::take`)
+/// instead of cloning them.
+fn resolve_detect_input(
     request: &mut ScannerDetectDocumentRequest,
 ) -> Result<ResolvedDetectInput, String> {
     let (decoded_image, input_transport) = if request.use_latest_preview_frame {
@@ -747,7 +768,7 @@ fn resolve_detect_from_preview_cache() -> Result<Option<DynamicImage>, String> {
     let cached_preview_packet = get_latest_preview_frame_packet();
     cached_preview_packet
         .as_deref()
-        .map(build_dynamic_image_from_preview_frame_packet)
+        .map(|p| build_dynamic_image_from_preview_frame_packet(p))
         .transpose()
 }
 
@@ -796,131 +817,8 @@ fn resolve_detect_from_encoded_owned(
     })
 }
 
-#[allow(dead_code)] // Retained for resolve_detect_input_image (test path).
-fn build_dynamic_image_from_rgba_request(
-    request: &ScannerDetectDocumentRequest,
-) -> Result<DynamicImage, String> {
-    let width = request
-        .rgba_width
-        .ok_or_else(|| "RGBA native scanner request is missing rgbaWidth.".to_string())?;
-    let height = request
-        .rgba_height
-        .ok_or_else(|| "RGBA native scanner request is missing rgbaHeight.".to_string())?;
-
-    if width == 0 || height == 0 {
-        return Err("RGBA native scanner dimensions must be greater than zero.".to_string());
-    }
-
-    let expected_len = (width as usize)
-        .checked_mul(height as usize)
-        .and_then(|pixels| pixels.checked_mul(4))
-        .ok_or_else(|| "RGBA native scanner dimensions overflowed.".to_string())?;
-
-    if request.rgba_bytes.len() != expected_len {
-        return Err(format!(
-            "RGBA native scanner payload length mismatch: expected {expected_len} bytes for {width}x{height}, got {}.",
-            request.rgba_bytes.len()
-        ));
-    }
-
-    let image =
-        RgbaImage::from_raw(width, height, request.rgba_bytes.clone()).ok_or_else(|| {
-            "Failed to materialize RGBA source frame for native scanner inference.".to_string()
-        })?;
-    Ok(DynamicImage::ImageRgba8(image))
-}
-
 pub(crate) fn build_dynamic_image_from_preview_frame_packet(packet: &[u8]) -> Result<DynamicImage, String> {
-    let (width, height, payload) = parse_preview_frame_packet(packet)?;
-    let rgb = decode_i420_payload_to_rgb_image(payload, width, height)?;
-    Ok(DynamicImage::ImageRgb8(rgb))
-}
-
-fn parse_preview_frame_packet(packet: &[u8]) -> Result<(u32, u32, &[u8]), String> {
-    if packet.len() < FRAME_PACKET_HEADER_SIZE {
-        return Err("Preview frame packet is shorter than the protocol header.".to_string());
-    }
-
-    let codec = packet[0];
-    if codec != FRAME_CODEC_I420 && codec != FRAME_CODEC_I420_TELEMETRY {
-        return Err(format!(
-            "Native ORT preview detect expected an I420 preview packet, got codec {codec}."
-        ));
-    }
-
-    let width = u32::from_be_bytes([packet[1], packet[2], packet[3], packet[4]]);
-    let height = u32::from_be_bytes([packet[5], packet[6], packet[7], packet[8]]);
-    let payload_offset = if codec == FRAME_CODEC_I420_TELEMETRY {
-        FRAME_PACKET_HEADER_SIZE + FRAME_PACKET_TELEMETRY_SIZE
-    } else {
-        FRAME_PACKET_HEADER_SIZE
-    };
-
-    if packet.len() < payload_offset {
-        return Err("Preview frame packet telemetry header is truncated.".to_string());
-    }
-
-    Ok((width, height, &packet[payload_offset..]))
-}
-
-fn decode_i420_payload_to_rgb_image(
-    payload: &[u8],
-    width: u32,
-    height: u32,
-) -> Result<RgbImage, String> {
-    if width == 0 || height == 0 {
-        return Err("Preview frame dimensions must be greater than zero.".to_string());
-    }
-
-    if width % 2 != 0 || height % 2 != 0 {
-        return Err(format!(
-            "I420 preview frames require even dimensions, got {}x{}.",
-            width, height
-        ));
-    }
-
-    let width_usize = width as usize;
-    let height_usize = height as usize;
-    let luma_len = width_usize * height_usize;
-    let chroma_width = width_usize / 2;
-    let chroma_height = height_usize / 2;
-    let chroma_len = chroma_width * chroma_height;
-    let expected_len = luma_len + (2 * chroma_len);
-
-    if payload.len() != expected_len {
-        return Err(format!(
-            "Invalid I420 preview payload size: expected {expected_len}, got {}.",
-            payload.len()
-        ));
-    }
-
-    let y_plane = &payload[..luma_len];
-    let u_plane = &payload[luma_len..luma_len + chroma_len];
-    let v_plane = &payload[luma_len + chroma_len..];
-    let mut image = RgbImage::new(width, height);
-    let output = image.as_mut();
-
-    for row in 0..height_usize {
-        let y_row = row * width_usize;
-        let uv_row = (row / 2) * chroma_width;
-        for col in 0..width_usize {
-            let y = i32::from(y_plane[y_row + col]);
-            let u = i32::from(u_plane[uv_row + (col / 2)]);
-            let v = i32::from(v_plane[uv_row + (col / 2)]);
-            let c = (y - 16).max(0);
-            let d = u - 128;
-            let e = v - 128;
-            let r = ((298 * c + 409 * e + 128) >> 8).clamp(0, 255) as u8;
-            let g = ((298 * c - 100 * d - 208 * e + 128) >> 8).clamp(0, 255) as u8;
-            let b = ((298 * c + 516 * d + 128) >> 8).clamp(0, 255) as u8;
-            let offset = (y_row + col) * 3;
-            output[offset] = r;
-            output[offset + 1] = g;
-            output[offset + 2] = b;
-        }
-    }
-
-    Ok(image)
+    scanner_frame_protocol::build_dynamic_image_from_preview_frame_packet(packet)
 }
 
 fn prepare_inference_image(
@@ -1001,8 +899,8 @@ fn build_scanner_detect_config_response(
     ScannerDetectConfigResponse {
         config: handle.config.clone(),
         source: handle.source.to_string(),
-        resolved_path: path_to_string(&handle.resolved_path),
-        writable_path: path_to_string(&writable_path),
+        resolved_path: scanner_resource::path_to_string(&handle.resolved_path),
+        writable_path: scanner_resource::path_to_string(&writable_path),
     }
 }
 
@@ -1020,8 +918,8 @@ fn resolve_scanner_detect_config(
     resource_dir_hint: Option<PathBuf>,
     app_config_dir_hint: Option<PathBuf>,
 ) -> Result<ScannerDetectConfigHandle, String> {
-    let resource_root_candidates = build_resource_root_candidates(resource_dir_hint);
-    let selected_resource_root = select_resource_root(&resource_root_candidates)
+    let resource_root_candidates = scanner_resource::build_resource_root_candidates(resource_dir_hint);
+    let selected_resource_root = scanner_resource::select_resource_root(&resource_root_candidates, &DETECT_INTERESTING_PATHS)
         .ok_or_else(|| "Could not resolve the scanner resource directory.".to_string())?;
     let default_config_path = selected_resource_root.path.join(CONFIG_RELATIVE_PATH);
     let override_config_path = build_scanner_detect_config_writable_path(app_config_dir_hint).ok();
@@ -1049,13 +947,13 @@ fn load_scanner_detect_config_from_path(path: &Path) -> Result<ScannerDetectConf
     let raw = fs::read_to_string(path).map_err(|error| {
         format!(
             "Failed to read scanner ORT config {}: {error}",
-            path_to_string(path)
+            scanner_resource::path_to_string(path)
         )
     })?;
     let config = serde_json::from_str::<ScannerDetectConfig>(&raw).map_err(|error| {
         format!(
             "Failed to parse scanner ORT config {}: {error}",
-            path_to_string(path)
+            scanner_resource::path_to_string(path)
         )
     })?;
     validate_scanner_detect_config(&config)?;
@@ -1067,7 +965,7 @@ fn write_scanner_detect_config(path: &Path, config: &ScannerDetectConfig) -> Res
         fs::create_dir_all(parent).map_err(|error| {
             format!(
                 "Failed to create scanner ORT config directory {}: {error}",
-                path_to_string(parent)
+                scanner_resource::path_to_string(parent)
             )
         })?;
     }
@@ -1077,7 +975,7 @@ fn write_scanner_detect_config(path: &Path, config: &ScannerDetectConfig) -> Res
     fs::write(path, payload + "\n").map_err(|error| {
         format!(
             "Failed to write scanner ORT config {}: {error}",
-            path_to_string(path)
+            scanner_resource::path_to_string(path)
         )
     })
 }
@@ -1150,61 +1048,20 @@ fn reset_ort_session_cache() {
     state.session_error = None;
 }
 
-fn build_resource_root_candidates(
-    resource_dir_hint: Option<PathBuf>,
-) -> Vec<ResourceRootCandidate> {
-    let mut candidates = Vec::new();
-    let mut seen = HashSet::new();
 
-    let mut push_candidate = |source: &'static str, path: PathBuf| {
-        if seen.insert(path.clone()) {
-            candidates.push(ResourceRootCandidate { source, path });
-        }
-    };
+/// Interesting paths used to score resource roots for the detection subsystem.
+const DETECT_INTERESTING_PATHS: [&str; 9] = [
+    CONFIG_RELATIVE_PATH,
+    "models/docaligner-fastvit_sa24.onnx",
+    "models/document-boundary-ORT-pose.onnx",
+    WINDOWS_ORT_RELATIVE_PATH,
+    WINDOWS_ORT_SHARED_RELATIVE_PATH,
+    WINDOWS_DIRECTML_RELATIVE_PATH,
+    LINUX_ORT_RELATIVE_PATH,
+    LINUX_TENSORRT_RELATIVE_PATH,
+    LINUX_CUDA_RELATIVE_PATH,
+];
 
-    if let Some(resource_dir) = resource_dir_hint {
-        push_candidate("tauri-resource-dir", resource_dir);
-    }
-
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    push_candidate("cargo-manifest-resources", manifest_dir.join("resources"));
-
-    if let Ok(current_dir) = std::env::current_dir() {
-        push_candidate("cwd-resources", current_dir.join("resources"));
-        push_candidate(
-            "cwd-src-tauri-resources",
-            current_dir.join("src-tauri").join("resources"),
-        );
-    }
-
-    candidates
-}
-
-fn select_resource_root(candidates: &[ResourceRootCandidate]) -> Option<ResourceRootCandidate> {
-    candidates
-        .iter()
-        .max_by_key(|candidate| score_resource_root(&candidate.path))
-        .cloned()
-}
-
-fn score_resource_root(root: &Path) -> usize {
-    let interesting_paths = [
-        CONFIG_RELATIVE_PATH,
-        "models/docaligner-fastvit_sa24.onnx",
-        "models/document-boundary-ORT-pose.onnx",
-        WINDOWS_ORT_RELATIVE_PATH,
-        WINDOWS_ORT_SHARED_RELATIVE_PATH,
-        WINDOWS_DIRECTML_RELATIVE_PATH,
-        LINUX_ORT_RELATIVE_PATH,
-        LINUX_TENSORRT_RELATIVE_PATH,
-        LINUX_CUDA_RELATIVE_PATH,
-    ];
-
-    interesting_paths
-        .iter()
-        .filter(|relative_path| root.join(relative_path).exists())
-        .count()
-}
 
 fn resource_specs_for_current_platform(config: Option<&ScannerDetectConfig>) -> Vec<ResourceSpec> {
     let mut specs = vec![ResourceSpec {
@@ -1281,7 +1138,7 @@ fn build_resource_statuses(
             ScannerDetectResourceStatus {
                 key: spec.key.clone(),
                 relative_path: spec.relative_path.clone(),
-                resolved_path: resolved_path.as_deref().map(path_to_string),
+                resolved_path: resolved_path.as_deref().map(scanner_resource::path_to_string),
                 exists,
                 required: spec.required,
             }
@@ -1297,61 +1154,20 @@ fn resource_exists(resources: &[ScannerDetectResourceStatus], key: &str) -> bool
         .unwrap_or(false)
 }
 
-fn platform_target_for_current_platform() -> &'static str {
-    match std::env::consts::OS {
-        "windows" => "windows-directml",
-        "linux" => "linux-tensorrt-cuda",
-        _ => "desktop-unsupported",
-    }
-}
-
-fn provider_candidates_for_current_platform() -> Vec<&'static str> {
-    match std::env::consts::OS {
-        "windows" => vec!["DirectML", "CPU"],
-        "linux" => vec!["TensorRT", "CUDA", "CPU"],
-        _ => vec!["CPU"],
-    }
-}
-
-fn default_preferred_provider_for_current_platform() -> &'static str {
-    match std::env::consts::OS {
-        "windows" => "DirectML",
-        "linux" => "TensorRT",
-        _ => "CPU",
-    }
-}
-
 fn preferred_provider_from_config(config: &ScannerDetectConfig) -> String {
     match std::env::consts::OS {
         "windows" => config
             .windows
             .as_ref()
             .map(|windows| windows.preferred_provider.clone())
-            .unwrap_or_else(|| default_preferred_provider_for_current_platform().to_string()),
+            .unwrap_or_else(|| scanner_platform::default_preferred_provider().to_string()),
         "linux" => config
             .linux
             .as_ref()
             .and_then(|linux| linux.preferred_providers.first().cloned())
-            .unwrap_or_else(|| default_preferred_provider_for_current_platform().to_string()),
-        _ => default_preferred_provider_for_current_platform().to_string(),
+            .unwrap_or_else(|| scanner_platform::default_preferred_provider().to_string()),
+        _ => scanner_platform::default_preferred_provider().to_string(),
     }
-}
-
-fn normalize_provider_name(provider: &str) -> String {
-    match provider.trim().to_ascii_lowercase().as_str() {
-        "directml" => "DirectML".to_string(),
-        "tensorrt" => "TensorRT".to_string(),
-        "cuda" => "CUDA".to_string(),
-        "cpu" => "CPU".to_string(),
-        other => other.to_string(),
-    }
-}
-
-fn is_provider_available(preferred_provider: &str, available_providers: &[String]) -> bool {
-    let normalized = normalize_provider_name(preferred_provider);
-    available_providers
-        .iter()
-        .any(|provider| normalize_provider_name(provider) == normalized)
 }
 
 fn candidate_model_variants(config: &ScannerDetectConfig) -> Vec<ResolvedScannerModel> {
@@ -1427,8 +1243,8 @@ fn build_detection_runtime_context(
     resource_dir_hint: Option<PathBuf>,
     app_config_dir_hint: Option<PathBuf>,
 ) -> Result<DetectionRuntimeContext, String> {
-    let resource_root_candidates = build_resource_root_candidates(resource_dir_hint);
-    let selected_resource_root = select_resource_root(&resource_root_candidates)
+    let resource_root_candidates = scanner_resource::build_resource_root_candidates(resource_dir_hint);
+    let selected_resource_root = scanner_resource::select_resource_root(&resource_root_candidates, &DETECT_INTERESTING_PATHS)
         .ok_or_else(|| "Could not resolve the scanner resource directory.".to_string())?;
     let resource_base_dir = selected_resource_root.path;
     let config_handle =
@@ -1458,10 +1274,10 @@ pub(crate) fn ensure_shared_scanner_ort_context(
         .as_ref()
         .ok()
         .map(|context| context.preferred_provider.clone())
-        .unwrap_or_else(|| default_preferred_provider_for_current_platform().to_string());
+        .unwrap_or_else(|| scanner_platform::default_preferred_provider().to_string());
     let runtime_snapshot = probe_ort_runtime(resource_base_dir.as_deref());
     let preferred_provider_ready =
-        is_provider_available(&preferred_provider, &runtime_snapshot.available_providers);
+        scanner_platform::is_provider_available(&preferred_provider, &runtime_snapshot.available_providers);
 
     SharedScannerOrtContext {
         preferred_provider,
@@ -1501,7 +1317,7 @@ fn probe_ort_runtime(resource_base_dir: Option<&Path>) -> OrtRuntimeSnapshot {
             ready: false,
             runtime_error: Some(format!(
                 "Missing ONNX Runtime library: {}.",
-                path_to_string(&runtime_library_path)
+                scanner_resource::path_to_string(&runtime_library_path)
             )),
             ort_build_info: None,
             available_providers: Vec::new(),
@@ -1525,7 +1341,7 @@ fn probe_ort_runtime(resource_base_dir: Option<&Path>) -> OrtRuntimeSnapshot {
             .map_err(|error| {
                 format!(
                     "Failed to initialize ONNX Runtime from {}: {error}",
-                    path_to_string(&runtime_library_path)
+                    scanner_resource::path_to_string(&runtime_library_path)
                 )
             });
 
@@ -1569,7 +1385,7 @@ fn ensure_ort_session(
             ready: false,
             session_error: Some(format!(
                 "Missing ONNX model file: {}.",
-                path_to_string(&model_path)
+                scanner_resource::path_to_string(&model_path)
             )),
         };
     }
@@ -1945,7 +1761,7 @@ fn available_providers_for_current_platform() -> Vec<String> {
 pub(crate) fn build_scanner_execution_providers(
     preferred_provider: &str,
 ) -> Vec<ort::execution_providers::ExecutionProviderDispatch> {
-    let normalized = normalize_provider_name(preferred_provider);
+    let normalized = scanner_platform::normalize_provider_name(preferred_provider);
 
     match std::env::consts::OS {
         "windows" => {
@@ -1984,13 +1800,13 @@ pub(crate) fn build_scanner_execution_providers(
     }
 }
 
-fn path_to_string(path: &Path) -> String {
-    path.to_string_lossy().into_owned()
-}
+
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use crate::scanner_frame_protocol::FRAME_CODEC_I420_TELEMETRY;
     use crate::stream_decoder::replace_latest_preview_frame_packet;
 
     fn sample_scanner_detect_config() -> ScannerDetectConfig {
@@ -2055,7 +1871,7 @@ mod tests {
 
     #[test]
     fn current_platform_has_expected_provider_candidates() {
-        let providers = provider_candidates_for_current_platform();
+        let providers = scanner_platform::provider_candidates();
         assert!(!providers.is_empty());
         assert!(providers.contains(&"CPU"));
     }
@@ -2156,9 +1972,9 @@ mod tests {
     }
 
     #[test]
-    fn resolve_detect_input_image_uses_latest_preview_frame_cache() {
-        replace_latest_preview_frame_packet(Some(sample_preview_frame_packet()));
-        let request = ScannerDetectDocumentRequest {
+    fn resolve_detect_input_uses_latest_preview_frame_cache() {
+        replace_latest_preview_frame_packet(Some(Arc::new(sample_preview_frame_packet())));
+        let mut request = ScannerDetectDocumentRequest {
             source_bytes: Vec::new(),
             rgba_bytes: Vec::new(),
             use_latest_preview_frame: true,
@@ -2166,10 +1982,11 @@ mod tests {
             rgba_height: None,
             max_width: Some(2),
             max_height: Some(2),
+            backend: None,
         };
 
         let resolved =
-            resolve_detect_input_image(&request).expect("latest preview cache should resolve");
+            resolve_detect_input(&mut request).expect("latest preview cache should resolve");
         assert_eq!(resolved.input_transport, "latest-preview-cache");
         let image = resolved
             .prepared_image
@@ -2179,9 +1996,9 @@ mod tests {
     }
 
     #[test]
-    fn resolve_detect_input_image_handles_missing_latest_preview_frame() {
+    fn resolve_detect_input_handles_missing_latest_preview_frame() {
         replace_latest_preview_frame_packet(None);
-        let request = ScannerDetectDocumentRequest {
+        let mut request = ScannerDetectDocumentRequest {
             source_bytes: Vec::new(),
             rgba_bytes: Vec::new(),
             use_latest_preview_frame: true,
@@ -2189,9 +2006,10 @@ mod tests {
             rgba_height: None,
             max_width: None,
             max_height: None,
+            backend: None,
         };
 
-        let resolved = resolve_detect_input_image(&request)
+        let resolved = resolve_detect_input(&mut request)
             .expect("missing latest preview frame should not error");
         assert_eq!(resolved.input_transport, "latest-preview-cache");
         assert!(resolved.prepared_image.is_none());

@@ -15,10 +15,14 @@ use tauri::{
     command,
     ipc::{Channel, InvokeResponseBody},
 };
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, BufReader};
 use tokio::net::TcpStream;
 use tokio::task::spawn_blocking;
 use tokio::time::sleep;
+
+use crate::scanner_frame_protocol::{
+    self, FRAME_CODEC_I420_TELEMETRY, FRAME_PACKET_HEADER_SIZE, FRAME_PACKET_TELEMETRY_SIZE,
+};
 
 /// Shared flag to signal the decode loop to stop.
 static STREAMING: AtomicBool = AtomicBool::new(false);
@@ -28,7 +32,7 @@ static STREAM_SESSION_ID: AtomicU64 = AtomicU64::new(0);
 /// Frame counter for periodic perf logging.
 static FRAME_SEQ: AtomicU64 = AtomicU64::new(0);
 /// The most recent preview frame packet, retained for Rust-side live preview consumers.
-static LATEST_PREVIEW_FRAME_PACKET: OnceLock<Mutex<Option<Vec<u8>>>> = OnceLock::new();
+static LATEST_PREVIEW_FRAME_PACKET: OnceLock<Mutex<Option<Arc<Vec<u8>>>>> = OnceLock::new();
 
 /// Dynamic preview size limits, set from frontend settings at stream start.
 static MAX_PREVIEW_W: AtomicUsize = AtomicUsize::new(DEFAULT_MAX_PREVIEW_WIDTH);
@@ -47,13 +51,6 @@ const RECONNECT_RETRY_BASE_DELAY_MS: u64 = 100;
 /// Upper bound for reconnect backoff.
 const RECONNECT_RETRY_MAX_DELAY_MS: u64 = 800;
 
-/// Packet layout: codec byte + width + height.
-const FRAME_PACKET_HEADER_SIZE: usize = 9;
-/// Optional benchmark telemetry layout: unix epoch ms + frame sequence.
-const FRAME_PACKET_TELEMETRY_SIZE: usize = 12;
-
-/// Downscaled I420 preview frame payload with telemetry for end-to-end IPC measurement.
-const FRAME_CODEC_I420_TELEMETRY: u8 = 4;
 
 /// Default preview size cap; overridden by frontend settings at stream start.
 const DEFAULT_MAX_PREVIEW_WIDTH: usize = 640;
@@ -69,18 +66,18 @@ struct PreviewFrame {
     preview_pack_ms: f64,
 }
 
-fn latest_preview_frame_packet_state() -> &'static Mutex<Option<Vec<u8>>> {
+fn latest_preview_frame_packet_state() -> &'static Mutex<Option<Arc<Vec<u8>>>> {
     LATEST_PREVIEW_FRAME_PACKET.get_or_init(|| Mutex::new(None))
 }
 
-pub(crate) fn replace_latest_preview_frame_packet(packet: Option<Vec<u8>>) {
+pub(crate) fn replace_latest_preview_frame_packet(packet: Option<Arc<Vec<u8>>>) {
     let mut state = latest_preview_frame_packet_state()
         .lock()
         .expect("latest preview frame packet mutex should not be poisoned");
     *state = packet;
 }
 
-pub(crate) fn get_latest_preview_frame_packet() -> Option<Vec<u8>> {
+pub(crate) fn get_latest_preview_frame_packet() -> Option<Arc<Vec<u8>>> {
     latest_preview_frame_packet_state()
         .lock()
         .expect("latest preview frame packet mutex should not be poisoned")
@@ -183,6 +180,34 @@ pub async fn tauri_scanner_stop_stream() -> Result<(), String> {
 }
 
 /// Internal decode loop that reads NAL units from TCP and decodes them.
+
+/// Format context-specific messages for a recoverable stream reconnect.
+fn format_reconnect_messages(
+    error: &std::io::Error,
+    has_received_frame: bool,
+    phase: &str,
+) -> (String, String) {
+    let detail = if has_received_frame {
+        format!(
+            "Preview {phase} interrupted ({error}). Reconnecting decoder transport."
+        )
+    } else {
+        format!(
+            "Preview stream {phase} closed before the first frame ({error}). Waiting for the scanner socket to become ready."
+        )
+    };
+    let exhaust_msg = if has_received_frame {
+        format!(
+            "Preview {phase} kept failing after {STREAM_RECONNECT_MAX_ATTEMPTS} reconnect attempts: {error}"
+        )
+    } else {
+        format!(
+            "Preview stream {phase} closed before the first frame after {STREAM_RECONNECT_MAX_ATTEMPTS} reconnect attempts: {error}"
+        )
+    };
+    (detail, exhaust_msg)
+}
+
 async fn decode_stream_loop(
     port: u16,
     frame_channel: Channel<InvokeResponseBody>,
@@ -191,7 +216,6 @@ async fn decode_stream_loop(
 ) -> Result<DecodeLoopExit, String> {
     let address = format!("127.0.0.1:{port}");
     let mut reconnect_attempt = 0usize;
-    let mut has_received_frame = false;
     let (mut stream, mut decoder) = connect_decoder_stream(
         &address,
         STARTUP_CONNECT_MAX_ATTEMPTS,
@@ -201,8 +225,10 @@ async fn decode_stream_loop(
         session_id,
     )
     .await?;
+    let mut has_received_frame = false;
 
     let mut length_buf = [0u8; 4];
+    let mut nal_buf: Vec<u8> = Vec::with_capacity(256 * 1024);
     let loop_start = Instant::now();
     let mut last_overall_log_sec = 0;
 
@@ -220,27 +246,11 @@ async fn decode_stream_loop(
 
             if is_recoverable_stream_error(&error) {
                 reconnect_attempt += 1;
+                let (detail, exhaust_msg) = format_reconnect_messages(&error, has_received_frame, "socket read");
                 if reconnect_attempt > STREAM_RECONNECT_MAX_ATTEMPTS {
-                    return if has_received_frame {
-                        Err(format!(
-                            "Preview stream closed unexpectedly after {STREAM_RECONNECT_MAX_ATTEMPTS} reconnect attempts: {error}"
-                        ))
-                    } else {
-                        Err(format!(
-                            "Preview stream closed before the first frame after {STREAM_RECONNECT_MAX_ATTEMPTS} reconnect attempts: {error}"
-                        ))
-                    };
+                    return Err(exhaust_msg);
                 }
 
-                let detail = if has_received_frame {
-                    format!(
-                        "Preview socket read interrupted ({error}). Reconnecting decoder transport."
-                    )
-                } else {
-                    format!(
-                        "Preview stream closed before the first frame ({error}). Waiting for the scanner socket to become ready."
-                    )
-                };
                 log::warn!("{detail}");
                 send_decoder_status(
                     &status_channel,
@@ -278,35 +288,19 @@ async fn decode_stream_loop(
             continue;
         }
 
-        let mut nal_data = vec![0u8; nal_length];
-        if let Err(error) = stream.read_exact(&mut nal_data).await {
+        nal_buf.resize(nal_length, 0);
+        if let Err(error) = stream.read_exact(&mut nal_buf[..nal_length]).await {
             if !is_stream_session_current(session_id) {
                 return Ok(DecodeLoopExit::ManualStop);
             }
 
             if is_recoverable_stream_error(&error) {
                 reconnect_attempt += 1;
+                let (detail, exhaust_msg) = format_reconnect_messages(&error, has_received_frame, "payload read");
                 if reconnect_attempt > STREAM_RECONNECT_MAX_ATTEMPTS {
-                    return if has_received_frame {
-                        Err(format!(
-                            "Preview payload read kept failing after {STREAM_RECONNECT_MAX_ATTEMPTS} reconnect attempts: {error}"
-                        ))
-                    } else {
-                        Err(format!(
-                            "Preview stream payload closed before the first frame after {STREAM_RECONNECT_MAX_ATTEMPTS} reconnect attempts: {error}"
-                        ))
-                    };
+                    return Err(exhaust_msg);
                 }
 
-                let detail = if has_received_frame {
-                    format!(
-                        "Preview payload read interrupted ({error}). Reconnecting decoder transport."
-                    )
-                } else {
-                    format!(
-                        "Preview stream payload closed before the first frame ({error}). Waiting for the scanner socket to become ready."
-                    )
-                };
                 log::warn!("{detail}");
                 send_decoder_status(
                     &status_channel,
@@ -336,8 +330,13 @@ async fn decode_stream_loop(
         }
 
         let tcp_read_ms = iter_start.elapsed().as_secs_f64() * 1000.0;
+        // Copy NAL data for the blocking decode task.  The copy reuses the
+        // nal_buf allocation across frames (only the copy is allocated fresh
+        // if the blocking thread hasn't returned the previous one yet, which
+        // is the steady-state since decode is CPU-bound).
+        let nal_snapshot = nal_buf[..nal_length].to_vec();
         let decoder_clone = decoder.clone();
-        let decode_result = spawn_blocking(move || decode_nal_to_preview(decoder_clone, nal_data))
+        let decode_result = spawn_blocking(move || decode_nal_to_preview(decoder_clone, nal_snapshot))
             .await
             .map_err(|error| format!("Decode task panicked: {error}"))?;
 
@@ -354,8 +353,14 @@ async fn decode_stream_loop(
                     .duration_since(UNIX_EPOCH)
                     .map_err(|error| format!("System clock drifted before unix epoch: {error}"))?
                     .as_millis() as u64;
-                write_frame_telemetry(&mut preview_packet, sent_at_epoch_ms, seq as u32)?;
-                replace_latest_preview_frame_packet(Some(preview_packet.clone()));
+                scanner_frame_protocol::write_frame_telemetry(&mut preview_packet, sent_at_epoch_ms, seq as u32)?;
+                // Wrap the packet in Arc so detection consumers get a cheap
+                // ref-count bump instead of a full clone.  After storing the
+                // Arc for detection, try_unwrap recovers the original Vec
+                // for the IPC send without copying in the common case where
+                // detection has already released its reference.
+                let shared_packet = Arc::new(preview_packet);
+                replace_latest_preview_frame_packet(Some(Arc::clone(&shared_packet)));
 
                 if seq % 15 == 0 {
                     log::info!(
@@ -371,8 +376,10 @@ async fn decode_stream_loop(
                     );
                 }
 
+                let ipc_packet = Arc::try_unwrap(shared_packet)
+                    .unwrap_or_else(|arc| (*arc).clone());
                 frame_channel
-                    .send(InvokeResponseBody::Raw(preview_packet))
+                    .send(InvokeResponseBody::Raw(ipc_packet))
                     .map_err(|error| {
                         format!("Failed to deliver the preview frame to the frontend: {error}")
                     })?;
@@ -408,10 +415,16 @@ fn decode_nal_to_preview(
     decoder: Arc<Mutex<Decoder>>,
     nal_data: Vec<u8>,
 ) -> Result<Option<PreviewFrame>, String> {
+    // Ensure Annex-B start code prefix for openh264.
+    // With KEY_PREPEND_SPS_PPS_TO_IDR_FRAMES=1, the vast majority of NALs
+    // already carry the start code and take the zero-alloc fast path.
     let data = if nal_data.starts_with(&[0, 0, 0, 1]) || nal_data.starts_with(&[0, 0, 1]) {
         nal_data
     } else {
-        let mut prefixed = vec![0, 0, 0, 1];
+        // Rare path: prepend start code.  Reuse the original allocation
+        // when capacity permits to avoid a fresh heap allocation.
+        let mut prefixed = Vec::with_capacity(4 + nal_data.len());
+        prefixed.extend_from_slice(&[0, 0, 0, 1]);
         prefixed.extend_from_slice(&nal_data);
         prefixed
     };
@@ -430,7 +443,7 @@ fn decode_nal_to_preview(
                 select_preview_dimensions(source_width, source_height);
 
             let pack_start = Instant::now();
-            let payload_len = compute_i420_payload_len(preview_width, preview_height);
+            let payload_len = scanner_frame_protocol::compute_i420_payload_len(preview_width, preview_height);
             let packet = pack_i420_preview_packet(
                 decoded_yuv.y(),
                 decoded_yuv.u(),
@@ -463,28 +476,9 @@ fn decode_nal_to_preview(
 
 /// Pick a preview size that limits IPC cost while keeping aspect ratio and I420 alignment.
 fn select_preview_dimensions(width: usize, height: usize) -> (usize, usize, usize) {
-    let max_w = MAX_PREVIEW_W.load(Ordering::Relaxed).max(2);
-    let max_h = MAX_PREVIEW_H.load(Ordering::Relaxed).max(2);
-    let mut factor = ((width + max_w - 1) / max_w)
-        .max((height + max_h - 1) / max_h)
-        .max(1);
-    let mut preview_width = clamp_even_dimension(width / factor);
-    let mut preview_height = clamp_even_dimension(height / factor);
-
-    while preview_width > max_w || preview_height > max_h {
-        factor += 1;
-        preview_width = clamp_even_dimension(width / factor);
-        preview_height = clamp_even_dimension(height / factor);
-    }
-
-    (preview_width, preview_height, factor.max(1))
-}
-
-/// Compute the payload length for a tightly packed I420 frame.
-fn compute_i420_payload_len(preview_width: usize, preview_height: usize) -> usize {
-    let preview_chroma_width = preview_width / 2;
-    let preview_chroma_height = preview_height / 2;
-    preview_width * preview_height + 2 * (preview_chroma_width * preview_chroma_height)
+    let max_w = MAX_PREVIEW_W.load(Ordering::Relaxed);
+    let max_h = MAX_PREVIEW_H.load(Ordering::Relaxed);
+    scanner_frame_protocol::select_preview_dimensions(width, height, max_w, max_h)
 }
 
 /// Pack a preview I420 frame into a binary frame packet.
@@ -503,7 +497,7 @@ fn pack_i420_preview_packet(
     debug_assert_eq!(preview_width % 2, 0);
     debug_assert_eq!(preview_height % 2, 0);
 
-    let expected_payload_len = compute_i420_payload_len(preview_width, preview_height);
+    let expected_payload_len = scanner_frame_protocol::compute_i420_payload_len(preview_width, preview_height);
     let preview_chroma_width = preview_width / 2;
     let preview_chroma_height = preview_height / 2;
     let mut packet = Vec::with_capacity(
@@ -515,27 +509,9 @@ fn pack_i420_preview_packet(
     packet.resize(FRAME_PACKET_HEADER_SIZE + FRAME_PACKET_TELEMETRY_SIZE, 0);
 
     if factor == 1 {
-        append_plane_contiguous(
-            &mut packet,
-            y_plane,
-            preview_width,
-            preview_height,
-            y_stride,
-        );
-        append_plane_contiguous(
-            &mut packet,
-            u_plane,
-            preview_chroma_width,
-            preview_chroma_height,
-            u_stride,
-        );
-        append_plane_contiguous(
-            &mut packet,
-            v_plane,
-            preview_chroma_width,
-            preview_chroma_height,
-            v_stride,
-        );
+        scanner_frame_protocol::append_plane_contiguous(&mut packet, y_plane, preview_width, preview_height, y_stride);
+        scanner_frame_protocol::append_plane_contiguous(&mut packet, u_plane, preview_chroma_width, preview_chroma_height, u_stride);
+        scanner_frame_protocol::append_plane_contiguous(&mut packet, v_plane, preview_chroma_width, preview_chroma_height, v_stride);
         debug_assert_eq!(
             packet.len(),
             FRAME_PACKET_HEADER_SIZE + FRAME_PACKET_TELEMETRY_SIZE + expected_payload_len
@@ -543,106 +519,16 @@ fn pack_i420_preview_packet(
         return packet;
     }
 
-    append_downsampled_plane_by_factor(
-        &mut packet,
-        y_plane,
-        preview_width,
-        preview_height,
-        y_stride,
-        factor,
-    );
-    append_downsampled_plane_by_factor(
-        &mut packet,
-        u_plane,
-        preview_chroma_width,
-        preview_chroma_height,
-        u_stride,
-        factor.max(1),
-    );
-    append_downsampled_plane_by_factor(
-        &mut packet,
-        v_plane,
-        preview_chroma_width,
-        preview_chroma_height,
-        v_stride,
-        factor.max(1),
-    );
+    let mut row_buf = vec![0u8; preview_width];
+    scanner_frame_protocol::append_downsampled_plane_by_factor(&mut packet, y_plane, preview_width, preview_height, y_stride, factor, &mut row_buf);
+    scanner_frame_protocol::append_downsampled_plane_by_factor(&mut packet, u_plane, preview_chroma_width, preview_chroma_height, u_stride, factor.max(1), &mut row_buf);
+    scanner_frame_protocol::append_downsampled_plane_by_factor(&mut packet, v_plane, preview_chroma_width, preview_chroma_height, v_stride, factor.max(1), &mut row_buf);
 
     debug_assert_eq!(
         packet.len(),
         FRAME_PACKET_HEADER_SIZE + FRAME_PACKET_TELEMETRY_SIZE + expected_payload_len
     );
     packet
-}
-
-fn write_frame_telemetry(
-    packet: &mut [u8],
-    sent_at_epoch_ms: u64,
-    sequence: u32,
-) -> Result<(), String> {
-    let telemetry_end = FRAME_PACKET_HEADER_SIZE + FRAME_PACKET_TELEMETRY_SIZE;
-    if packet.len() < telemetry_end {
-        return Err(format!(
-            "Preview frame packet is too short to store telemetry: {} bytes.",
-            packet.len()
-        ));
-    }
-
-    packet[FRAME_PACKET_HEADER_SIZE..FRAME_PACKET_HEADER_SIZE + 8]
-        .copy_from_slice(&sent_at_epoch_ms.to_be_bytes());
-    packet[FRAME_PACKET_HEADER_SIZE + 8..telemetry_end].copy_from_slice(&sequence.to_be_bytes());
-    Ok(())
-}
-
-/// Clamp a dimension to a valid even I420 size.
-fn clamp_even_dimension(value: usize) -> usize {
-    if value <= 2 {
-        return 2;
-    }
-
-    value & !1
-}
-
-/// Append a strided image plane to a tightly packed destination buffer.
-fn append_plane_contiguous(
-    destination: &mut Vec<u8>,
-    plane: &[u8],
-    width: usize,
-    height: usize,
-    stride: usize,
-) {
-    if stride == width {
-        destination.extend_from_slice(&plane[..width * height]);
-        return;
-    }
-
-    for row in 0..height {
-        let row_start = row * stride;
-        destination.extend_from_slice(&plane[row_start..row_start + width]);
-    }
-}
-
-/// Append a downscaled image plane by sampling every `factor`th pixel.
-fn append_downsampled_plane_by_factor(
-    destination: &mut Vec<u8>,
-    plane: &[u8],
-    width: usize,
-    height: usize,
-    stride: usize,
-    factor: usize,
-) {
-    if factor <= 1 {
-        append_plane_contiguous(destination, plane, width, height, stride);
-        return;
-    }
-
-    for row in 0..height {
-        let row_start = row * factor * stride;
-        let source_row = &plane[row_start..row_start + (width * factor)];
-        for value in source_row.iter().step_by(factor).take(width) {
-            destination.push(*value);
-        }
-    }
 }
 
 /// Copy a strided image plane into a tightly packed buffer.
@@ -707,7 +593,7 @@ async fn connect_decoder_stream(
     detail_prefix: &str,
     status_channel: &Channel<DecoderLifecycleEvent>,
     session_id: u64,
-) -> Result<(TcpStream, Arc<Mutex<Decoder>>), String> {
+) -> Result<(BufReader<TcpStream>, Arc<Mutex<Decoder>>), String> {
     let mut attempts = 0usize;
 
     loop {
@@ -757,7 +643,7 @@ async fn connect_decoder_stream(
                         reconnect_attempt.max(attempts),
                     );
                 }
-                return Ok((stream, create_decoder()?));
+                return Ok((BufReader::with_capacity(64 * 1024, stream), create_decoder()?));
             }
             Err(error) => {
                 attempts += 1;

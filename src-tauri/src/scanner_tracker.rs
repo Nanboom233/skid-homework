@@ -253,7 +253,7 @@ mod tests {
 
     #[test]
     fn stability_tracker_needs_enough_frames() {
-        let mut tracker = StabilityTracker::new(3, 8.0);
+        let mut tracker = StabilityTracker::new(3, 8.0, 0);
         assert!(!tracker.push(Some(make_quad(0.0))));
         assert!(!tracker.push(Some(make_quad(0.0))));
         assert!(tracker.push(Some(make_quad(0.0))));
@@ -261,7 +261,7 @@ mod tests {
 
     #[test]
     fn stability_tracker_resets_on_null() {
-        let mut tracker = StabilityTracker::new(3, 8.0);
+        let mut tracker = StabilityTracker::new(3, 8.0, 0);
         tracker.push(Some(make_quad(0.0)));
         tracker.push(Some(make_quad(0.0)));
         assert!(!tracker.push(None));
@@ -270,7 +270,7 @@ mod tests {
 
     #[test]
     fn stability_tracker_detects_motion() {
-        let mut tracker = StabilityTracker::new(3, 5.0);
+        let mut tracker = StabilityTracker::new(3, 5.0, 0);
         tracker.push(Some(make_quad(0.0)));
         tracker.push(Some(make_quad(20.0)));
         assert!(!tracker.push(Some(make_quad(40.0))));

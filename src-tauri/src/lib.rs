@@ -1,10 +1,13 @@
 mod adb_plugin;
 mod png_bridge;
-pub mod scanner_cv_detect;
+mod scanner_cv_detect;
 pub mod scanner_detect;
 pub mod scanner_detect_loop;
+pub mod scanner_frame_protocol;
+mod scanner_platform;
 pub mod scanner_postprocess;
 pub mod scanner_postprocess_model;
+mod scanner_resource;
 mod scanner_transport;
 pub mod scanner_tracker;
 mod stream_decoder;
@@ -22,12 +25,13 @@ pub fn run() {
             adb_plugin::tauri_adb_forward,
             adb_plugin::tauri_adb_remove_forward,
             adb_plugin::tauri_adb_screenshot,
-            scanner_transport::tauri_adb_capture_still,
-            scanner_transport::tauri_adb_capture_still_stream,
             adb_plugin::tauri_adb_start_server,
             adb_plugin::tauri_adb_stop_server,
+            adb_plugin::tauri_adb_await_server_ready,
             adb_plugin::tauri_adb_start_log_tailer,
             adb_plugin::tauri_adb_stop_log_tailer,
+            scanner_transport::tauri_adb_capture_still,
+            scanner_transport::tauri_adb_capture_still_stream,
             png_bridge::tauri_scanner_encode_png_rgba,
             scanner_detect::tauri_scanner_probe_detect,
             scanner_detect::tauri_scanner_read_detect_config,
@@ -39,7 +43,6 @@ pub fn run() {
             scanner_postprocess::tauri_scanner_refine_document_corners,
             stream_decoder::tauri_scanner_start_stream,
             stream_decoder::tauri_scanner_stop_stream,
-            adb_plugin::tauri_adb_await_server_ready,
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {
@@ -54,3 +57,4 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
+

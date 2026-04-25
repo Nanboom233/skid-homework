@@ -1,5 +1,4 @@
 use image::{Rgba, RgbaImage};
-use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -12,6 +11,7 @@ use crate::scanner_detect::{
     build_scanner_execution_providers, configure_scanner_session_builder_for_current_platform,
     ensure_shared_scanner_ort_context,
 };
+use crate::scanner_resource;
 
 const CONFIG_RELATIVE_PATH: &str = "scanner-postprocess-model-config.json";
 
@@ -50,11 +50,7 @@ pub struct ScannerPostProcessModelEntry {
     pub warp_implementation: Option<String>,
 }
 
-#[derive(Debug, Clone)]
-struct ResourceRootCandidate {
-    source: &'static str,
-    path: PathBuf,
-}
+
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -130,8 +126,8 @@ pub fn describe_native_postprocess_model_with_runtime_hints(
     resource_dir_hint: Option<PathBuf>,
     app_config_dir_hint: Option<PathBuf>,
 ) -> ScannerPostProcessModelStatus {
-    let resource_root_candidates = build_resource_root_candidates(resource_dir_hint);
-    let Some(selected_resource_root) = select_resource_root(&resource_root_candidates) else {
+    let resource_root_candidates = scanner_resource::build_resource_root_candidates(resource_dir_hint);
+    let Some(selected_resource_root) = scanner_resource::select_resource_root(&resource_root_candidates, &POSTPROCESS_INTERESTING_PATHS) else {
         return ScannerPostProcessModelStatus {
             config_source: None,
             config_path: None,
@@ -166,7 +162,7 @@ pub fn describe_native_postprocess_model_with_runtime_hints(
     if !config_path.exists() {
         return ScannerPostProcessModelStatus {
             config_source: Some(selected_resource_root.source.to_string()),
-            config_path: Some(path_to_string(&config_path)),
+            config_path: Some(scanner_resource::path_to_string(&config_path)),
             model_id: None,
             model_kind: None,
             model_task: None,
@@ -188,14 +184,14 @@ pub fn describe_native_postprocess_model_with_runtime_hints(
             runtime_error: None,
             session_error: Some(format!(
                 "Missing stage-2 post-process model config: {}.",
-                path_to_string(&config_path)
+                scanner_resource::path_to_string(&config_path)
             )),
             inputs: Vec::new(),
             outputs: Vec::new(),
             model_ready: false,
             message: format!(
                 "Missing stage-2 post-process model config: {}.",
-                path_to_string(&config_path)
+                scanner_resource::path_to_string(&config_path)
             ),
         };
     }
@@ -204,14 +200,14 @@ pub fn describe_native_postprocess_model_with_runtime_hints(
         .map_err(|error| {
             format!(
                 "Failed to read stage-2 post-process model config {}: {error}",
-                path_to_string(&config_path)
+                scanner_resource::path_to_string(&config_path)
             )
         })
         .and_then(|contents| {
             serde_json::from_str::<ScannerPostProcessModelConfig>(&contents).map_err(|error| {
                 format!(
                     "Failed to parse stage-2 post-process model config {}: {error}",
-                    path_to_string(&config_path)
+                    scanner_resource::path_to_string(&config_path)
                 )
             })
         }) {
@@ -219,7 +215,7 @@ pub fn describe_native_postprocess_model_with_runtime_hints(
         Err(error) => {
             return ScannerPostProcessModelStatus {
                 config_source: Some(selected_resource_root.source.to_string()),
-                config_path: Some(path_to_string(&config_path)),
+                config_path: Some(scanner_resource::path_to_string(&config_path)),
                 model_id: None,
                 model_kind: None,
                 model_task: None,
@@ -273,11 +269,11 @@ pub fn describe_native_postprocess_model_with_runtime_hints(
     if !model_path.exists() {
         return ScannerPostProcessModelStatus {
             config_source: Some(selected_resource_root.source.to_string()),
-            config_path: Some(path_to_string(&config_path)),
+            config_path: Some(scanner_resource::path_to_string(&config_path)),
             model_id: Some(model.id),
             model_kind: Some(model.kind),
             model_task: Some(model.task),
-            model_path: Some(path_to_string(&model_path)),
+            model_path: Some(scanner_resource::path_to_string(&model_path)),
             control_grid_shape,
             input_name,
             input_size,
@@ -295,14 +291,14 @@ pub fn describe_native_postprocess_model_with_runtime_hints(
             runtime_error: shared_ort_context.runtime_error,
             session_error: Some(format!(
                 "Stage-2 model is configured but missing: {}.",
-                path_to_string(&model_path)
+                scanner_resource::path_to_string(&model_path)
             )),
             inputs: Vec::new(),
             outputs: Vec::new(),
             model_ready: false,
             message: format!(
                 "Stage-2 model is configured but missing: {}.",
-                path_to_string(&model_path)
+                scanner_resource::path_to_string(&model_path)
             ),
         };
     }
@@ -310,11 +306,11 @@ pub fn describe_native_postprocess_model_with_runtime_hints(
     if let Some(error) = shared_ort_context.context_error.clone() {
         return ScannerPostProcessModelStatus {
             config_source: Some(selected_resource_root.source.to_string()),
-            config_path: Some(path_to_string(&config_path)),
+            config_path: Some(scanner_resource::path_to_string(&config_path)),
             model_id: Some(model.id),
             model_kind: Some(model.kind),
             model_task: Some(model.task),
-            model_path: Some(path_to_string(&model_path)),
+            model_path: Some(scanner_resource::path_to_string(&model_path)),
             control_grid_shape,
             input_name,
             input_size,
@@ -344,11 +340,11 @@ pub fn describe_native_postprocess_model_with_runtime_hints(
         });
         return ScannerPostProcessModelStatus {
             config_source: Some(selected_resource_root.source.to_string()),
-            config_path: Some(path_to_string(&config_path)),
+            config_path: Some(scanner_resource::path_to_string(&config_path)),
             model_id: Some(model.id),
             model_kind: Some(model.kind),
             model_task: Some(model.task),
-            model_path: Some(path_to_string(&model_path)),
+            model_path: Some(scanner_resource::path_to_string(&model_path)),
             control_grid_shape,
             input_name,
             input_size,
@@ -384,11 +380,11 @@ pub fn describe_native_postprocess_model_with_runtime_hints(
             .unwrap_or_else(|| "Stage-2 model session is not ready.".to_string());
         return ScannerPostProcessModelStatus {
             config_source: Some(selected_resource_root.source.to_string()),
-            config_path: Some(path_to_string(&config_path)),
+            config_path: Some(scanner_resource::path_to_string(&config_path)),
             model_id: Some(model.id),
             model_kind: Some(model.kind),
             model_task: Some(model.task),
-            model_path: Some(path_to_string(&model_path)),
+            model_path: Some(scanner_resource::path_to_string(&model_path)),
             control_grid_shape,
             input_name,
             input_size,
@@ -414,11 +410,11 @@ pub fn describe_native_postprocess_model_with_runtime_hints(
 
     ScannerPostProcessModelStatus {
         config_source: Some(selected_resource_root.source.to_string()),
-        config_path: Some(path_to_string(&config_path)),
+        config_path: Some(scanner_resource::path_to_string(&config_path)),
         model_id: Some(model.id),
         model_kind: Some(model.kind),
         model_task: Some(model.task),
-        model_path: Some(path_to_string(&model_path)),
+        model_path: Some(scanner_resource::path_to_string(&model_path)),
         control_grid_shape,
         input_name,
         input_size,
@@ -442,54 +438,12 @@ pub fn describe_native_postprocess_model_with_runtime_hints(
     }
 }
 
-fn build_resource_root_candidates(
-    resource_dir_hint: Option<PathBuf>,
-) -> Vec<ResourceRootCandidate> {
-    let mut candidates = Vec::new();
-    let mut seen = HashSet::new();
-
-    let mut push_candidate = |source: &'static str, path: PathBuf| {
-        if seen.insert(path.clone()) {
-            candidates.push(ResourceRootCandidate { source, path });
-        }
-    };
-
-    if let Some(resource_dir) = resource_dir_hint {
-        push_candidate("tauri-resource-dir", resource_dir);
-    }
-
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    push_candidate("cargo-manifest-resources", manifest_dir.join("resources"));
-
-    if let Ok(current_dir) = std::env::current_dir() {
-        push_candidate("cwd-resources", current_dir.join("resources"));
-        push_candidate(
-            "cwd-src-tauri-resources",
-            current_dir.join("src-tauri").join("resources"),
-        );
-    }
-
-    candidates
-}
-
-fn select_resource_root(candidates: &[ResourceRootCandidate]) -> Option<ResourceRootCandidate> {
-    candidates
-        .iter()
-        .max_by_key(|candidate| score_resource_root(&candidate.path))
-        .cloned()
-}
-
-fn score_resource_root(root: &Path) -> usize {
-    let interesting_paths = [
-        CONFIG_RELATIVE_PATH,
-        "models/document-residual-controlpoints.onnx",
-        "models/uvdoc-best-model.onnx",
-    ];
-    interesting_paths
-        .iter()
-        .filter(|relative_path| root.join(relative_path).exists())
-        .count()
-}
+/// Interesting paths used to score resource roots for the post-process subsystem.
+const POSTPROCESS_INTERESTING_PATHS: [&str; 3] = [
+    CONFIG_RELATIVE_PATH,
+    "models/document-residual-controlpoints.onnx",
+    "models/uvdoc-best-model.onnx",
+];
 
 fn postprocess_session_state() -> &'static Mutex<PostprocessOrtSessionState> {
     static STATE: OnceLock<Mutex<PostprocessOrtSessionState>> = OnceLock::new();
@@ -507,7 +461,7 @@ fn ensure_postprocess_session(
             ready: false,
             session_error: Some(format!(
                 "Missing ONNX model file: {}.",
-                path_to_string(&model_path)
+                scanner_resource::path_to_string(&model_path)
             )),
             inputs: Vec::new(),
             outputs: Vec::new(),
@@ -592,21 +546,21 @@ pub fn run_native_postprocess_model_with_runtime_hints(
     target_size: Option<(u32, u32)>,
     grid_postprocess: &str,
 ) -> Result<NativePostprocessModelRunResult, String> {
-    let resource_root_candidates = build_resource_root_candidates(resource_dir_hint);
-    let selected_resource_root = select_resource_root(&resource_root_candidates)
+    let resource_root_candidates = scanner_resource::build_resource_root_candidates(resource_dir_hint);
+    let selected_resource_root = scanner_resource::select_resource_root(&resource_root_candidates, &POSTPROCESS_INTERESTING_PATHS)
         .ok_or_else(|| "Could not resolve the stage-2 resource directory.".to_string())?;
     let config_path = selected_resource_root.path.join(CONFIG_RELATIVE_PATH);
     let config_contents = fs::read_to_string(&config_path).map_err(|error| {
         format!(
             "Failed to read stage-2 post-process model config {}: {error}",
-            path_to_string(&config_path)
+            scanner_resource::path_to_string(&config_path)
         )
     })?;
     let config = serde_json::from_str::<ScannerPostProcessModelConfig>(&config_contents).map_err(
         |error| {
             format!(
                 "Failed to parse stage-2 post-process model config {}: {error}",
-                path_to_string(&config_path)
+                scanner_resource::path_to_string(&config_path)
             )
         },
     )?;
@@ -1022,9 +976,7 @@ fn describe_session_outlets(
         .collect()
 }
 
-fn path_to_string(path: &Path) -> String {
-    path.to_string_lossy().into_owned()
-}
+
 
 #[cfg(test)]
 mod tests {

@@ -286,6 +286,7 @@ fn run_native_ort_detect(
         rgba_height: None,
         max_width: None,
         max_height: None,
+        backend: None,
     };
 
     match detect_document_native_ort(request, resource_dir.clone(), app_config_dir.clone()) {

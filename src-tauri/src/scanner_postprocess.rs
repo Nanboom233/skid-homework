@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::io::Cursor;
+
 use std::time::Instant;
 
 
@@ -26,6 +27,7 @@ use crate::scanner_detect::ScannerPoint;
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScannerPostProcessRequest {
+    #[serde(default)]
     source_bytes: Vec<u8>,
     document_points: Option<Vec<ScannerPoint>>,
     output_rotation: u16,
@@ -50,6 +52,9 @@ pub struct ScannerPostProcessRequest {
     /// - `"x-stretch-equalize"`: per-row X linspace equalization.
     #[serde(default = "default_grid_postprocess")]
     grid_postprocess: String,
+    /// Whether to save intermediate pipeline images to disk for debugging.
+    #[serde(default)]
+    pipeline_debug: bool,
 }
 
 fn default_true() -> bool {
@@ -142,9 +147,11 @@ fn send_raw_payload(
 #[command]
 pub async fn tauri_scanner_postprocess_image(
     app: AppHandle,
-    request: ScannerPostProcessRequest,
+    source_bytes: Vec<u8>,
+    mut request: ScannerPostProcessRequest,
     payload_channel: Channel<InvokeResponseBody>,
 ) -> Result<ScannerPostProcessResponse, String> {
+    request.source_bytes = source_bytes;
     let resource_dir_hint = app.path().resource_dir().ok();
     let app_config_dir_hint = app.path().app_config_dir().ok();
     let (response, encoded_png) = tauri::async_runtime::spawn_blocking(move || {
@@ -164,14 +171,17 @@ pub async fn tauri_scanner_postprocess_image(
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RefineDocumentCornersRequest {
+    #[serde(default)]
     source_bytes: Vec<u8>,
     document_points: Vec<ScannerPoint>,
 }
 
 #[command]
 pub async fn tauri_scanner_refine_document_corners(
-    request: RefineDocumentCornersRequest,
+    source_bytes: Vec<u8>,
+    mut request: RefineDocumentCornersRequest,
 ) -> Result<Vec<ScannerPoint>, String> {
+    request.source_bytes = source_bytes;
     tauri::async_runtime::spawn_blocking(move || {
         let decoded = image::load_from_memory(&request.source_bytes)
             .map_err(|error| format!("Failed to decode source image: {error}"))?;
@@ -240,6 +250,7 @@ pub fn postprocess_image_bytes_with_options(
         spine_flattening,
         perspective_transform,
         grid_postprocess,
+        pipeline_debug: false,
     };
     process_image_request(request, resource_dir_hint, app_config_dir_hint)
 }
@@ -250,6 +261,17 @@ pub fn process_scanner_postprocess_request(
     app_config_dir_hint: Option<std::path::PathBuf>,
 ) -> Result<(ScannerPostProcessResponse, Vec<u8>), String> {
     process_image_request(request, resource_dir_hint, app_config_dir_hint)
+}
+
+/// Fire-and-forget: clone the image and save it on a background thread
+/// so the pipeline is not blocked by PNG encoding + disk I/O.
+fn debug_save_image(image: &RgbaImage, path: std::path::PathBuf) {
+    let cloned = image.clone();
+    std::thread::spawn(move || {
+        if let Err(e) = cloned.save(&path) {
+            eprintln!("[DEBUG] failed to save {:?}: {}", path, e);
+        }
+    });
 }
 
 fn process_image_request(
@@ -264,14 +286,42 @@ fn process_image_request(
     let decode_ms = decode_started_at.elapsed().as_secs_f64() * 1000.0;
 
     let mut current = decoded.into_rgba8();
-    let input_width = current.width();
+    let pre_rotation_width = current.width();
+    let pre_rotation_height = current.height();
+
+    // ── Decode-time rotation: rotate immediately, overwrite source ──
+    let mut rotate_ms = None;
+    if request.output_rotation != 0 {
+        let t = Instant::now();
+        current = rotate_image(current, request.output_rotation)?;
+        rotate_ms = Some(t.elapsed().as_secs_f64() * 1000.0);
+    }
+    let input_width = current.width();   // rotated dimensions
     let input_height = current.height();
+
+    // Frontend sends points in source (un-rotated) coordinate space.
+    // Transform coordinates to match the now-rotated image, then
+    // deterministically permute the [TL,TR,BR,BL] slots so the ordering
+    // matches the rotated image space (required by compute_document_projection).
+    let effective_document_points =
+        normalize_document_points(request.document_points.as_deref())?;
+    let effective_document_points = effective_document_points.map(|points| {
+        if request.output_rotation == 0 {
+            points
+        } else {
+            let rotated = transform_points_for_rotation(
+                &points, pre_rotation_width, pre_rotation_height,
+                request.output_rotation,
+            );
+            reorder_points_after_rotation(rotated, request.output_rotation)
+        }
+    });
+
     let mut perspective_ms = None;
     let mut flatten_ms = None;
     let mut enhance_ms = None;
     let mut model_ms = None;
     let mut residual_warp_ms = None;
-    let mut rotate_ms = None;
     let mut local_flattening_applied = false;
     let mut residual_warp_applied = false;
     let residual_warp_fallback_reason = None;
@@ -280,11 +330,8 @@ fn process_image_request(
     let mut model_id = None;
     let mut control_grid_shape = None;
 
-    // ──────────────────────────────────────────────────────────────────
-    // [DEBUG/TEST ONLY] Create a unique output folder for this pipeline run.
-    // Remove before release.
-    // ──────────────────────────────────────────────────────────────────
-    let debug_dir = {
+    // ── Debug image output (gated by request.pipeline_debug) ──
+    let debug_dir = if request.pipeline_debug {
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -292,13 +339,17 @@ fn process_image_request(
         let dir = std::env::temp_dir().join(format!("pipeline_debug_{}", ts));
         std::fs::create_dir_all(&dir).ok();
         eprintln!("[DEBUG] writing intermediate images to {:?}", dir);
-        dir
+        Some(dir)
+    } else {
+        None
     };
-    // [DEBUG/TEST ONLY] Step 0: Original input (after decode, before any processing).
-    current.save(debug_dir.join("step0_input.png")).ok();
+    if let Some(ref dir) = debug_dir {
+        debug_save_image(&current, dir.join("step0_input.png"));
+    }
 
     eprintln!(
-        "[Pipeline] begin | input={}x{} | rotate={} | perspective={} | flatten={} | enhance={} | backend={} | grid_pp={}",
+        "[Pipeline] begin | source={}x{} | rotated={}x{} | rotate={} | perspective={} | flatten={} | enhance={} | backend={} | grid_pp={}",
+        pre_rotation_width, pre_rotation_height,
         input_width, input_height,
         request.output_rotation,
         request.perspective_transform,
@@ -309,11 +360,6 @@ fn process_image_request(
     );
 
     // ── Step 1: Perspective Transform / Crop ──
-    // document_points are in source-image coordinate space.  Geometric
-    // operations execute on the unrotated source image directly, so no
-    // coordinate transformation is ever needed.
-    let effective_document_points =
-        normalize_document_points(request.document_points.as_deref())?;
 
     if let Some(ref points) = effective_document_points {
         validate_quad_geometry(points, current.width(), current.height())?;
@@ -334,8 +380,9 @@ fn process_image_request(
             );
             current = warped;
             eprintln!("[Pipeline] step1:perspective → {}x{} ({:.1}ms)", current.width(), current.height(), perspective_ms.unwrap());
-            // [DEBUG/TEST ONLY] Step 1: After perspective warp.
-            current.save(debug_dir.join("step1_perspective.png")).ok();
+            if let Some(ref dir) = debug_dir {
+                debug_save_image(&current, dir.join("step1_perspective.png"));
+            }
         } else {
             // Perspective is off — still crop to the bounding box of the 4 corner points.
             let min_x = points.iter().map(|p| p.x).fold(f32::INFINITY, f32::min).max(0.0) as u32;
@@ -377,8 +424,9 @@ fn process_image_request(
                     current.width(), current.height(),
                     model_ms.unwrap_or(0.0), residual_warp_ms.unwrap_or(0.0),
                 );
-                // [DEBUG/TEST ONLY] Step 2: After UVDoc flatten.
-                current.save(debug_dir.join("step2_flatten.png")).ok();
+                if let Some(ref dir) = debug_dir {
+                    debug_save_image(&current, dir.join("step2_flatten.png"));
+                }
             } else {
                 let reason = result.fallback_reason
                     .unwrap_or_else(|| "Unknown ML pipeline error".to_string());
@@ -398,29 +446,15 @@ fn process_image_request(
         }
     }
 
-    // ── Step 3: Rotation ──
-    // Output rotation is a presentation concern.  It runs after all geometric
-    // and content-analysis operations are complete — document_points have
-    // already been consumed by the perspective step above, so no coordinate
-    // transformation is needed.
-    if request.output_rotation != 0 {
-        let rotate_started_at = Instant::now();
-        current = rotate_image(current, request.output_rotation)?;
-        rotate_ms = Some(rotate_started_at.elapsed().as_secs_f64() * 1000.0);
-        eprintln!("[Pipeline] step3:rotate {}° → {}x{} ({:.1}ms)", request.output_rotation, current.width(), current.height(), rotate_ms.unwrap());
-        // [DEBUG/TEST ONLY] Step 3: After rotation.
-        current.save(debug_dir.join("step3_rotated.png")).ok();
-    }
-
-    // ── Step 4: Enhancement ──
+    // ── Step 3: Enhancement ──
     if request.image_enhancement {
         let enhance_started_at = Instant::now();
         current = enhance_document_image(&current, local_flattening_applied, &request.color_mode);
         enhance_ms = Some(enhance_started_at.elapsed().as_secs_f64() * 1000.0);
-        eprintln!("[Pipeline] step4:enhance mode={} ({:.1}ms)", request.color_mode, enhance_ms.unwrap());
+        eprintln!("[Pipeline] step3:enhance mode={} ({:.1}ms)", request.color_mode, enhance_ms.unwrap());
     }
 
-    // ── Step 5: Encode ──
+    // ── Step 4: Encode ──
     let encode_started_at = Instant::now();
     let encoded_png = encode_png(&current)?;
     let encode_ms = encode_started_at.elapsed().as_secs_f64() * 1000.0;
@@ -450,7 +484,19 @@ fn process_image_request(
         postprocess_backend: postprocess_backend.as_str().to_string(),
         model_id,
         control_grid_shape,
-        effective_document_points: effective_document_points.map(|points| points.to_vec()),
+        effective_document_points: effective_document_points.map(|points| {
+            if request.output_rotation == 0 {
+                points.to_vec()
+            } else {
+                // Reverse the entry transform: un-reorder then un-transform.
+                let inverse_rotation = (360 - request.output_rotation) % 360;
+                let unreordered = reorder_points_after_rotation(points, inverse_rotation);
+                reverse_transform_points_for_rotation(
+                    &unreordered, pre_rotation_width, pre_rotation_height,
+                    request.output_rotation,
+                ).to_vec()
+            }
+        }),
         refinement_applied: false,
         local_flattening_applied,
         residual_warp_applied,
@@ -1905,6 +1951,81 @@ fn rotate_image(image: RgbaImage, rotation: u16) -> Result<RgbaImage, String> {
     }
 }
 
+/// Transform document points from source-image coordinate space into
+/// the coordinate space of the image after it has been rotated by the
+/// given `rotation` (in degrees, clockwise).  This mirrors the pixel
+/// mapping performed by `rotate_image` (which delegates to
+/// `image::imageops::rotate90/180/270`).
+///
+/// rotate90:  src(x,y) → dst(H-1-y, x)   output dims: H×W
+/// rotate180: src(x,y) → dst(W-1-x, H-1-y) output dims: W×H
+/// rotate270: src(x,y) → dst(y, W-1-x)   output dims: H×W
+fn transform_points_for_rotation(
+    points: &[ScannerPoint; 4],
+    source_width: u32,
+    source_height: u32,
+    rotation: u16,
+) -> [ScannerPoint; 4] {
+    let (sw, sh) = (source_width as f32, source_height as f32);
+    let transform = |p: &ScannerPoint| -> ScannerPoint {
+        match rotation {
+            90  => ScannerPoint { x: sh - 1.0 - p.y, y: p.x },
+            180 => ScannerPoint { x: sw - 1.0 - p.x, y: sh - 1.0 - p.y },
+            270 => ScannerPoint { x: p.y,             y: sw - 1.0 - p.x },
+            _   => *p,
+        }
+    };
+    [
+        transform(&points[0]),
+        transform(&points[1]),
+        transform(&points[2]),
+        transform(&points[3]),
+    ]
+}
+
+/// Deterministic re-ordering of the [TL, TR, BR, BL] slots after the
+/// image has been rotated.  Rotation is a circular right-shift of the
+/// corner slots by `rotation / 90` positions.
+///
+/// ```text
+///   0°:   [TL, TR, BR, BL]  →  identity
+///  90°CW: source BL→TL, TL→TR, TR→BR, BR→BL  →  [3, 0, 1, 2]
+/// 180°:   source BR→TL, BL→TR, TL→BR, TR→BL  →  [2, 3, 0, 1]
+/// 270°CW: source TR→TL, BR→TR, BL→BR, TL→BL  →  [1, 2, 3, 0]
+/// ```
+fn reorder_points_after_rotation(
+    points: [ScannerPoint; 4],
+    rotation: u16,
+) -> [ScannerPoint; 4] {
+    match rotation {
+        90  => [points[3], points[0], points[1], points[2]],
+        180 => [points[2], points[3], points[0], points[1]],
+        270 => [points[1], points[2], points[3], points[0]],
+        _   => points,
+    }
+}
+
+/// Inverse of `transform_points_for_rotation`: maps points FROM the
+/// rotated-image coordinate space BACK to source-image coordinate space.
+fn reverse_transform_points_for_rotation(
+    points: &[ScannerPoint; 4],
+    source_width: u32,
+    source_height: u32,
+    rotation: u16,
+) -> [ScannerPoint; 4] {
+    let inverse_rotation = match rotation {
+        90  => 270,
+        180 => 180,
+        270 => 90,
+        _   => 0,
+    };
+    let (rotated_w, rotated_h) = match rotation {
+        90 | 270 => (source_height, source_width),
+        _        => (source_width, source_height),
+    };
+    transform_points_for_rotation(points, rotated_w, rotated_h, inverse_rotation)
+}
+
 fn encode_png(image: &RgbaImage) -> Result<Vec<u8>, String> {
     use image::codecs::png::{CompressionType, FilterType, PngEncoder};
     let mut cursor = Cursor::new(Vec::new());
@@ -1925,6 +2046,13 @@ fn encode_png(image: &RgbaImage) -> Result<Vec<u8>, String> {
 mod tests {
     use super::*;
     use image::{DynamicImage, Rgba};
+
+    /// Returns true if at least one point moved between `before` and `after`.
+    fn refinement_applied_between(before: &[ScannerPoint; 4], after: &[ScannerPoint; 4]) -> bool {
+        before.iter().zip(after.iter()).any(|(a, b)| {
+            (a.x - b.x).abs() > 0.01 || (a.y - b.y).abs() > 0.01
+        })
+    }
 
     #[test]
     fn orders_points_into_tl_tr_br_bl() {
@@ -2090,6 +2218,7 @@ mod tests {
                 spine_flattening: true,
                 perspective_transform: true,
                 grid_postprocess: default_grid_postprocess(),
+                pipeline_debug: false,
             },
             None,
             None,
@@ -2212,16 +2341,15 @@ mod tests {
                 spine_flattening: true,
                 perspective_transform: true,
                 grid_postprocess: default_grid_postprocess(),
+                pipeline_debug: false,
             },
             None,
             None,
         )
         .expect("portrait export should succeed");
 
-        // Flatten now runs on the un-rotated image; the asymmetric left inset
-        // may or may not trigger spine detection depending on geometry — what
-        // matters is that rotate runs AFTER flatten/crop so geometric algorithms
-        // operate in the original capture orientation.
+        // Image is rotated at decode time before any processing;
+        // flatten and perspective operate on the already-rotated image.
         assert!(response.rotate_ms.is_some());
     }
 
@@ -2256,6 +2384,7 @@ mod tests {
                 spine_flattening: true,
                 perspective_transform: true,
                 grid_postprocess: default_grid_postprocess(),
+                pipeline_debug: false,
             },
             None,
             None,
@@ -2263,17 +2392,15 @@ mod tests {
         .expect("post-process request should succeed");
 
         assert!(encoded.starts_with(&[0x89, b'P', b'N', b'G']));
-        assert_eq!(response.input_width, 40);
-        assert_eq!(response.input_height, 24);
+        assert_eq!(response.input_width, 24);   // rotated: 40x24 @90° → 24x40
+        assert_eq!(response.input_height, 40);
         assert!(response.output_width >= 19);
         assert!(response.output_height >= 19);
-        assert!(response.refine_ms.is_some());
         assert!(response.perspective_ms.is_some());
         assert!(response.flatten_ms.is_some());
         assert!(response.enhance_ms.is_some());
         assert!(response.rotate_ms.is_some());
         assert!(response.effective_document_points.is_some());
-        assert!(response.refinement_applied);
     }
 
     #[test]

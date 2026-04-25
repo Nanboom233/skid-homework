@@ -6,10 +6,13 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use openh264::decoder::Decoder;
 use openh264::formats::YUVSource;
 
+use app_lib::scanner_frame_protocol::{
+    self as frame_protocol, FRAME_CODEC_I420_TELEMETRY, FRAME_PACKET_TELEMETRY_SIZE,
+};
+
 const OVERALL_LOG_INTERVAL_SECS: u64 = 5;
 const SAMPLE_LOG_INTERVAL_FRAMES: u64 = 15;
-const FRAME_CODEC_I420_TELEMETRY: u8 = 4;
-const FRAME_PACKET_TELEMETRY_SIZE: usize = 12;
+
 const DEFAULT_DURATION_SECS: u64 = 20;
 const DEFAULT_CONNECT_TIMEOUT_SECS: u64 = 8;
 const DEFAULT_STALL_TIMEOUT_MS: u64 = 5_000;
@@ -558,20 +561,7 @@ fn decode_nal_to_preview(
 }
 
 fn select_preview_dimensions(width: usize, height: usize) -> (usize, usize, usize) {
-    let mut factor = width
-        .div_ceil(MAX_PREVIEW_WIDTH)
-        .max(height.div_ceil(MAX_PREVIEW_HEIGHT))
-        .max(1);
-    let mut preview_width = clamp_even_dimension(width / factor);
-    let mut preview_height = clamp_even_dimension(height / factor);
-
-    while preview_width > MAX_PREVIEW_WIDTH || preview_height > MAX_PREVIEW_HEIGHT {
-        factor += 1;
-        preview_width = clamp_even_dimension(width / factor);
-        preview_height = clamp_even_dimension(height / factor);
-    }
-
-    (preview_width, preview_height, factor.max(1))
+    frame_protocol::select_preview_dimensions(width, height, MAX_PREVIEW_WIDTH, MAX_PREVIEW_HEIGHT)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -590,109 +580,22 @@ fn pack_i420_preview(
 ) -> Vec<u8> {
     let preview_chroma_width = preview_width / 2;
     let preview_chroma_height = preview_height / 2;
-    let expected_payload_len =
-        preview_width * preview_height + 2 * (preview_chroma_width * preview_chroma_height);
+    let expected_payload_len = frame_protocol::compute_i420_payload_len(preview_width, preview_height);
     let mut payload = Vec::with_capacity(expected_payload_len);
 
     if factor == 1 {
-        append_plane_contiguous(
-            &mut payload,
-            y_plane,
-            preview_width,
-            preview_height,
-            y_stride,
-        );
-        append_plane_contiguous(
-            &mut payload,
-            u_plane,
-            preview_chroma_width,
-            preview_chroma_height,
-            u_stride,
-        );
-        append_plane_contiguous(
-            &mut payload,
-            v_plane,
-            preview_chroma_width,
-            preview_chroma_height,
-            v_stride,
-        );
+        frame_protocol::append_plane_contiguous(&mut payload, y_plane, preview_width, preview_height, y_stride);
+        frame_protocol::append_plane_contiguous(&mut payload, u_plane, preview_chroma_width, preview_chroma_height, u_stride);
+        frame_protocol::append_plane_contiguous(&mut payload, v_plane, preview_chroma_width, preview_chroma_height, v_stride);
         return payload;
     }
 
-    append_downsampled_plane_by_factor(
-        &mut payload,
-        y_plane,
-        preview_width,
-        preview_height,
-        y_stride,
-        factor,
-    );
-    append_downsampled_plane_by_factor(
-        &mut payload,
-        u_plane,
-        preview_chroma_width,
-        preview_chroma_height,
-        u_stride,
-        factor,
-    );
-    append_downsampled_plane_by_factor(
-        &mut payload,
-        v_plane,
-        preview_chroma_width,
-        preview_chroma_height,
-        v_stride,
-        factor,
-    );
+    let mut row_buf = vec![0u8; preview_width];
+    frame_protocol::append_downsampled_plane_by_factor(&mut payload, y_plane, preview_width, preview_height, y_stride, factor, &mut row_buf);
+    frame_protocol::append_downsampled_plane_by_factor(&mut payload, u_plane, preview_chroma_width, preview_chroma_height, u_stride, factor, &mut row_buf);
+    frame_protocol::append_downsampled_plane_by_factor(&mut payload, v_plane, preview_chroma_width, preview_chroma_height, v_stride, factor, &mut row_buf);
 
     payload
-}
-
-fn clamp_even_dimension(value: usize) -> usize {
-    if value <= 2 {
-        return 2;
-    }
-
-    value & !1
-}
-
-fn append_plane_contiguous(
-    destination: &mut Vec<u8>,
-    plane: &[u8],
-    width: usize,
-    height: usize,
-    stride: usize,
-) {
-    if stride == width {
-        destination.extend_from_slice(&plane[..width * height]);
-        return;
-    }
-
-    for row in 0..height {
-        let row_start = row * stride;
-        destination.extend_from_slice(&plane[row_start..row_start + width]);
-    }
-}
-
-fn append_downsampled_plane_by_factor(
-    destination: &mut Vec<u8>,
-    plane: &[u8],
-    width: usize,
-    height: usize,
-    stride: usize,
-    factor: usize,
-) {
-    if factor <= 1 {
-        append_plane_contiguous(destination, plane, width, height, stride);
-        return;
-    }
-
-    for row in 0..height {
-        let row_start = row * factor * stride;
-        let source_row = &plane[row_start..row_start + (width * factor)];
-        for value in source_row.iter().step_by(factor).take(width) {
-            destination.push(*value);
-        }
-    }
 }
 
 fn pack_frame_packet(
