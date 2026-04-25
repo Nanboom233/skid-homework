@@ -1,4 +1,4 @@
-import type {Point} from "@/lib/scanner/document-detector";
+import type {Point} from "@/lib/scanner/types";
 
 import {isTauri} from "./platform";
 
@@ -149,6 +149,7 @@ export const detectDocumentWithTauriNativeOrt = async (
   options?: {
     maxWidth?: number;
     maxHeight?: number;
+    backend?: string;
   },
 ): Promise<TauriScannerNativeOrtDetectResult> => {
   if (!isTauri()) {
@@ -161,10 +162,11 @@ export const detectDocumentWithTauriNativeOrt = async (
   return await invoke<TauriScannerNativeOrtDetectResult>(
     "tauri_scanner_detect_document",
     {
+      sourceBytes,
       request: {
-        sourceBytes,
         maxWidth: options?.maxWidth,
         maxHeight: options?.maxHeight,
+        backend: options?.backend,
       },
     },
   );

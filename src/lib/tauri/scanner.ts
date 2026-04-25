@@ -1,4 +1,4 @@
-import type {Point} from "@/lib/scanner/document-detector";
+import type {Point} from "@/lib/scanner/types";
 import type {OrthogonalRotation} from "@/lib/scanner/image-data";
 import type {ScannerPostProcessBackend} from "@/store/settings-store";
 
@@ -69,7 +69,12 @@ const normalizeTauriRawChannelPayload = (payload: TauriRawChannelPayload): Uint8
 };
 
 const toArrayBuffer = (bytes: Uint8Array): ArrayBuffer => {
-  return Uint8Array.from(bytes).buffer;
+  // Fast path: if the view spans the entire underlying buffer, return it directly.
+  if (bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength) {
+    return bytes.buffer as ArrayBuffer;
+  }
+  // Slow path: the view is a sub-slice — copy to a new tightly-owned buffer.
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 };
 
 export const processTauriScannerPostProcessSourceFile = async (
@@ -83,6 +88,7 @@ export const processTauriScannerPostProcessSourceFile = async (
     spineFlattening?: boolean;
     perspectiveTransform?: boolean;
     gridPostprocess?: "none" | "x-stretch-equalize";
+    pipelineDebug?: boolean;
   },
 ): Promise<TauriScannerPostProcessResult> => {
   if (!isTauri()) {
@@ -165,8 +171,8 @@ export const processTauriScannerPostProcessSourceFile = async (
     void invoke<Omit<TauriScannerPostProcessResult, "encodedBytes">>(
       "tauri_scanner_postprocess_image",
       {
+        sourceBytes,
         request: {
-          sourceBytes,
           documentPoints: options.documentPoints,
           outputRotation: options.outputRotation,
           imageEnhancement: options.imageEnhancement,
@@ -175,6 +181,7 @@ export const processTauriScannerPostProcessSourceFile = async (
           spineFlattening: options.spineFlattening ?? true,
           perspectiveTransform: options.perspectiveTransform ?? true,
           gridPostprocess: options.gridPostprocess ?? "none",
+          pipelineDebug: options.pipelineDebug ?? false,
         },
         payloadChannel,
       },
@@ -206,8 +213,8 @@ export const refineDocumentCorners = async (
   const sourceBytes = new Uint8Array(await sourceFile.arrayBuffer());
   const {invoke} = await import("@tauri-apps/api/core");
   return invoke<Point[]>("tauri_scanner_refine_document_corners", {
+    sourceBytes,
     request: {
-      sourceBytes,
       documentPoints,
     },
   });

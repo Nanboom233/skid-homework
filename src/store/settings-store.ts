@@ -77,6 +77,9 @@ export interface SettingsState {
   scannerPostProcessBackend: ScannerPostProcessBackend;
   setScannerPostProcessBackend: (backend: ScannerPostProcessBackend) => void;
 
+  scannerPipelineDebug: boolean;
+  setScannerPipelineDebug: (state: boolean) => void;
+
   scannerPreviewWidth: number;
   scannerPreviewHeight: number;
   scannerFramerate: number;
@@ -102,6 +105,7 @@ export const useSettingsStore = create<SettingsState>()(
       scannerDetectionBackend: "opencv",
       scannerNativeOrtStrictMode: false,
       scannerPostProcessBackend: "heuristic",
+      scannerPipelineDebug: false,
       scannerPreviewWidth: 640,
       scannerPreviewHeight: 360,
       scannerFramerate: 30,
@@ -150,6 +154,8 @@ export const useSettingsStore = create<SettingsState>()(
         set({ scannerNativeOrtStrictMode: state }),
       setScannerPostProcessBackend: (backend) =>
         set({ scannerPostProcessBackend: backend }),
+      setScannerPipelineDebug: (state) =>
+        set({ scannerPipelineDebug: state }),
       setScannerPreview: (width, height, framerate, cameraId) =>
         set({
           scannerPreviewWidth: width,
@@ -177,73 +183,63 @@ export const useSettingsStore = create<SettingsState>()(
         scannerDetectionBackend: state.scannerDetectionBackend,
         scannerNativeOrtStrictMode: state.scannerNativeOrtStrictMode,
         scannerPostProcessBackend: state.scannerPostProcessBackend,
+        scannerPipelineDebug: state.scannerPipelineDebug,
         scannerPreviewWidth: state.scannerPreviewWidth,
         scannerPreviewHeight: state.scannerPreviewHeight,
         scannerFramerate: state.scannerFramerate,
         scannerCameraId: state.scannerCameraId,
       }),
-      version: 11,
-      migrate: (persistedState, version) => {
-        const data: Partial<SettingsState> & Record<string, unknown> =
+      version: 13,
+      migrate: (persistedState) => {
+        const raw: Record<string, unknown> =
           persistedState && typeof persistedState === "object"
             ? { ...(persistedState as Record<string, unknown>) }
             : {};
 
-        if (version < 3) {
-          data.keybindings = { ...DEFAULT_SHORTCUTS };
-        }
+        // --- Keybindings: merge persisted shortcuts over defaults ---
+        const existingKeybindings = raw.keybindings as ShortcutMap | undefined;
+        const keybindings = existingKeybindings
+          ? { ...DEFAULT_SHORTCUTS, ...existingKeybindings }
+          : { ...DEFAULT_SHORTCUTS };
 
-        const existing = (data as { keybindings?: ShortcutMap }).keybindings;
-        const legacyDevtools = (data as { devtools?: boolean }).devtools;
+        // --- Enum validation helpers ---
+        const VALID_DETECTION_BACKENDS: readonly string[] = ["opencv", "native-ort"];
+        const VALID_POSTPROCESS_BACKENDS: readonly string[] = ["heuristic", "native-ml-v1"];
 
-        const migratedData = {
-          ...data,
-          keybindings: existing
-            ? { ...DEFAULT_SHORTCUTS, ...existing }
-            : { ...DEFAULT_SHORTCUTS },
-          languageInitialized:
-            (data as { languageInitialized?: boolean }).languageInitialized ??
-            true,
-          clearDialogOnSubmit:
-            (data as { clearDialogOnSubmit?: boolean }).clearDialogOnSubmit ??
-            true,
-          onlineSearchEnabled:
-            (data as { onlineSearchEnabled?: boolean }).onlineSearchEnabled ??
-            false,
-          showModelSelectorInScanner:
-            (data as { showModelSelectorInScanner?: boolean })
-              .showModelSelectorInScanner ?? false,
-          showOnlineSearchInScanner:
-            (data as { showOnlineSearchInScanner?: boolean })
-              .showOnlineSearchInScanner ?? false,
-          scannerDetectionBackend:
-            (data as { scannerDetectionBackend?: ScannerDetectionBackend })
-              .scannerDetectionBackend ?? "opencv",
-          scannerNativeOrtStrictMode:
-            (data as { scannerNativeOrtStrictMode?: boolean })
-              .scannerNativeOrtStrictMode ?? false,
-          scannerPostProcessBackend:
-            (
-              data as {
-                scannerPostProcessBackend?: ScannerPostProcessBackend;
-              }
-            ).scannerPostProcessBackend ?? "heuristic",
+        const validatedDetectionBackend = VALID_DETECTION_BACKENDS.includes(raw.scannerDetectionBackend as string)
+          ? (raw.scannerDetectionBackend as ScannerDetectionBackend)
+          : "native-ort";
+        const validatedPostProcessBackend = VALID_POSTPROCESS_BACKENDS.includes(raw.scannerPostProcessBackend as string)
+          ? (raw.scannerPostProcessBackend as ScannerPostProcessBackend)
+          : "heuristic";
+
+        // --- Build fully-resolved state (every field gets a valid value) ---
+        const migrated = {
+          ...raw,
+          keybindings,
+          languageInitialized: (raw.languageInitialized as boolean | undefined) ?? true,
+          clearDialogOnSubmit: (raw.clearDialogOnSubmit as boolean | undefined) ?? true,
+          onlineSearchEnabled: (raw.onlineSearchEnabled as boolean | undefined) ?? false,
+          showModelSelectorInScanner: (raw.showModelSelectorInScanner as boolean | undefined) ?? false,
+          showOnlineSearchInScanner: (raw.showOnlineSearchInScanner as boolean | undefined) ?? false,
+          scannerDetectionBackend: validatedDetectionBackend,
+          scannerNativeOrtStrictMode: (raw.scannerNativeOrtStrictMode as boolean | undefined) ?? false,
+          scannerPostProcessBackend: validatedPostProcessBackend,
+          scannerPipelineDebug: (raw.scannerPipelineDebug as boolean | undefined) ?? false,
+          scannerPreviewWidth: (raw.scannerPreviewWidth as number | undefined) ?? 640,
+          scannerPreviewHeight: (raw.scannerPreviewHeight as number | undefined) ?? 360,
+          scannerFramerate: (raw.scannerFramerate as number | undefined) ?? 30,
+          scannerCameraId: (raw.scannerCameraId as string | undefined) ?? "0",
           devtoolsEnabled:
-            (data as { devtoolsEnabled?: boolean }).devtoolsEnabled ??
-            legacyDevtools ??
+            (raw.devtoolsEnabled as boolean | undefined) ??
+            (raw.devtools as boolean | undefined) ??
             false,
         };
 
-        delete (migratedData as Record<string, unknown>).devtools;
+        // --- Remove legacy keys ---
+        delete (migrated as Record<string, unknown>).devtools;
 
-        if (version < 11) {
-          migratedData.scannerPreviewWidth ??= 640;
-          migratedData.scannerPreviewHeight ??= 360;
-          migratedData.scannerFramerate ??= 30;
-          migratedData.scannerCameraId ??= "0";
-        }
-
-        return migratedData;
+        return migrated;
       },
     },
   ),

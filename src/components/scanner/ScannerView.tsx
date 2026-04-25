@@ -28,7 +28,7 @@ import {assessDocumentQuad} from "@/lib/scanner/document-quad";
 
 import {shellTauriAdbCommand} from "@/lib/tauri/adb";
 import {
-  detectDocumentWithTauriNativeOrtRgba,
+  detectDocumentWithTauriNativeOrt,
   type DetectionResultEvent,
   listenTauriDetectionEvents,
   probeTauriScannerDetect,
@@ -628,6 +628,7 @@ export default function ScannerView({
   const scannerNativeOrtStrictMode = useSettingsStore((state) => state.scannerNativeOrtStrictMode);
   const scannerPostProcessBackend = useSettingsStore((state) => state.scannerPostProcessBackend);
   const setScannerPostProcessBackend = useSettingsStore((state) => state.setScannerPostProcessBackend);
+  const scannerPipelineDebug = useSettingsStore((state) => state.scannerPipelineDebug);
 
   const status = useScannerStore((state) => state.status);
   const errorMessage = useScannerStore((state) => state.errorMessage);
@@ -1112,6 +1113,7 @@ export default function ScannerView({
       spineFlattening: optionsOverride?.spineFlattening ?? true,
       perspectiveTransform: optionsOverride?.perspectiveTransform ?? true,
       gridPostprocess: optionsOverride?.gridPostprocess ?? "none",
+      pipelineDebug: scannerPipelineDebug,
     });
     const blob = new Blob([nativeResult.encodedBytes], {type: nativeResult.encodedMimeType});
     return {
@@ -1141,6 +1143,7 @@ export default function ScannerView({
   }, [
     imageEnhancement,
     scannerPostProcessBackend,
+    scannerPipelineDebug,
   ]);
 
   const logHighQualityStillFailureDiagnostics = useCallback(async (
@@ -1343,27 +1346,20 @@ export default function ScannerView({
 
     const runProcessing = async (): Promise<void> => {
       const totalStartedAt = performance.now();
-      let decodeMs: number | null = null;
+      const decodeMs: number | null = null;
       let resolvedPoints = clonePoints(documentPoints);
       let redetectMs: number | null = null;
 
       if (shouldAttemptRedetect) {
-        const decodeStartedAt = performance.now();
-        const redetectFrame = await decodeBlobToImageData(sourceFile);
-        decodeMs = performance.now() - decodeStartedAt;
-
         try {
-          const processingSize = getCapturedDocumentProcessingSize(
-            redetectFrame.width,
-            redetectFrame.height,
-          );
           const redetectStartedAt = performance.now();
-          const nativeResult = await detectDocumentWithTauriNativeOrtRgba(redetectFrame, {
-            maxWidth: processingSize.width,
-            maxHeight: processingSize.height,
+          const nativeResult = await detectDocumentWithTauriNativeOrt(sourceFile, {
+            maxWidth: CAPTURE_CV_MAX_WIDTH,
+            maxHeight: CAPTURE_CV_MAX_HEIGHT,
+            backend: useSettingsStore.getState().scannerDetectionBackend,
           });
-          const detectedPoints = nativeResult.points ?? null;
           redetectMs = performance.now() - redetectStartedAt;
+          const detectedPoints = nativeResult.points ?? null;
           if (detectedPoints && detectedPoints.length === 4) {
             resolvedPoints = detectedPoints;
           }
@@ -2003,7 +1999,11 @@ export default function ScannerView({
       });
 
       // --- Start Rust-driven detection loop ---
-      const detectionBackend = useSettingsStore.getState().scannerDetectionBackend;
+      let detectionBackend = useSettingsStore.getState().scannerDetectionBackend;
+      if (detectionBackend !== "native-ort" && detectionBackend !== "opencv") {
+        toast.warning(`Detection backend "${detectionBackend}" is not recognized. Falling back to OpenCV.`);
+        detectionBackend = "opencv";
+      }
       try {
         const detectionUnlisten = await listenTauriDetectionEvents(
           (event: DetectionResultEvent) => {

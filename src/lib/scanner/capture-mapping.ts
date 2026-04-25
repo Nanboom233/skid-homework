@@ -1,4 +1,4 @@
-import type {Point} from "./document-detector";
+import type {Point} from "./types";
 
 export interface FrameDimensions {
   width: number;

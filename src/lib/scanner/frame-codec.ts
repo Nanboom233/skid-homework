@@ -12,20 +12,18 @@ export interface FramePacketTelemetry { sentAtEpochMs: number; sequence: number;
 export interface ParsedFramePacket { codec: number; width: number; height: number; payload: Uint8Array; telemetry: FramePacketTelemetry | null; }
 export interface DecodedRgbaFrame { width: number; height: number; rgba: Uint8ClampedArray; telemetry: FramePacketTelemetry | null; }
 
-
 const IS_LITTLE_ENDIAN = new Uint8Array(new Uint32Array([0x11223344]).buffer)[0] === 0x44;
 const Y_TO_RGB_LUT = new Int32Array(256);
 const U_TO_BLUE_LUT = new Int32Array(256);
 const U_TO_GREEN_LUT = new Int32Array(256);
 const V_TO_RED_LUT = new Int32Array(256);
 const V_TO_GREEN_LUT = new Int32Array(256);
- 
+
 const LITTLE_ENDIAN_RGBA_ALPHA = 0xff << 24;
- 
+
 const BIG_ENDIAN_RGBA_ALPHA = 0xff;
 
 for (let value = 0; value < 256; value += 1) {
-
   const luma = Math.max(0, value - 16);
   const chroma = value - 128;
   Y_TO_RGB_LUT[value] = 298 * luma;
@@ -232,34 +230,23 @@ const resolveRgbaTarget = (pixelCount: number, targetRgba?: Uint8ClampedArray): 
 
 /**
  * Pack one YUV pixel into RGBA32.
- *
- * @param {number} y
- * @param {number} redContribution
- * @param {number} greenContribution
- * @param {number} blueContribution
- * @returns {number}
+ * Selected once at module load to eliminate per-pixel endianness branches
+ * (~230K branch eliminations per frame at 640×360).
+ * Uses inlined Math.max/Math.min which V8 compiles to branchless cmov.
  */
-const packRgbaFromYuv = (y: number, redContribution: number, greenContribution: number, blueContribution: number): number => {
-  const base = Y_TO_RGB_LUT[y];
-  const red = clampByte((base + redContribution + 128) >> 8);
-  const green = clampByte((base + greenContribution + 128) >> 8);
-  const blue = clampByte((base + blueContribution + 128) >> 8);
-
-  if (IS_LITTLE_ENDIAN) {
-    return LITTLE_ENDIAN_RGBA_ALPHA | (blue << 16) | (green << 8) | red;
-  }
-
-  return (red << 24) | (green << 16) | (blue << 8) | BIG_ENDIAN_RGBA_ALPHA;
-};
-
-/**
- * Clamp an integer channel value to the 0..255 range.
- *
- * @param {number} value
- * @returns {number}
- */
-const clampByte = (value: number): number => {
-  if (value < 0) return 0;
-  if (value > 255) return 255;
-  return value;
-};
+const packRgbaFromYuv: (y: number, redContribution: number, greenContribution: number, blueContribution: number) => number =
+  IS_LITTLE_ENDIAN
+    ? (y, redContribution, greenContribution, blueContribution) => {
+        const base = Y_TO_RGB_LUT[y];
+        const red   = Math.max(0, Math.min(255, (base + redContribution + 128) >> 8));
+        const green = Math.max(0, Math.min(255, (base + greenContribution + 128) >> 8));
+        const blue  = Math.max(0, Math.min(255, (base + blueContribution + 128) >> 8));
+        return LITTLE_ENDIAN_RGBA_ALPHA | (blue << 16) | (green << 8) | red;
+      }
+    : (y, redContribution, greenContribution, blueContribution) => {
+        const base = Y_TO_RGB_LUT[y];
+        const red   = Math.max(0, Math.min(255, (base + redContribution + 128) >> 8));
+        const green = Math.max(0, Math.min(255, (base + greenContribution + 128) >> 8));
+        const blue  = Math.max(0, Math.min(255, (base + blueContribution + 128) >> 8));
+        return (red << 24) | (green << 16) | (blue << 8) | BIG_ENDIAN_RGBA_ALPHA;
+      };

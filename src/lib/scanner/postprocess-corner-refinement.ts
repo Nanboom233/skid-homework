@@ -1,4 +1,4 @@
-import type {Point} from "./document-detector";
+import type {Point} from "./types";
 
 const SAMPLE_MARGIN_RATIO = 0.12;
 const MIN_SAMPLE_COUNT = 8;

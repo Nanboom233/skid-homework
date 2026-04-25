@@ -11,14 +11,13 @@ export type {
   FrameSourceStatus,
   FrameSourceMetrics,
   FrameSourceBenchmarkSnapshot,
-  FrameSourceBenchmarkWindow,
   FrameSourceCapabilities,
   FrameSourceStateCallback,
   ScannerConfig,
   ScannerStillCapture,
 } from "./frame-source";
 
-export type { Point } from "./document-detector";
+export type { Point } from "./types";
 
 export {
   evaluateFrameMappingCompatibility,

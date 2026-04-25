@@ -65,13 +65,6 @@ export interface FrameSourceMetrics {
   totalReconnectDowntimeMs: number;
 }
 
-export interface FrameSourceBenchmarkWindow {
-  sampleCount: number;
-  average: number;
-  p95: number;
-  max: number;
-}
-
 export interface FrameSourceBenchmarkSnapshot {
   collectedAt: number;
   startedAt: number | null;
@@ -80,8 +73,6 @@ export interface FrameSourceBenchmarkSnapshot {
   targetPreviewFps: number;
   frameIndex: number;
   totalFrames: number;
-  totalPolls: number;
-  emptyPolls: number;
   previewFps: number;
   recentWindowFps: number;
   effectiveFps: number;
@@ -93,10 +84,6 @@ export interface FrameSourceBenchmarkSnapshot {
     height: number | null;
   };
   recentError: string | null;
-  frameIntervalMs: FrameSourceBenchmarkWindow;
-  ipcMs: FrameSourceBenchmarkWindow;
-  decodeMs: FrameSourceBenchmarkWindow;
-  payloadBytes: FrameSourceBenchmarkWindow;
   reconnect: {
     count: number;
     inProgress: boolean;
@@ -180,10 +167,12 @@ export interface ScannerConfig {
 }
 /**
  * Compute a reasonable H.264 bitrate from resolution and framerate.
- * Targets roughly 0.15 bits per pixel per frame and clamps to [500_000, 8_000_000].
+ * Targets roughly 0.10 bits per pixel per frame — tuned for 1080p30 over ADB
+ * tunnel where bandwidth is precious but document edge detection only needs
+ * moderate quality.  Clamps to [500_000, 8_000_000].
  */
 export const computeScannerBitrate = (width: number, height: number, framerate: number): number => {
-  const bitsPerPixelPerFrame = 0.15;
+  const bitsPerPixelPerFrame = 0.10;
   const raw = Math.round(width * height * framerate * bitsPerPixelPerFrame);
   return Math.max(500_000, Math.min(8_000_000, raw));
 };
@@ -536,9 +525,7 @@ const buildStillCaptureFile = (
 ): File => {
   const extension = mimeType === "image/png" ? "png" : "jpg";
   const fileName = `camera_still_${new Date().toISOString().replace(/[:.]/g, "-")}.${extension}`;
-  const blobCompatibleBytes = new Uint8Array(bytes.byteLength);
-  blobCompatibleBytes.set(bytes);
-  return new File([blobCompatibleBytes], fileName, { type: mimeType });
+  return new File([bytes], fileName, { type: mimeType });
 };
 const BENCHMARK_EMIT_INTERVAL_MS = 250;
 const BENCHMARK_WINDOW_SIZE = 240;
@@ -642,30 +629,7 @@ const pushWindowSample = (samples: number[], value: number): void => {
   }
 };
 
-const summarizeSamples = (samples: number[]): FrameSourceBenchmarkWindow => {
-  if (samples.length === 0) {
-    return {
-      sampleCount: 0,
-      average: 0,
-      p95: 0,
-      max: 0,
-    };
-  }
 
-  const sorted = [...samples].sort((left, right) => left - right);
-  const sum = sorted.reduce((accumulator, value) => accumulator + value, 0);
-  const p95Index = Math.min(
-    sorted.length - 1,
-    Math.max(0, Math.ceil(sorted.length * 0.95) - 1),
-  );
-
-  return {
-    sampleCount: sorted.length,
-    average: sum / sorted.length,
-    p95: sorted[p95Index],
-    max: sorted[sorted.length - 1],
-  };
-};
 
 const computeRecentWindowFps = (
   frameIntervalSamples: number[],
@@ -713,21 +677,7 @@ const computeActiveStreamingFps = (
   return totalFrames / (activeRuntimeMs / 1000);
 };
 
-const computeSessionAverageFps = (
-  totalFrames: number,
-  startedAt: number | null,
-): number => {
-  if (totalFrames <= 0 || startedAt === null) {
-    return 0;
-  }
 
-  const runtimeMs = Math.max(0, nowMs() - startedAt);
-  if (runtimeMs <= 0) {
-    return 0;
-  }
-
-  return totalFrames / (runtimeMs / 1000);
-};
 
 const computeLatestFrameFps = (frameIntervalSamples: number[]): number => {
   if (frameIntervalSamples.length === 0) {
@@ -754,99 +704,30 @@ const roundMetric = (value: number): number => {
   return Math.round(value * 10) / 10;
 };
 
-const resolveEffectiveFps = (benchmark: BenchmarkAccumulator): number => {
-  return roundMetric(
-    clampMetric(
-      computeActiveStreamingFps(
-        benchmark.totalFrames,
-        benchmark.firstFrameAt,
-        benchmark.lastFrameAt,
-        benchmark.totalReconnectDowntimeMs,
-      ),
-    ),
-  );
-};
-
-const resolveSessionAverageFps = (benchmark: BenchmarkAccumulator): number => {
-  return roundMetric(clampMetric(computeSessionAverageFps(benchmark.totalFrames, benchmark.startedAt)));
-};
-
-const resolveRecentWindowFps = (benchmark: BenchmarkAccumulator): number => {
-  return roundMetric(clampMetric(computeRecentWindowFps(benchmark.frameIntervalSamples, 3000)));
-};
-
-const resolvePreviewFps = (benchmark: BenchmarkAccumulator): number => {
-  return roundMetric(clampMetric(computeLatestFrameFps(benchmark.frameIntervalSamples)));
-};
-
-const computeBenchmarkRuntimeMs = (benchmark: BenchmarkAccumulator): number => {
-  return benchmark.startedAt === null
-    ? 0
-    : Math.max(0, nowMs() - benchmark.startedAt);
-};
-
-const getCurrentSnapshotMetrics = (benchmark: BenchmarkAccumulator): {
+const computeFpsMetrics = (benchmark: BenchmarkAccumulator): {
   previewFps: number;
   recentWindowFps: number;
   effectiveFps: number;
   runtimeMs: number;
 } => {
   return {
-    previewFps: resolvePreviewFps(benchmark),
-    recentWindowFps: resolveRecentWindowFps(benchmark),
-    effectiveFps: resolveSessionAverageFps(benchmark),
-    runtimeMs: computeBenchmarkRuntimeMs(benchmark),
+    previewFps: roundMetric(clampMetric(computeLatestFrameFps(benchmark.frameIntervalSamples))),
+    recentWindowFps: roundMetric(clampMetric(computeRecentWindowFps(benchmark.frameIntervalSamples, 3000))),
+    effectiveFps: roundMetric(clampMetric(computeActiveStreamingFps(
+      benchmark.totalFrames,
+      benchmark.firstFrameAt,
+      benchmark.lastFrameAt,
+      benchmark.totalReconnectDowntimeMs,
+    ))),
+    runtimeMs: benchmark.startedAt === null ? 0 : Math.max(0, nowMs() - benchmark.startedAt),
   };
-};
-
-const getCurrentUiMetrics = (benchmark: BenchmarkAccumulator): {
-  previewFps: number;
-  recentWindowFps: number;
-  effectiveFps: number;
-} => {
-  return {
-    previewFps: resolvePreviewFps(benchmark),
-    recentWindowFps: resolveRecentWindowFps(benchmark),
-    effectiveFps: resolveEffectiveFps(benchmark),
-  };
-};
-
-const getBenchmarkMetrics = (benchmark: BenchmarkAccumulator): {
-  previewFps: number;
-  recentWindowFps: number;
-  effectiveFps: number;
-  runtimeMs: number;
-} => {
-  return getCurrentSnapshotMetrics(benchmark);
 };
 
 const applyUiMetrics = (benchmark: BenchmarkAccumulator, metrics: FrameSourceMetrics): void => {
-  const current = getCurrentUiMetrics(benchmark);
+  const current = computeFpsMetrics(benchmark);
   metrics.previewFps = current.previewFps;
   metrics.recentWindowFps = current.recentWindowFps;
   metrics.effectiveFps = current.effectiveFps;
-};
-
-const setLastIpcMetric = (metrics: FrameSourceMetrics, value: number): void => {
-  metrics.lastIpcMs = roundMetric(Math.max(0, value));
-};
-
-const setLastDecodeMetric = (metrics: FrameSourceMetrics, value: number): void => {
-  metrics.lastDecodeMs = roundMetric(Math.max(0, value));
-};
-
-const setLastPayloadMetric = (metrics: FrameSourceMetrics, value: number): void => {
-  metrics.lastPayloadBytes = Math.max(0, value);
-};
-
-const resetFirstFrameAt = (benchmark: BenchmarkAccumulator): void => {
-  benchmark.firstFrameAt = null;
-};
-
-const markBenchmarkFirstFrame = (benchmark: BenchmarkAccumulator, timestamp: number): void => {
-  if (benchmark.firstFrameAt === null) {
-    benchmark.firstFrameAt = timestamp;
-  }
 };
 
 const pushBenchmarkFrameInterval = (
@@ -940,8 +821,6 @@ const createEmptyBenchmarkSnapshot = (): FrameSourceBenchmarkSnapshot => {
     targetPreviewFps: DEFAULT_SCANNER_CONFIG.framerate,
     frameIndex: 0,
     totalFrames: 0,
-    totalPolls: 0,
-    emptyPolls: 0,
     previewFps: 0,
     recentWindowFps: 0,
     effectiveFps: 0,
@@ -953,10 +832,6 @@ const createEmptyBenchmarkSnapshot = (): FrameSourceBenchmarkSnapshot => {
       height: null,
     },
     recentError: null,
-    frameIntervalMs: summarizeSamples([]),
-    ipcMs: summarizeSamples([]),
-    decodeMs: summarizeSamples([]),
-    payloadBytes: summarizeSamples([]),
     reconnect: {
       count: 0,
       inProgress: false,
@@ -1081,7 +956,7 @@ export class TauriNativeFrameSource implements FrameSource {
   }
 
   getBenchmarkSnapshot(): FrameSourceBenchmarkSnapshot {
-    const snapshotMetrics = getBenchmarkMetrics(this.benchmark);
+    const snapshotMetrics = computeFpsMetrics(this.benchmark);
 
     return {
       collectedAt: nowMs(),
@@ -1091,8 +966,6 @@ export class TauriNativeFrameSource implements FrameSource {
       targetPreviewFps: this.config.framerate,
       frameIndex: this.benchmark.totalFrames,
       totalFrames: this.benchmark.totalFrames,
-      totalPolls: this.benchmark.totalPolls,
-      emptyPolls: this.benchmark.totalEmptyPolls,
       previewFps: snapshotMetrics.previewFps,
       recentWindowFps: snapshotMetrics.recentWindowFps,
       effectiveFps: snapshotMetrics.effectiveFps,
@@ -1104,10 +977,6 @@ export class TauriNativeFrameSource implements FrameSource {
         height: this.state.metrics.previewHeight,
       },
       recentError: this.state.lastError,
-      frameIntervalMs: summarizeSamples(this.benchmark.frameIntervalSamples),
-      ipcMs: summarizeSamples(this.benchmark.ipcSamples),
-      decodeMs: summarizeSamples(this.benchmark.decodeSamples),
-      payloadBytes: summarizeSamples(this.benchmark.payloadSamples),
       reconnect: {
         count: this.benchmark.reconnectCount,
         inProgress: this.benchmark.reconnectStartedAt !== null,
@@ -1854,7 +1723,9 @@ export class TauriNativeFrameSource implements FrameSource {
 
     this.benchmark.totalFrames += 1;
     this.benchmark.lastFrameAt = timestamp;
-    markBenchmarkFirstFrame(this.benchmark, timestamp);
+    if (this.benchmark.firstFrameAt === null) {
+      this.benchmark.firstFrameAt = timestamp;
+    }
     pushWindowSample(this.benchmark.ipcSamples, ipcMs);
     pushWindowSample(this.benchmark.decodeSamples, decodeMs);
     pushWindowSample(this.benchmark.payloadSamples, payloadBytes);
@@ -1865,9 +1736,9 @@ export class TauriNativeFrameSource implements FrameSource {
 
     this.state.metrics.frameCount = this.benchmark.totalFrames;
     this.state.metrics.consecutiveEmptyPolls = 0;
-    setLastPayloadMetric(this.state.metrics, payloadBytes);
-    setLastIpcMetric(this.state.metrics, ipcMs);
-    setLastDecodeMetric(this.state.metrics, decodeMs);
+    this.state.metrics.lastPayloadBytes = Math.max(0, payloadBytes);
+    this.state.metrics.lastIpcMs = roundMetric(Math.max(0, ipcMs));
+    this.state.metrics.lastDecodeMs = roundMetric(Math.max(0, decodeMs));
     this.state.metrics.previewWidth = width;
     this.state.metrics.previewHeight = height;
     this.state.metrics.lastFrameAt = timestamp;
@@ -2070,7 +1941,7 @@ export class TauriNativeFrameSource implements FrameSource {
     this.state = createInitialState();
     this.state.capabilities = { ...DEFAULT_CAPABILITIES };
     this.benchmark.startedAt = nowMs();
-    resetFirstFrameAt(this.benchmark);
+    this.benchmark.firstFrameAt = null;
     this.benchmark.totalFrames = 0;
     this.benchmark.totalPolls = 0;
     this.benchmark.totalEmptyPolls = 0;
