@@ -525,7 +525,8 @@ const buildStillCaptureFile = (
 ): File => {
   const extension = mimeType === "image/png" ? "png" : "jpg";
   const fileName = `camera_still_${new Date().toISOString().replace(/[:.]/g, "-")}.${extension}`;
-  return new File([bytes], fileName, { type: mimeType });
+  const blob = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+  return new File([blob], fileName, {type: mimeType});
 };
 const BENCHMARK_EMIT_INTERVAL_MS = 250;
 const BENCHMARK_WINDOW_SIZE = 240;
