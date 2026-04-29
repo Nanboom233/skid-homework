@@ -307,6 +307,7 @@
   "document-scanner": {
     "title": "Document Scanner",
     "actions": {
+      "close": "Close",
       "send-to-ai": "Send to AI ({{count}})"
     },
     "overlay": {

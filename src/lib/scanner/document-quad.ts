@@ -72,6 +72,21 @@ export const orderDocumentQuadPoints = (points: Point[] | null | undefined): Poi
   ];
 };
 
+export const isConvexOrderedQuad = (points: Point[]): boolean => {
+  let positive = 0;
+  let negative = 0;
+  for (let i = 0; i < 4; i += 1) {
+    const curr = points[i];
+    const next = points[(i + 1) % 4];
+    const after = points[(i + 2) % 4];
+    const cross = (next.x - curr.x) * (after.y - next.y)
+                - (next.y - curr.y) * (after.x - next.x);
+    if (cross > 0) positive += 1;
+    else if (cross < 0) negative += 1;
+  }
+  return !(positive > 0 && negative > 0);
+};
+
 export const assessDocumentQuad = (
   points: Point[] | null | undefined,
   frameWidth: number,
@@ -163,6 +178,20 @@ export const assessDocumentQuad = (
       shortestToLongestEdgeRatio: shortestEdge / longestEdge,
       borderTouchCount: null,
       reason: "Document quad ordering is inconsistent after normalization.",
+    };
+  }
+
+  if (!isConvexOrderedQuad(orderedPoints)) {
+    return {
+      trustworthy: false,
+      orderedPoints,
+      areaRatio,
+      widthBalance: null,
+      heightBalance: null,
+      diagonalBalance: null,
+      shortestToLongestEdgeRatio: shortestEdge / longestEdge,
+      borderTouchCount: null,
+      reason: "Document quad is non-convex or self-intersecting.",
     };
   }
 
@@ -300,25 +329,7 @@ export const validateQuadGeometry = (
     };
   }
 
-  const edges: Array<[number, number]> = [
-    [tr.x - tl.x, tr.y - tl.y],
-    [br.x - tr.x, br.y - tr.y],
-    [bl.x - br.x, bl.y - br.y],
-    [tl.x - bl.x, tl.y - bl.y],
-  ];
-  let positive = 0;
-  let negative = 0;
-  for (let i = 0; i < 4; i += 1) {
-    const [ax, ay] = edges[i];
-    const [bx, by] = edges[(i + 1) % 4];
-    const cross = (ax * by) - (ay * bx);
-    if (cross > 0) {
-      positive += 1;
-    } else if (cross < 0) {
-      negative += 1;
-    }
-  }
-  if (positive > 0 && negative > 0) {
+  if (!isConvexOrderedQuad([tl, tr, br, bl])) {
     return {valid: false, reason: "Quad is non-convex or self-intersecting."};
   }
 

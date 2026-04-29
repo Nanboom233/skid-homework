@@ -1,5 +1,5 @@
 import {Camera, FileText, MoreVertical, Upload} from "lucide-react";
-import ScannerView from "../scanner/ScannerView";
+import {ScannerWorkspace} from "../scanner/ScannerWorkspace";
 import {Button} from "../ui/button";
 import {toast} from "sonner";
 import {useCallback, useEffect, useRef, useState} from "react";
@@ -298,6 +298,11 @@ export default function UploadArea({ appendFiles, allowPdf }: UploadAreaProps) {
     [adbBusy, handleAdbError, isWorking, t],
   );
 
+  const handleDocumentsCaptured = useCallback(
+    (files: File[]) => appendFiles(files, "scanner"),
+    [appendFiles],
+  );
+
   const uploadShortcut = useShortcut("upload", () => handleUploadBtnClicked(), [
     handleUploadBtnClicked,
   ]);
@@ -499,11 +504,13 @@ export default function UploadArea({ appendFiles, allowPdf }: UploadAreaProps) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-      <ScannerView
-        isOpen={scannerDialogOpen}
-        onOpenChange={setScannerDialogOpen}
-        onDocumentsCaptured={(files) => appendFiles(files, "scanner")}
-      />
+      {scannerDialogOpen && (
+        <ScannerWorkspace
+          isOpen={scannerDialogOpen}
+          onOpenChange={setScannerDialogOpen}
+          onDocumentsCaptured={handleDocumentsCaptured}
+        />
+      )}
     </>
   );
 }

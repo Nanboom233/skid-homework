@@ -257,34 +257,24 @@ export const stopTauriDetectionLoop = async (): Promise<void> => {
 
 /**
  * Subscribe to detection result events from the Rust detection loop.
+ * Auto-capture is derived from DetectionResultEvent.autoCaptureTriggered,
+ * so this helper treats scanner-detection as the single event source and
+ * does not subscribe to the legacy scanner-auto-capture channel.
  * Returns an unsubscribe function.
  */
 export const listenTauriDetectionEvents = async (
   onDetection: (event: DetectionResultEvent) => void,
-  onAutoCapture?: (event: DetectionResultEvent) => void,
 ): Promise<() => void> => {
   if (!isTauri()) {
     return () => {};
   }
 
   const {listen} = await import("@tauri-apps/api/event");
-  const unsubscribers: Array<() => void> = [];
-
   const detectionUnsub = await listen<DetectionResultEvent>("scanner-detection", (event) => {
     onDetection(event.payload);
   });
-  unsubscribers.push(detectionUnsub);
-
-  if (onAutoCapture) {
-    const autoCaptureUnsub = await listen<DetectionResultEvent>("scanner-auto-capture", (event) => {
-      onAutoCapture(event.payload);
-    });
-    unsubscribers.push(autoCaptureUnsub);
-  }
 
   return () => {
-    for (const unsub of unsubscribers) {
-      unsub();
-    }
+    detectionUnsub();
   };
 };

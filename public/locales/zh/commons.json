@@ -307,6 +307,7 @@
   "document-scanner": {
     "title": "文档扫描",
     "actions": {
+      "close": "关闭",
       "send-to-ai": "发送到 AI（{{count}}）"
     },
     "overlay": {

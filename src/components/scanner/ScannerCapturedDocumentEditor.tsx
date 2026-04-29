@@ -20,15 +20,6 @@ import {useBlobDataUrl} from "@/hooks/use-blob-data-url";
 import {mapPointFromSourceToRotatedFrame, mapPointFromRotatedFrameToSource} from "@/lib/scanner/preview-orientation";
 import {refineDocumentCorners} from "@/lib/tauri/scanner";
 
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-
 export type EditorColorMode = "auto" | "color" | "grayscale" | "binary";
 
 export interface PostProcessOptions {
@@ -165,21 +156,19 @@ export function ScannerCapturedDocumentEditor({
   onApply,
   onPreviewRequest,
 }: ScannerCapturedDocumentEditorProps) {
+  if (!open || !document) return null;
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[92vh] overflow-y-auto w-[calc(100vw-1rem)] max-w-[calc(100vw-1rem)] sm:max-w-[min(100vw-2rem,920px)]">
-        {open && document ? (
-          <ScannerCapturedDocumentEditorBody
-            key={buildDocumentEditorKey(document)}
-            document={document}
-            isApplying={isApplying}
-            onOpenChange={onOpenChange}
-            onApply={onApply}
-            onPreviewRequest={onPreviewRequest}
-          />
-        ) : null}
-      </DialogContent>
-    </Dialog>
+    <div className="absolute inset-0 z-20 flex flex-col overflow-hidden bg-background">
+      <ScannerCapturedDocumentEditorBody
+        key={buildDocumentEditorKey(document)}
+        document={document}
+        isApplying={isApplying}
+        onOpenChange={onOpenChange}
+        onApply={onApply}
+        onPreviewRequest={onPreviewRequest}
+      />
+    </div>
   );
 }
 
@@ -261,6 +250,21 @@ function ScannerCapturedDocumentEditorBody({
       window.removeEventListener("resize", updateViewportSize);
     };
   }, []);
+
+  useEffect(() => {
+    const handleEscape = (e: KeyboardEvent): void => {
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (previewFullscreen) {
+        setPreviewFullscreen(false);
+      } else {
+        onOpenChange(false);
+      }
+    };
+    window.document.addEventListener("keydown", handleEscape);
+    return () => window.document.removeEventListener("keydown", handleEscape);
+  }, [onOpenChange, previewFullscreen]);
 
   // Clean up custom preview URL on unmount
   useEffect(() => {
@@ -397,12 +401,13 @@ function ScannerCapturedDocumentEditorBody({
   const sourcePreviewHeight = Math.max(1, Math.round(document.sourceHeight * previewScale));
 
   return (
-    <>
-      <DialogHeader>
-        <DialogTitle>{t("document-scanner.editor.title")}</DialogTitle>
-        <DialogDescription>{t("document-scanner.editor.description")}</DialogDescription>
-      </DialogHeader>
+    <div className="flex h-full min-h-0 flex-col" role="dialog" aria-modal="true" aria-labelledby="scanner-editor-title" aria-describedby="scanner-editor-description">
+      <div className="flex flex-col space-y-1.5 border-b p-4 sm:p-6 shrink-0">
+        <h2 id="scanner-editor-title" className="text-lg font-semibold leading-none tracking-tight">{t("document-scanner.editor.title")}</h2>
+        <p id="scanner-editor-description" className="text-sm text-muted-foreground">{t("document-scanner.editor.description")}</p>
+      </div>
 
+      <div className="flex-1 overflow-y-auto p-4 sm:p-6">
       <div className="space-y-4">
         {/* Corner editor canvas */}
         <div className="rounded-xl border bg-muted/20 p-3">
@@ -697,8 +702,9 @@ function ScannerCapturedDocumentEditorBody({
           ) : null}
         </div>
       </div>
+      </div>
 
-      <DialogFooter className="gap-2 sm:justify-between">
+      <div className="flex flex-col-reverse gap-2 border-t p-4 sm:flex-row sm:justify-between sm:p-6 shrink-0 bg-background">
         <Button variant="outline" onClick={handleReset} disabled={isApplying}>
           {t("document-scanner.editor.actions.reset")}
         </Button>
@@ -712,30 +718,27 @@ function ScannerCapturedDocumentEditorBody({
               : t("document-scanner.editor.actions.apply")}
           </Button>
         </div>
-      </DialogFooter>
+      </div>
 
-      {/* Fullscreen preview overlay */}
-      <Dialog open={previewFullscreen} onOpenChange={setPreviewFullscreen}>
-        <DialogContent className="max-w-[95vw] max-h-[95vh] p-2 bg-black/95 border-white/10">
-          <DialogTitle className="sr-only">
-            {t("document-scanner.editor.postprocess.preview.fullscreen-alt")}
-          </DialogTitle>
-          {displayedPreviewUrl ? (
-            <button
-              type="button"
-              className="w-full h-full flex items-center justify-center cursor-zoom-out"
-              onClick={() => setPreviewFullscreen(false)}
-            >
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={displayedPreviewUrl}
-                alt={t("document-scanner.editor.postprocess.preview.fullscreen-alt")}
-                className="max-w-full max-h-[88vh] object-contain"
-              />
-            </button>
-          ) : null}
-        </DialogContent>
-      </Dialog>
-    </>
+      {previewFullscreen && displayedPreviewUrl && (
+        <div
+          ref={(el) => el?.focus()}
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/95 backdrop-blur-sm"
+          onClick={() => setPreviewFullscreen(false)}
+          tabIndex={-1}
+          role="dialog"
+          aria-modal="true"
+          aria-label={t("document-scanner.editor.postprocess.preview.fullscreen-alt")}
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={displayedPreviewUrl}
+            alt={t("document-scanner.editor.postprocess.preview.fullscreen-alt")}
+            className="max-w-[95vw] max-h-[90vh] object-contain cursor-zoom-out"
+            onClick={() => setPreviewFullscreen(false)}
+          />
+        </div>
+      )}
+    </div>
   );
 }

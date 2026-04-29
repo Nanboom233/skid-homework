@@ -5,7 +5,7 @@ import {useTranslation} from "react-i18next";
 
 import {Badge} from "@/components/ui/badge";
 import {Button} from "@/components/ui/button";
-import {Card, CardContent, CardDescription, CardHeader, CardTitle,} from "@/components/ui/card";
+import {Card, CardContent, CardHeader, CardTitle,} from "@/components/ui/card";
 import {Label} from "@/components/ui/label";
 import {Select, SelectContent, SelectItem, SelectTrigger, SelectValue} from "@/components/ui/select";
 import {Separator} from "@/components/ui/separator";
@@ -20,10 +20,8 @@ interface ScannerControlsProps {
   isStable: boolean;
   requestedPostProcessBackend: ScannerPostProcessBackend;
   previewOrientation: "landscape" | "portrait";
-  imageEnhancement: boolean;
   onPostProcessBackendChange: (backend: ScannerPostProcessBackend) => void;
   onAutoCaptureChange: (enabled: boolean) => void;
-  onImageEnhancementChange: (enabled: boolean) => void;
   onPreviewOrientationToggle: () => void;
   onStart: () => void;
   onStop: () => void;
@@ -45,10 +43,8 @@ export function ScannerControls({
   isStable,
   requestedPostProcessBackend,
   previewOrientation,
-  imageEnhancement,
   onPostProcessBackendChange,
   onAutoCaptureChange,
-  onImageEnhancementChange,
   onPreviewOrientationToggle,
   onStart,
   onStop,
@@ -75,11 +71,10 @@ export function ScannerControls({
             {isStable ? t("badges.stable") : t("badges.unstable")}
           </Badge>
         </div>
-        <CardDescription>{t("description")}</CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
         <div className="grid gap-3 rounded-lg border bg-background/60 p-3">
-          <div className="grid gap-3 md:grid-cols-2">
+          <div className="grid gap-3">
             <div className="space-y-2">
               <Label htmlFor="scanner-postprocess-backend">
                 {t("postprocess-backend.label")}
@@ -102,15 +97,10 @@ export function ScannerControls({
                 </SelectContent>
               </Select>
             </div>
-            <div className="flex flex-col justify-center">
-              <p className="text-xs text-muted-foreground pt-3 md:pt-6">
-                {t("postprocess-backend.description")}
-              </p>
-            </div>
           </div>
         </div>
 
-        <div className={isStreaming ? "grid gap-2 sm:grid-cols-2 xl:grid-cols-3" : "grid gap-2 sm:grid-cols-2"}>
+        <div className="grid gap-2 sm:grid-cols-2">
           <Button
             variant="outline"
             onClick={onPreviewOrientationToggle}
@@ -130,32 +120,33 @@ export function ScannerControls({
               {t("actions.start")}
             </Button>
           ) : (
-            <>
-              <Button
-                variant="destructive"
-                onClick={onStop}
-                className="w-full justify-center gap-2"
-                disabled={isProcessing}
-              >
-                <Square className="h-4 w-4" />
-                {t("actions.stop")}
-              </Button>
-              <Button
-                variant="outline"
-                onClick={onPreviewCapture}
-                className="w-full justify-center gap-2"
-                disabled={isProcessing}
-              >
-                <ScanLine className="h-4 w-4" />
-                {isProcessing ? t("actions.processing") : t("actions.capture")}
-              </Button>
-            </>
+            <Button
+              variant="destructive"
+              onClick={onStop}
+              className="w-full justify-center gap-2"
+              disabled={isProcessing}
+            >
+              <Square className="h-4 w-4" />
+              {t("actions.stop")}
+            </Button>
           )}
         </div>
 
+        {showStopAction && (
+          <Button
+            variant="outline"
+            onClick={onPreviewCapture}
+            className="w-full justify-center gap-2"
+            disabled={isProcessing}
+          >
+            <ScanLine className="h-4 w-4" />
+            {isProcessing ? t("actions.processing") : t("actions.capture")}
+          </Button>
+        )}
+
         <Separator />
 
-        <div className="grid gap-3 md:grid-cols-2">
+        <div className="grid gap-3">
           <div className="flex items-start space-x-3 rounded-md border p-2.5 shadow-sm">
             <Switch
               id="auto-capture"
@@ -167,26 +158,6 @@ export function ScannerControls({
               <Label htmlFor="auto-capture" className="cursor-pointer text-sm font-medium">
                 {t("auto-capture.label")}
               </Label>
-              <p className="text-xs text-muted-foreground">
-                {t("auto-capture.description")}
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-start space-x-3 rounded-md border p-2.5 shadow-sm">
-            <Switch
-              id="image-enhancement"
-              checked={imageEnhancement}
-              onCheckedChange={onImageEnhancementChange}
-              disabled={isProcessing}
-            />
-            <div className="min-w-0 space-y-1">
-              <Label htmlFor="image-enhancement" className="cursor-pointer text-sm font-medium">
-                {t("image-enhancement.label")}
-              </Label>
-              <p className="text-xs text-muted-foreground">
-                {t("image-enhancement.description")}
-              </p>
             </div>
           </div>
         </div>
