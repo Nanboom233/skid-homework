@@ -1,4 +1,4 @@
-﻿use std::collections::VecDeque;
+use std::collections::VecDeque;
 use std::io::Cursor;
 
 use std::time::Instant;
@@ -410,6 +410,7 @@ fn process_image_request(
             let perspective_started_at = Instant::now();
             let (target_w, target_h, projection, _from, _to) =
                 compute_document_projection(points, current.width() as f32, current.height() as f32)?;
+            validate_image_dimensions(target_w, target_h, "perspective warp output")?;
             perspective_ms = Some(perspective_started_at.elapsed().as_secs_f64() * 1000.0);
 
             let mut warped = RgbaImage::new(target_w, target_h);

@@ -23,7 +23,6 @@ pub async fn tauri_scanner_encode_png_rgba(
 ) -> Result<(), String> {
     let encoded_png = tauri::async_runtime::spawn_blocking(move || {
         const MAX_PNG_PIXELS: u64 = 50_000_000; // 50 megapixels
-        const MAX_PNG_BYTES: usize = 100 * 1024 * 1024; // 100 MB
 
         if width == 0 || height == 0 {
             return Err("PNG encode dimensions must be greater than zero.".to_string());

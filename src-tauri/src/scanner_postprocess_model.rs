@@ -567,6 +567,10 @@ pub fn run_native_postprocess_model_with_runtime_hints(
 
     let model = config.native_residual_control_points;
     let model_id = model.id.clone();
+    let model_path = selected_resource_root.path.join(model.model_path.as_str());
+    // Validate the model path stays within the resource root to prevent
+    // path traversal via a malicious scanner-postprocess-model.json.
+    scanner_resource::validate_path_containment(&model_path, &selected_resource_root.path)?;
     let control_grid_shape = model
         .control_grid_shape
         .map(|[columns, rows]| format!("{columns}x{rows}"));
