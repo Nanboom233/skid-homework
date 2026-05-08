@@ -1,7 +1,6 @@
 "use client";
 
 import {
-  DEFAULT_BASE_BY_PROVIDER,
   useAiStore,
 } from "@/store/ai-store";
 import {
@@ -63,28 +62,26 @@ export default function SettingsPage() {
   // Only allow internal paths to prevent open redirect / XSS via javascript: scheme
   const navTargetPath = rawFrom?.startsWith("/") && !rawFrom.startsWith("//") ? rawFrom : null;
 
-  const {
-    sources,
-    activeSourceId,
-    setActiveSource,
-    fallbackModel,
-    currentModel,
-    updateSource,
-    setFallbackModel,
-    setCurrentModel,
-    isCustomModel,
-    setIsCustomModel,
-    isCustomFallback,
-    setIsCustomFallback,
-    customModelName,
-    setCustomModelName,
-    customModelSourceId,
-    setCustomModelSourceId,
-    customFallbackName,
-    setCustomFallbackName,
-    customFallbackSourceId,
-    setCustomFallbackSourceId
-  } = useAiStore((s) => s);
+  const sources = useAiStore((s) => s.sources);
+  const activeSourceId = useAiStore((s) => s.activeSourceId);
+  const setActiveSource = useAiStore((s) => s.setActiveSource);
+  const fallbackModel = useAiStore((s) => s.fallbackModel);
+  const currentModel = useAiStore((s) => s.currentModel);
+  const updateSource = useAiStore((s) => s.updateSource);
+  const setFallbackModel = useAiStore((s) => s.setFallbackModel);
+  const setCurrentModel = useAiStore((s) => s.setCurrentModel);
+  const isCustomModel = useAiStore((s) => s.isCustomModel);
+  const setIsCustomModel = useAiStore((s) => s.setIsCustomModel);
+  const isCustomFallback = useAiStore((s) => s.isCustomFallback);
+  const setIsCustomFallback = useAiStore((s) => s.setIsCustomFallback);
+  const customModelName = useAiStore((s) => s.customModelName);
+  const setCustomModelName = useAiStore((s) => s.setCustomModelName);
+  const customModelSourceId = useAiStore((s) => s.customModelSourceId);
+  const setCustomModelSourceId = useAiStore((s) => s.setCustomModelSourceId);
+  const customFallbackName = useAiStore((s) => s.customFallbackName);
+  const setCustomFallbackName = useAiStore((s) => s.setCustomFallbackName);
+  const customFallbackSourceId = useAiStore((s) => s.customFallbackSourceId);
+  const setCustomFallbackSourceId = useAiStore((s) => s.setCustomFallbackSourceId);
 
   const {
     imageEnhancement: imageEnhancement,
