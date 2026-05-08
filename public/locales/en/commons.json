@@ -366,7 +366,9 @@
         "reset": "Reset",
         "cancel": "Cancel",
         "apply": "Apply Crop",
-        "applying": "Applying..."
+        "applying": "Applying...",
+        "refine-corners": "Refine Corners",
+        "refining": "Refining..."
       },
       "postprocess": {
         "title": "Post-Processing Options",
@@ -384,6 +386,12 @@
         "postprocess-backend-options": {
           "heuristic": "Heuristic",
           "native-ml-v1": "Native ML v1"
+        },
+        "perspective-transform": "Perspective Transform",
+        "grid-postprocess": "Grid Post-Process",
+        "grid-options": {
+          "none": "None (raw)",
+          "x-stretch-equalize": "X-Stretch Equalize"
         },
         "recommended-on": "Recommended: On",
         "recommended-off": "Recommended: Off",

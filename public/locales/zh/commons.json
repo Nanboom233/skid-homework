@@ -364,7 +364,9 @@
         "reset": "重置",
         "cancel": "取消",
         "apply": "应用裁切",
-        "applying": "应用中..."
+        "applying": "应用中...",
+        "refine-corners": "自动吸附角点",
+        "refining": "正在吸附..."
       },
       "postprocess": {
         "title": "后处理选项",
@@ -382,6 +384,12 @@
         "postprocess-backend-options": {
           "heuristic": "Heuristic",
           "native-ml-v1": "Native ML v1"
+        },
+        "perspective-transform": "透视变换",
+        "grid-postprocess": "网格后处理",
+        "grid-options": {
+          "none": "无 (保留原始)",
+          "x-stretch-equalize": "X轴拉伸均衡"
         },
         "recommended-on": "推荐: 开",
         "recommended-off": "推荐: 关",

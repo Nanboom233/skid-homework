@@ -330,6 +330,8 @@ export default interface Resources {
           "apply": "应用裁切",
           "applying": "应用中...",
           "cancel": "取消",
+          "refine-corners": "自动吸附角点",
+          "refining": "正在吸附...",
           "reset": "重置"
         },
         "description": "拖动四个角点对齐文档边缘，然后重新裁切。",
@@ -343,8 +345,14 @@ export default interface Resources {
             "color": "彩色",
             "grayscale": "灰度"
           },
+          "grid-options": {
+            "none": "无 (保留原始)",
+            "x-stretch-equalize": "X轴拉伸均衡"
+          },
+          "grid-postprocess": "网格后处理",
           "image-enhancement": "图像增强",
           "paper-crop": "纸面边距裁切",
+          "perspective-transform": "透视变换",
           "postprocess-backend": "后处理后端",
           "postprocess-backend-options": {
             "heuristic": "Heuristic",
