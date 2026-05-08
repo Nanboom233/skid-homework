@@ -51,6 +51,7 @@ fn main() {
             rgba_height: Some(height),
             max_width,
             max_height,
+            backend: None,
         }
     } else {
         ScannerDetectDocumentRequest {
@@ -61,6 +62,7 @@ fn main() {
             rgba_height: None,
             max_width,
             max_height,
+            backend: None,
         }
     };
 

@@ -1,5 +1,4 @@
 use std::collections::VecDeque;
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
@@ -21,7 +20,6 @@ use crate::scanner_resource;
 use crate::stream_decoder::get_latest_preview_frame_packet;
 
 const STAGE: &str = "ort-runtime";
-const CONFIG_RELATIVE_PATH: &str = "scanner-detect-config.json";
 const WINDOWS_ORT_RELATIVE_PATH: &str = "onnxruntime/windows/onnxruntime.dll";
 const WINDOWS_ORT_SHARED_RELATIVE_PATH: &str =
     "onnxruntime/windows/onnxruntime_providers_shared.dll";
@@ -50,53 +48,46 @@ impl ScannerModelVariant {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone)]
 pub struct ScannerDetectModelConfig {
     id: String,
     kind: String,
     task: String,
     model_path: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     input_name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     output_name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     input_size: Option<[u32; 2]>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ScannerDetectWindowsConfig {
-    preferred_provider: String,
-    runtime_library: String,
-    shared_library: String,
-    provider_library: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ScannerDetectLinuxConfig {
-    preferred_providers: Vec<String>,
-    runtime_library: String,
-    #[serde(default)]
-    provider_libraries: Vec<String>,
-    official_gpu_release_artifact: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone)]
 pub struct ScannerDetectConfig {
-    stage: String,
-    task: String,
     intended_primary_model: ScannerDetectModelConfig,
     active_public_baseline: ScannerDetectModelConfig,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    windows: Option<ScannerDetectWindowsConfig>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    linux: Option<ScannerDetectLinuxConfig>,
-    #[serde(default)]
-    notes: Vec<String>,
+}
+
+/// Hardcoded model configuration — these values are tightly coupled to the
+/// bundled ONNX model files and must not be user-editable.
+fn hardcoded_scanner_detect_config() -> ScannerDetectConfig {
+    ScannerDetectConfig {
+        intended_primary_model: ScannerDetectModelConfig {
+            id: "document-boundary-yolo-pose-4pt".to_string(),
+            kind: "planned-primary".to_string(),
+            task: "document-corner-keypoints".to_string(),
+            model_path: "models/document-boundary-yolo-pose.onnx".to_string(),
+            input_name: None,
+            output_name: None,
+            input_size: None,
+        },
+        active_public_baseline: ScannerDetectModelConfig {
+            id: "docaligner-fastvit-sa24".to_string(),
+            kind: "public-baseline".to_string(),
+            task: "document-corner-heatmap".to_string(),
+            model_path: "models/docaligner-fastvit_sa24.onnx".to_string(),
+            input_name: Some("img".to_string()),
+            output_name: Some("heatmap".to_string()),
+            input_size: Some([256, 256]),
+        },
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -108,7 +99,6 @@ struct ResolvedScannerModel {
 #[derive(Debug, Clone)]
 struct ScannerDetectConfigHandle {
     config: ScannerDetectConfig,
-    resolved_path: PathBuf,
     source: &'static str,
 }
 
@@ -195,14 +185,7 @@ pub struct ScannerDetectProbeResponse {
     message: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ScannerDetectConfigResponse {
-    config: ScannerDetectConfig,
-    source: String,
-    resolved_path: String,
-    writable_path: String,
-}
+
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -354,36 +337,7 @@ pub async fn tauri_scanner_detect_document(
     }
 }
 
-#[command]
-pub async fn tauri_scanner_read_detect_config(
-    app: AppHandle,
-) -> Result<ScannerDetectConfigResponse, String> {
-    let resource_dir_hint = app.path().resource_dir().ok();
-    let app_config_dir_hint = app.path().app_config_dir().ok();
-    let resolved = resolve_scanner_detect_config(resource_dir_hint, app_config_dir_hint)?;
-    Ok(build_scanner_detect_config_response(
-        &resolved,
-        build_scanner_detect_config_writable_path(app.path().app_config_dir().ok())?,
-    ))
-}
 
-#[command]
-pub async fn tauri_scanner_write_detect_config(
-    app: AppHandle,
-    config: ScannerDetectConfig,
-) -> Result<ScannerDetectConfigResponse, String> {
-    let writable_path = build_scanner_detect_config_writable_path(app.path().app_config_dir().ok())?;
-    validate_scanner_detect_config(&config)?;
-    write_scanner_detect_config(&writable_path, &config)?;
-    reset_scanner_detect_runtime_caches();
-
-    Ok(ScannerDetectConfigResponse {
-        config,
-        source: "app-config-override".to_string(),
-        resolved_path: scanner_resource::path_to_string(&writable_path),
-        writable_path: scanner_resource::path_to_string(&writable_path),
-    })
-}
 
 pub fn probe_native_ort_runtime() -> ScannerDetectProbeResponse {
     probe_native_ort_runtime_with_hints(None, None)
@@ -391,7 +345,7 @@ pub fn probe_native_ort_runtime() -> ScannerDetectProbeResponse {
 
 pub fn probe_native_ort_runtime_with_hints(
     resource_dir_hint: Option<PathBuf>,
-    app_config_dir_hint: Option<PathBuf>,
+    _app_config_dir_hint: Option<PathBuf>,
 ) -> ScannerDetectProbeResponse {
     let platform = std::env::consts::OS.to_string();
     let platform_target = scanner_platform::platform_target().to_string();
@@ -405,20 +359,16 @@ pub fn probe_native_ort_runtime_with_hints(
     let resource_base_dir = selected_resource_root
         .as_ref()
         .map(|candidate| candidate.path.clone());
-    let config_handle = resource_base_dir.as_ref().and_then(|base_dir| {
-        resolve_scanner_detect_config(Some(base_dir.clone()), app_config_dir_hint.clone()).ok()
+    let config_handle = resource_base_dir.as_ref().map(|_base_dir| {
+        resolve_scanner_detect_config()
     });
-    let config_error = if resource_base_dir.is_some() && config_handle.is_none() {
-        resolve_scanner_detect_config(resource_base_dir.clone(), app_config_dir_hint.clone()).err()
-    } else {
-        None
-    };
+    let config_error: Option<String> = None;
     let resource_specs =
         resource_specs_for_current_platform(config_handle.as_ref().map(|handle| &handle.config));
     let resources = build_resource_statuses(resource_base_dir.as_deref(), &resource_specs);
     let selected_model = config_handle
         .as_ref()
-        .and_then(|handle| select_model_variant(handle, &resources));
+        .and_then(|handle| select_model_variant(&handle.config, &resources));
     let preferred_provider = config_handle
         .as_ref()
         .map(|handle| preferred_provider_from_config(&handle.config))
@@ -484,9 +434,7 @@ pub fn probe_native_ort_runtime_with_hints(
             .as_ref()
             .map(|handle| handle.source.to_string())
             .unwrap_or_else(|| "unresolved".to_string()),
-        config_path: config_handle
-            .as_ref()
-            .map(|handle| scanner_resource::path_to_string(&handle.resolved_path)),
+        config_path: None,
         preferred_provider,
         provider_candidates,
         selected_model_id: selected_model.as_ref().map(|model| model.config.id.clone()),
@@ -892,139 +840,12 @@ fn scale_points_between_dimensions(
         .collect()
 }
 
-fn build_scanner_detect_config_response(
-    handle: &ScannerDetectConfigHandle,
-    writable_path: PathBuf,
-) -> ScannerDetectConfigResponse {
-    ScannerDetectConfigResponse {
-        config: handle.config.clone(),
-        source: handle.source.to_string(),
-        resolved_path: scanner_resource::path_to_string(&handle.resolved_path),
-        writable_path: scanner_resource::path_to_string(&writable_path),
+/// Returns the hardcoded scanner detect config. No external file is read.
+fn resolve_scanner_detect_config() -> ScannerDetectConfigHandle {
+    ScannerDetectConfigHandle {
+        config: hardcoded_scanner_detect_config(),
+        source: "hardcoded-internal",
     }
-}
-
-fn build_scanner_detect_config_writable_path(
-    app_config_dir_hint: Option<PathBuf>,
-) -> Result<PathBuf, String> {
-    let Some(app_config_dir) = app_config_dir_hint else {
-        return Err("Could not resolve the writable app config directory.".to_string());
-    };
-
-    Ok(app_config_dir.join(CONFIG_RELATIVE_PATH))
-}
-
-fn resolve_scanner_detect_config(
-    resource_dir_hint: Option<PathBuf>,
-    app_config_dir_hint: Option<PathBuf>,
-) -> Result<ScannerDetectConfigHandle, String> {
-    let resource_root_candidates = scanner_resource::build_resource_root_candidates(resource_dir_hint);
-    let selected_resource_root = scanner_resource::select_resource_root(&resource_root_candidates, &DETECT_INTERESTING_PATHS)
-        .ok_or_else(|| "Could not resolve the scanner resource directory.".to_string())?;
-    let default_config_path = selected_resource_root.path.join(CONFIG_RELATIVE_PATH);
-    let override_config_path = build_scanner_detect_config_writable_path(app_config_dir_hint).ok();
-
-    if let Some(override_path) = override_config_path.as_ref() {
-        if override_path.exists() {
-            let config = load_scanner_detect_config_from_path(override_path)?;
-            return Ok(ScannerDetectConfigHandle {
-                config,
-                resolved_path: override_path.clone(),
-                source: "app-config-override",
-            });
-        }
-    }
-
-    let config = load_scanner_detect_config_from_path(&default_config_path)?;
-    Ok(ScannerDetectConfigHandle {
-        config,
-        resolved_path: default_config_path,
-        source: "bundled-resource-default",
-    })
-}
-
-fn load_scanner_detect_config_from_path(path: &Path) -> Result<ScannerDetectConfig, String> {
-    let raw = fs::read_to_string(path).map_err(|error| {
-        format!(
-            "Failed to read scanner ORT config {}: {error}",
-            scanner_resource::path_to_string(path)
-        )
-    })?;
-    let config = serde_json::from_str::<ScannerDetectConfig>(&raw).map_err(|error| {
-        format!(
-            "Failed to parse scanner ORT config {}: {error}",
-            scanner_resource::path_to_string(path)
-        )
-    })?;
-    validate_scanner_detect_config(&config)?;
-    Ok(config)
-}
-
-fn write_scanner_detect_config(path: &Path, config: &ScannerDetectConfig) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| {
-            format!(
-                "Failed to create scanner ORT config directory {}: {error}",
-                scanner_resource::path_to_string(parent)
-            )
-        })?;
-    }
-
-    let payload = serde_json::to_string_pretty(config)
-        .map_err(|error| format!("Failed to serialize scanner ORT config: {error}"))?;
-    fs::write(path, payload + "\n").map_err(|error| {
-        format!(
-            "Failed to write scanner ORT config {}: {error}",
-            scanner_resource::path_to_string(path)
-        )
-    })
-}
-
-fn validate_scanner_detect_config(config: &ScannerDetectConfig) -> Result<(), String> {
-    validate_scanner_detect_model_config(&config.intended_primary_model, "intendedPrimaryModel")?;
-    validate_scanner_detect_model_config(&config.active_public_baseline, "activePublicBaseline")?;
-
-    if let Some(windows) = config.windows.as_ref() {
-        if windows.preferred_provider.trim().is_empty() {
-            return Err("windows.preferredProvider must not be empty.".to_string());
-        }
-    }
-
-    if let Some(linux) = config.linux.as_ref() {
-        if linux.preferred_providers.is_empty() {
-            return Err("linux.preferredProviders must not be empty.".to_string());
-        }
-        if linux
-            .preferred_providers
-            .iter()
-            .any(|provider| provider.trim().is_empty())
-        {
-            return Err("linux.preferredProviders must not contain empty entries.".to_string());
-        }
-    }
-
-    Ok(())
-}
-
-fn validate_scanner_detect_model_config(
-    config: &ScannerDetectModelConfig,
-    label: &str,
-) -> Result<(), String> {
-    if config.id.trim().is_empty()
-        || config.kind.trim().is_empty()
-        || config.task.trim().is_empty()
-        || config.model_path.trim().is_empty()
-    {
-        return Err(format!("{label} contains empty required fields."));
-    }
-
-    if let Some(input_size) = config.input_size {
-        if input_size[0] == 0 || input_size[1] == 0 {
-            return Err(format!("{label}.inputSize entries must be positive."));
-        }
-    }
-
-    Ok(())
 }
 
 pub fn reset_scanner_detect_runtime_caches() {
@@ -1050,8 +871,7 @@ fn reset_ort_session_cache() {
 
 
 /// Interesting paths used to score resource roots for the detection subsystem.
-const DETECT_INTERESTING_PATHS: [&str; 9] = [
-    CONFIG_RELATIVE_PATH,
+const DETECT_INTERESTING_PATHS: [&str; 8] = [
     "models/docaligner-fastvit_sa24.onnx",
     "models/document-boundary-ORT-pose.onnx",
     WINDOWS_ORT_RELATIVE_PATH,
@@ -1064,11 +884,7 @@ const DETECT_INTERESTING_PATHS: [&str; 9] = [
 
 
 fn resource_specs_for_current_platform(config: Option<&ScannerDetectConfig>) -> Vec<ResourceSpec> {
-    let mut specs = vec![ResourceSpec {
-        key: "config".to_string(),
-        relative_path: CONFIG_RELATIVE_PATH.to_string(),
-        required: true,
-    }];
+    let mut specs = Vec::new();
 
     if let Some(config) = config {
         for model in candidate_model_variants(config) {
@@ -1154,20 +970,8 @@ fn resource_exists(resources: &[ScannerDetectResourceStatus], key: &str) -> bool
         .unwrap_or(false)
 }
 
-fn preferred_provider_from_config(config: &ScannerDetectConfig) -> String {
-    match std::env::consts::OS {
-        "windows" => config
-            .windows
-            .as_ref()
-            .map(|windows| windows.preferred_provider.clone())
-            .unwrap_or_else(|| scanner_platform::default_preferred_provider().to_string()),
-        "linux" => config
-            .linux
-            .as_ref()
-            .and_then(|linux| linux.preferred_providers.first().cloned())
-            .unwrap_or_else(|| scanner_platform::default_preferred_provider().to_string()),
-        _ => scanner_platform::default_preferred_provider().to_string(),
-    }
+fn preferred_provider_from_config(_config: &ScannerDetectConfig) -> String {
+    scanner_platform::default_preferred_provider().to_string()
 }
 
 fn candidate_model_variants(config: &ScannerDetectConfig) -> Vec<ResolvedScannerModel> {
@@ -1184,10 +988,10 @@ fn candidate_model_variants(config: &ScannerDetectConfig) -> Vec<ResolvedScanner
 }
 
 fn select_model_variant(
-    handle: &ScannerDetectConfigHandle,
+    config: &ScannerDetectConfig,
     resources: &[ScannerDetectResourceStatus],
 ) -> Option<ResolvedScannerModel> {
-    candidate_model_variants(&handle.config)
+    candidate_model_variants(config)
         .into_iter()
         .find(|model| resource_exists(resources, model.variant.resource_key()))
 }
@@ -1241,17 +1045,16 @@ fn resolve_detection_runtime_context(
 
 fn build_detection_runtime_context(
     resource_dir_hint: Option<PathBuf>,
-    app_config_dir_hint: Option<PathBuf>,
+    _app_config_dir_hint: Option<PathBuf>,
 ) -> Result<DetectionRuntimeContext, String> {
     let resource_root_candidates = scanner_resource::build_resource_root_candidates(resource_dir_hint);
     let selected_resource_root = scanner_resource::select_resource_root(&resource_root_candidates, &DETECT_INTERESTING_PATHS)
         .ok_or_else(|| "Could not resolve the scanner resource directory.".to_string())?;
     let resource_base_dir = selected_resource_root.path;
-    let config_handle =
-        resolve_scanner_detect_config(Some(resource_base_dir.clone()), app_config_dir_hint)?;
+    let config_handle = resolve_scanner_detect_config();
     let resource_specs = resource_specs_for_current_platform(Some(&config_handle.config));
     let resources = build_resource_statuses(Some(&resource_base_dir), &resource_specs);
-    let selected_model = select_model_variant(&config_handle, &resources);
+    let selected_model = select_model_variant(&config_handle.config, &resources);
     let preferred_provider = preferred_provider_from_config(&config_handle.config);
 
     Ok(DetectionRuntimeContext {
@@ -1811,8 +1614,6 @@ mod tests {
 
     fn sample_scanner_detect_config() -> ScannerDetectConfig {
         ScannerDetectConfig {
-            stage: "runtime-plus-public-baseline".to_string(),
-            task: "document-boundary-stage1".to_string(),
             intended_primary_model: ScannerDetectModelConfig {
                 id: "document-boundary-ORT-pose-4pt".to_string(),
                 kind: "planned-primary".to_string(),
@@ -1831,22 +1632,6 @@ mod tests {
                 output_name: Some("heatmap".to_string()),
                 input_size: Some([256, 256]),
             },
-            windows: Some(ScannerDetectWindowsConfig {
-                preferred_provider: "directml".to_string(),
-                runtime_library: WINDOWS_ORT_RELATIVE_PATH.to_string(),
-                shared_library: WINDOWS_ORT_SHARED_RELATIVE_PATH.to_string(),
-                provider_library: WINDOWS_DIRECTML_RELATIVE_PATH.to_string(),
-            }),
-            linux: Some(ScannerDetectLinuxConfig {
-                preferred_providers: vec!["tensorrt".to_string(), "cuda".to_string()],
-                runtime_library: LINUX_ORT_RELATIVE_PATH.to_string(),
-                provider_libraries: vec![
-                    LINUX_TENSORRT_RELATIVE_PATH.to_string(),
-                    LINUX_CUDA_RELATIVE_PATH.to_string(),
-                ],
-                official_gpu_release_artifact: "onnxruntime-linux-x64-gpu-1.24.4.tgz".to_string(),
-            }),
-            notes: Vec::new(),
         }
     }
 
@@ -1882,9 +1667,6 @@ mod tests {
         let specs = resource_specs_for_current_platform(Some(&config));
         assert!(specs
             .iter()
-            .any(|spec| spec.key == "config" && spec.required));
-        assert!(specs
-            .iter()
             .any(|spec| spec.key == "model-active-public-baseline"));
         assert!(specs
             .iter()
@@ -1895,18 +1677,6 @@ mod tests {
     fn build_execution_providers_always_keeps_cpu_fallback() {
         let providers = build_scanner_execution_providers("TensorRT");
         assert!(!providers.is_empty());
-    }
-
-    #[test]
-    fn validate_scanner_detect_config_rejects_empty_linux_provider_entries() {
-        let mut config = sample_scanner_detect_config();
-        if let Some(linux) = config.linux.as_mut() {
-            linux.preferred_providers = vec!["cuda".to_string(), "".to_string()];
-        }
-
-        let error = validate_scanner_detect_config(&config)
-            .expect_err("config with empty provider should fail");
-        assert!(error.contains("linux.preferredProviders"));
     }
 
     #[test]

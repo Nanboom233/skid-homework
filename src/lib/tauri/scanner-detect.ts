@@ -10,47 +10,6 @@ export interface TauriScannerDetectResourceStatus {
   required: boolean;
 }
 
-export interface TauriScannerDetectModelConfig {
-  id: string;
-  kind: string;
-  task: string;
-  modelPath: string;
-  inputName?: string | null;
-  outputName?: string | null;
-  inputSize?: [number, number] | null;
-}
-
-export interface TauriScannerDetectWindowsConfig {
-  preferredProvider: string;
-  runtimeLibrary: string;
-  sharedLibrary: string;
-  providerLibrary: string;
-}
-
-export interface TauriScannerDetectLinuxConfig {
-  preferredProviders: string[];
-  runtimeLibrary: string;
-  providerLibraries: string[];
-  officialGpuReleaseArtifact: string;
-}
-
-export interface TauriScannerDetectConfig {
-  stage: string;
-  task: string;
-  intendedPrimaryModel: TauriScannerDetectModelConfig;
-  activePublicBaseline: TauriScannerDetectModelConfig;
-  windows?: TauriScannerDetectWindowsConfig | null;
-  linux?: TauriScannerDetectLinuxConfig | null;
-  notes: string[];
-}
-
-export interface TauriScannerDetectConfigResponse {
-  config: TauriScannerDetectConfig;
-  source: string;
-  resolvedPath: string;
-  writablePath: string;
-}
-
 export interface TauriScannerDetectProbeResult {
   stage: string;
   platform: string;
@@ -120,28 +79,6 @@ export const probeTauriScannerDetect = async (): Promise<TauriScannerDetectProbe
 
   const {invoke} = await import("@tauri-apps/api/core");
   return await invoke<TauriScannerDetectProbeResult>("tauri_scanner_probe_detect");
-};
-
-export const readTauriScannerDetectConfig = async (): Promise<TauriScannerDetectConfigResponse> => {
-  if (!isTauri()) {
-    throw new Error("Scanner ORT config is only available in Tauri desktop builds.");
-  }
-
-  const {invoke} = await import("@tauri-apps/api/core");
-  return await invoke<TauriScannerDetectConfigResponse>("tauri_scanner_read_detect_config");
-};
-
-export const writeTauriScannerDetectConfig = async (
-  config: TauriScannerDetectConfig,
-): Promise<TauriScannerDetectConfigResponse> => {
-  if (!isTauri()) {
-    throw new Error("Scanner ORT config is only available in Tauri desktop builds.");
-  }
-
-  const {invoke} = await import("@tauri-apps/api/core");
-  return await invoke<TauriScannerDetectConfigResponse>("tauri_scanner_write_detect_config", {
-    config,
-  });
 };
 
 export const detectDocumentWithTauriNativeOrt = async (

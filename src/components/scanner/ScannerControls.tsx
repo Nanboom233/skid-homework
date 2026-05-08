@@ -30,9 +30,14 @@ interface ScannerControlsProps {
 
 const translatePostProcessBackend = (
   backend: ScannerPostProcessBackend,
-  t: (key: string) => string,
+  t: ReturnType<typeof useTranslation<"commons", "document-scanner.controls">>["t"],
 ): string => {
-  return t(`postprocess-backend.options.${backend}`);
+  switch (backend) {
+    case "heuristic":
+      return t("postprocess-backend.options.heuristic");
+    case "native-ml-v1":
+      return t("postprocess-backend.options.native-ml-v1");
+  }
 };
 
 export function ScannerControls({

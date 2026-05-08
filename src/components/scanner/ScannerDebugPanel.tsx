@@ -60,6 +60,30 @@ const getPostProcessVariant = (state: string) => {
   }
 };
 
+const getFpsBenchmarkLabelKey = (label: string) => {
+  switch (label) {
+    case "pass": return "debug.badges.state.pass";
+    case "fail": return "debug.badges.state.fail";
+    default: return "debug.badges.state.pending";
+  }
+};
+
+const getCvReadyBadgeKey = (backend: string) => {
+  switch (backend) {
+    case "native-ort": return "debug.cv.badges.ready-native-ort";
+    default: return "debug.cv.badges.ready-opencv";
+  }
+};
+
+const getPostProcessBadgeKey = (state: string) => {
+  switch (state) {
+    case "processing": return "debug.capture.badges.processing";
+    case "success": return "debug.capture.badges.success";
+    case "error": return "debug.capture.badges.error";
+    default: return "debug.capture.badges.idle";
+  }
+};
+
 
 interface MetricItemProps {
   label: string;
@@ -174,7 +198,7 @@ export function ScannerDetectionDebugCard() {
           <div className="flex flex-wrap items-center gap-2 pt-2">
             <Badge variant={cvDebug.cvReady ? "default" : "destructive"}>
               {cvDebug.cvReady
-                ? t(`debug.cv.badges.ready-${cvDebug.activeBackend}`)
+                ? t(getCvReadyBadgeKey(cvDebug.activeBackend))
                 : t("debug.cv.badges.unavailable")}
             </Badge>
             <Badge variant={getReconnectVariant(connectionDebug.reconnectState)}>
@@ -189,7 +213,7 @@ export function ScannerDetectionDebugCard() {
             </Badge>
             <Badge variant={currentFpsBenchmark.variant}>
               {t("debug.badges.current", {
-                state: t(`debug.badges.state.${currentFpsBenchmark.label}`),
+                state: t(getFpsBenchmarkLabelKey(currentFpsBenchmark.label)),
                 fps: Math.round(previewDebug.previewFps ?? 0),
               })}
             </Badge>
@@ -321,7 +345,7 @@ export function ScannerPostProcessDetailsCard() {
       <CardContent className="space-y-4">
         <div className="flex flex-wrap items-center gap-2">
           <Badge variant={getPostProcessVariant(captureDebug.postProcessStatus)}>
-            {t(`debug.capture.badges.${captureDebug.postProcessStatus}`)}
+            {t(getPostProcessBadgeKey(captureDebug.postProcessStatus))}
           </Badge>
           <Badge variant={captureDebug.postProcessUsedRedetect ? "secondary" : "outline"}>
             {captureDebug.postProcessUsedRedetect ? t("debug.capture.badges.redetect-on") : t("debug.capture.badges.redetect-off")}

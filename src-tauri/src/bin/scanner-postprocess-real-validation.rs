@@ -356,6 +356,7 @@ fn resolve_document_points(
             rgba_height: None,
             max_width: None,
             max_height: None,
+            backend: None,
         },
         None,
         None,

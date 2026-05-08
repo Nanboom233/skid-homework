@@ -67,6 +67,7 @@ fn main() {
                     rgba_height: None,
                     max_width: None,
                     max_height: None,
+                    backend: None,
                 },
                 iterations,
                 false,
@@ -81,6 +82,7 @@ fn main() {
                     rgba_height: Some(rgba_height),
                     max_width: Some(320),
                     max_height: Some(180),
+                    backend: None,
                 },
                 iterations,
                 false,
@@ -95,6 +97,7 @@ fn main() {
                     rgba_height: Some(rgba_height),
                     max_width: Some(320),
                     max_height: Some(180),
+                    backend: None,
                 },
                 iterations,
                 true,
@@ -127,6 +130,7 @@ fn benchmark_mode(
         rgba_height: request_template.rgba_height,
         max_width: request_template.max_width,
         max_height: request_template.max_height,
+        backend: request_template.backend.clone(),
     };
 
     if reset_before_each_run {

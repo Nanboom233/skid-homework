@@ -858,6 +858,36 @@
         "desc": "Maximum time to wait for a response before failing."
       }
     },
+    "scanner": {
+      "title": "Scanner Settings",
+      "detection-backend": {
+        "label": "Detection Backend",
+        "options": {
+          "opencv": "OpenCV contour detector",
+          "native-ort": "Native desktop runtime"
+        }
+      },
+      "strict-mode": {
+        "label": "Strict native runtime mode"
+      },
+      "postprocess-backend": {
+        "label": "Post-Process Backend",
+        "options": {
+          "heuristic": "Heuristic",
+          "native-ml-v1": "Native ML v1"
+        }
+      },
+      "pipeline-debug": {
+        "label": "Pipeline debug mode"
+      },
+      "preview": {
+        "title": "Preview Parameters",
+        "width": "Width",
+        "height": "Height",
+        "framerate": "Framerate",
+        "camera-id": "Camera ID"
+      }
+    },
     "advanced": {
       "title": "Advanced Settings",
       "desc": "Extras that affect uploads and the interface.",
@@ -869,68 +899,6 @@
       "image-post-processing": {
         "title": "Image Post-processing",
         "enhancement": "Enable Image Enhancement"
-      },
-      "scanner-detection-backend": {
-        "label": "Scanner Detection Backend",
-        "desc": "Choose whether desktop scanning uses OpenCV contours or the native Rust/ORT runtime.",
-        "options": {
-          "opencv": "OpenCV contour detector",
-          "native-ort": "Native desktop runtime"
-        }
-      },
-      "scanner-native-ort-strict-mode": {
-        "label": "Strict native runtime mode",
-        "desc": "When enabled, scanner detection will not fall back to OpenCV if the native desktop runtime is unavailable."
-      },
-      "scanner-native-ort-config": {
-        "title": "Native Desktop Runtime Config",
-        "desc": "Desktop-only. Reads the bundled scanner ORT config and writes overrides to the writable app config directory.",
-        "actions": {
-          "reload": "Reload config",
-          "save": "Save config",
-          "saving": "Saving..."
-        },
-        "state": {
-          "ready": "Ready",
-          "not-ready": "Not ready"
-        },
-        "status": {
-          "config-source": "Config source",
-          "resolved-path": "Resolved config path",
-          "writable-path": "Writable override path",
-          "runtime-ready": "Runtime ready",
-          "session-ready": "Session ready",
-          "provider": "Preferred provider",
-          "model": "Selected model",
-          "message": "Probe message"
-        },
-        "fields": {
-          "stage": "Stage",
-          "task": "Task",
-          "id": "Model ID",
-          "kind": "Model kind",
-          "model-task": "Model task",
-          "model-path": "Model path",
-          "input-name": "Input name",
-          "output-name": "Output name",
-          "input-width": "Input width",
-          "input-height": "Input height",
-          "windows-provider": "Windows preferred provider",
-          "linux-providers": "Linux preferred providers",
-          "notes": "Notes",
-          "intended-primary": {
-            "title": "Intended primary model"
-          },
-          "active-public-baseline": {
-            "title": "Active public baseline"
-          }
-        },
-        "toasts": {
-          "load-error": "Failed to load native runtime config: {{error}}",
-          "save-success": "Native runtime config saved.",
-          "save-error": "Failed to save native runtime config: {{error}}"
-        },
-        "empty": "Desktop runtime config is not loaded yet."
       },
       "ui": {
         "title": "UI",

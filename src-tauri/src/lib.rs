@@ -34,8 +34,6 @@ pub fn run() {
             scanner_transport::tauri_adb_capture_still_stream,
             png_bridge::tauri_scanner_encode_png_rgba,
             scanner_detect::tauri_scanner_probe_detect,
-            scanner_detect::tauri_scanner_read_detect_config,
-            scanner_detect::tauri_scanner_write_detect_config,
             scanner_detect::tauri_scanner_detect_document,
             scanner_detect_loop::tauri_scanner_start_detection_loop,
             scanner_detect_loop::tauri_scanner_stop_detection_loop,
