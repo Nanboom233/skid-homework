@@ -624,7 +624,7 @@ pub fn run_native_postprocess_model_with_runtime_hints(
     };
     let model_ms = model_started_at.elapsed().as_secs_f64() * 1000.0;
 
-    // ── Diagnostic: dump grid structure for debugging ──
+    // -- Diagnostic: dump grid structure for debugging --
     #[cfg(debug_assertions)]
     {
         let shape = &point_grid.0;
@@ -632,7 +632,7 @@ pub fn run_native_postprocess_model_with_runtime_hints(
         let gh = shape.get(2).copied().unwrap_or(0) as usize;
         let gw = shape.get(3).copied().unwrap_or(0) as usize;
         let plane = gh * gw;
-        eprintln!(
+        log::debug!(
             "[UVDoc grid diag] proxy={}x{}, tensor_shape={:?}, gh={}, gw={}, plane={}",
             proxy_image.width(), proxy_image.height(), shape, gh, gw, plane
         );
@@ -646,7 +646,7 @@ pub fn run_native_postprocess_model_with_runtime_hints(
                 y_min = y_min.min(grid[plane + i]);
                 y_max = y_max.max(grid[plane + i]);
             }
-            eprintln!(
+            log::debug!(
                 "[UVDoc grid diag] ch0(X): [{:.4}..{:.4}] range={:.4}, ch1(Y): [{:.4}..{:.4}] range={:.4}",
                 x_min, x_max, x_max - x_min, y_min, y_max, y_max - y_min
             );
@@ -659,12 +659,12 @@ pub fn run_native_postprocess_model_with_runtime_hints(
                     let idx = mid_gy * gw + gx;
                     let id_x = if gw <= 1 { 0.0 } else { 2.0 * gx as f32 / (gw as f32 - 1.0) - 1.0 };
                     row_samples.push(format!(
-                        "gx{}:id={:.3} act={:.3} Δ={:.4}",
+                        "gx{}:id={:.3} act={:.3} d={:.4}",
                         gx, id_x, grid[idx], grid[idx] - id_x
                     ));
                 }
             }
-            eprintln!("[UVDoc grid diag] ch0 along mid-row(gy={}): {}", mid_gy, row_samples.join(", "));
+            log::debug!("[UVDoc grid diag] ch0 along mid-row(gy={}): {}", mid_gy, row_samples.join(", "));
 
             // Sample along mid-col (gx=gw/2): how does ch1 vary with gy?
             let mid_gx = gw / 2;
@@ -674,12 +674,12 @@ pub fn run_native_postprocess_model_with_runtime_hints(
                     let idx = gy * gw + mid_gx;
                     let id_y = if gh <= 1 { 0.0 } else { 2.0 * gy as f32 / (gh as f32 - 1.0) - 1.0 };
                     col_samples.push(format!(
-                        "gy{}:id={:.3} act={:.3} Δ={:.4}",
+                        "gy{}:id={:.3} act={:.3} d={:.4}",
                         gy, id_y, grid[plane + idx], grid[plane + idx] - id_y
                     ));
                 }
             }
-            eprintln!("[UVDoc grid diag] ch1 along mid-col(gx={}): {}", mid_gx, col_samples.join(", "));
+            log::debug!("[UVDoc grid diag] ch1 along mid-col(gx={}): {}", mid_gx, col_samples.join(", "));
 
             // CRITICAL: Check if ch0 varies primarily along rows or columns
             // and if ch1 varies primarily along columns or rows.
@@ -703,13 +703,13 @@ pub fn run_native_postprocess_model_with_runtime_hints(
             let ch1_row_top = grid[plane + 0 * gw + center_gx];
             let ch1_row_bot = grid[plane + (gh - 1) * gw + center_gx];
             let ch1_row_var = (ch1_row_bot - ch1_row_top).abs();
-            eprintln!(
-                "[UVDoc grid axis] ch0(X): col_var={:.4} row_var={:.4} → varies more along {}",
-                ch0_col_var, ch0_row_var, if ch0_col_var > ch0_row_var { "COLUMNS(gx) ✓" } else { "ROWS(gy) ⚠ SWAPPED?" }
+            log::debug!(
+                "[UVDoc grid axis] ch0(X): col_var={:.4} row_var={:.4} -> varies more along {}",
+                ch0_col_var, ch0_row_var, if ch0_col_var > ch0_row_var { "COLUMNS(gx) OK" } else { "ROWS(gy) SWAPPED?" }
             );
-            eprintln!(
-                "[UVDoc grid axis] ch1(Y): col_var={:.4} row_var={:.4} → varies more along {}",
-                ch1_col_var, ch1_row_var, if ch1_row_var > ch1_col_var { "ROWS(gy) ✓" } else { "COLUMNS(gx) ⚠ SWAPPED?" }
+            log::debug!(
+                "[UVDoc grid axis] ch1(Y): col_var={:.4} row_var={:.4} -> varies more along {}",
+                ch1_col_var, ch1_row_var, if ch1_row_var > ch1_col_var { "ROWS(gy) OK" } else { "COLUMNS(gx) SWAPPED?" }
             );
         }
     }
@@ -772,7 +772,7 @@ fn build_uvdoc_input_tensor(
 
 /// Applies the UVDoc backward-mapping grid to produce the dewarped image.
 ///
-/// Pipeline: model grid → optional postprocess → bilinear upsample → backward sample.
+/// Pipeline: model grid -> optional postprocess -> bilinear upsample -> backward sample.
 ///
 /// The grid is `[1, 2, Gh, Gw]` with channels 0 (X) and 1 (Y) in normalized
 /// `[-1, 1]` coordinates (PyTorch `align_corners=True` convention).
@@ -818,7 +818,7 @@ fn apply_uvdoc_point_grid(
             x_stretch_equalize_grid(&mut cleaned_grid, grid_height, grid_width);
         }
         _ => {
-            // "none" — use raw grid as-is
+            // "none" -- use raw grid as-is
         }
     }
 
@@ -849,7 +849,7 @@ fn apply_uvdoc_point_grid(
                 &cleaned_grid, plane_len, grid_width, grid_height, 1, grid_x, grid_y,
             );
 
-            // Convert normalized [-1, 1] → pixel coordinates (align_corners=True)
+            // Convert normalized [-1, 1] -> pixel coordinates (align_corners=True)
             // Note: The normalized coordinates refer to the source image space (proxy_image),
             // not the destination image space (out_w, out_h)
             let src_x = normalized_to_pixel(norm_x, proxy_image.width());
@@ -869,8 +869,7 @@ fn apply_uvdoc_point_grid(
 ///
 /// ## Mathematical basis
 ///
-/// Uniform text width requires `∂norm_x/∂ox = constant`.
-/// This holds iff `G[0, gy, gx] = A + B·gx` with A, B independent of gy.
+/// Uniform text width requires d(norm_x)/d(gx) = constant.
 /// The unique stretch-1.0 solution is `A = -1, B = 2/(Gw-1)` (identity).
 ///
 /// ## X-Y coupling
@@ -893,7 +892,7 @@ fn x_stretch_equalize_grid(grid: &mut [f32], grid_height: usize, grid_width: usi
     }
 
     #[cfg(debug_assertions)]
-    eprintln!(
+    log::debug!(
         "[UVDoc] grid_postprocess=x-stretch-equalize | ch0(X)->identity[-1,+1], ch1(Y)->preserved",
     );
 }

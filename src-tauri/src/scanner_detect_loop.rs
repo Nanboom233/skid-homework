@@ -162,13 +162,23 @@ async fn detection_loop(
     resource_dir: Option<std::path::PathBuf>,
     app_config_dir: Option<std::path::PathBuf>,
 ) {
-    let interval = Duration::from_millis(config.interval_ms.max(16));
-    let stable_hold = Duration::from_millis(config.stable_hold_ms);
+    // Validate and clamp config values to safe ranges.
+    let interval_ms = config.interval_ms.clamp(16, 5000);
+    let stable_frames = config.stable_frames.clamp(2, 60);
+    let variance_threshold = if config.variance_threshold.is_finite() && config.variance_threshold > 0.0 {
+        config.variance_threshold
+    } else {
+        default_variance_threshold()
+    };
+    let stable_hold_ms = config.stable_hold_ms.clamp(100, 30000);
+
+    let interval = Duration::from_millis(interval_ms);
+    let stable_hold = Duration::from_millis(stable_hold_ms);
     let backend = config.backend.clone();
 
     let mut stability_tracker = StabilityTracker::new(
-        config.stable_frames,
-        config.variance_threshold,
+        stable_frames,
+        variance_threshold,
         1, // miss_grace_frames: tolerate 1 consecutive None before clearing history
     );
     let mut presence_tracker = DetectionPresenceTracker::new(

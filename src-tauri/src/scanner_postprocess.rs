@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+﻿use std::collections::VecDeque;
 use std::io::Cursor;
 
 use std::time::Instant;
@@ -62,7 +62,7 @@ fn default_true() -> bool {
 }   
 
 fn default_color_mode() -> String {
-    "none".to_string()
+    "auto".to_string()
 }
 
 fn default_postprocess_backend() -> String {
@@ -263,16 +263,56 @@ pub fn process_scanner_postprocess_request(
     process_image_request(request, resource_dir_hint, app_config_dir_hint)
 }
 
+/// Global size limits to prevent OOM from untrusted payloads.
+const MAX_IMAGE_BYTES: usize = 100 * 1024 * 1024; // 100 MB
+const MAX_PIXELS: u64 = 50_000_000; // 50 megapixels
+
+/// Decode an image from raw bytes with size validation.
+fn decode_image_with_limits(bytes: &[u8], context: &str) -> Result<image::DynamicImage, String> {
+    if bytes.len() > MAX_IMAGE_BYTES {
+        return Err(format!(
+            "{}: input size {} bytes exceeds limit of {} bytes.",
+            context, bytes.len(), MAX_IMAGE_BYTES,
+        ));
+    }
+    let decoded = image::load_from_memory(bytes)
+        .map_err(|error| format!("Failed to decode {}: {}", context, error))?;
+    let total_pixels = (decoded.width() as u64) * (decoded.height() as u64);
+    if total_pixels > MAX_PIXELS {
+        return Err(format!(
+            "{}: decoded image {}x{} ({} pixels) exceeds limit of {}.",
+            context, decoded.width(), decoded.height(), total_pixels, MAX_PIXELS,
+        ));
+    }
+    Ok(decoded)
+}
+
+/// Validate that output dimensions are within safe bounds.
+fn validate_image_dimensions(width: u32, height: u32, context: &str) -> Result<(), String> {
+    let total_pixels = (width as u64) * (height as u64);
+    if total_pixels > MAX_PIXELS || width == 0 || height == 0 {
+        return Err(format!(
+            "{}: output dimensions {}x{} ({} pixels) are invalid or exceed limit.",
+            context, width, height, total_pixels,
+        ));
+    }
+    Ok(())
+}
+
 /// Fire-and-forget: clone the image and save it on a background thread
 /// so the pipeline is not blocked by PNG encoding + disk I/O.
+#[cfg(debug_assertions)]
 fn debug_save_image(image: &RgbaImage, path: std::path::PathBuf) {
     let cloned = image.clone();
     std::thread::spawn(move || {
         if let Err(e) = cloned.save(&path) {
-            eprintln!("[DEBUG] failed to save {:?}: {}", path, e);
+            log::debug!("[DEBUG] failed to save {:?}: {}", path, e);
         }
     });
 }
+
+#[cfg(not(debug_assertions))]
+fn debug_save_image(_image: &RgbaImage, _path: std::path::PathBuf) {}
 
 fn process_image_request(
     request: ScannerPostProcessRequest,
@@ -281,15 +321,14 @@ fn process_image_request(
 ) -> Result<(ScannerPostProcessResponse, Vec<u8>), String> {
     let started_at = Instant::now();
     let decode_started_at = Instant::now();
-    let decoded = image::load_from_memory(&request.source_bytes)
-        .map_err(|error| format!("Failed to decode source image: {error}"))?;
+    let decoded = decode_image_with_limits(&request.source_bytes, "postprocess source image")?;
     let decode_ms = decode_started_at.elapsed().as_secs_f64() * 1000.0;
 
     let mut current = decoded.into_rgba8();
     let pre_rotation_width = current.width();
     let pre_rotation_height = current.height();
 
-    // ── Decode-time rotation: rotate immediately, overwrite source ──
+    // 鈹€鈹€ Decode-time rotation: rotate immediately, overwrite source 鈹€鈹€
     let mut rotate_ms = None;
     if request.output_rotation != 0 {
         let t = Instant::now();
@@ -330,7 +369,8 @@ fn process_image_request(
     let mut model_id = None;
     let mut control_grid_shape = None;
 
-    // ── Debug image output (gated by request.pipeline_debug) ──
+    // 鈹€鈹€ Debug image output (gated by request.pipeline_debug) 鈹€鈹€
+    #[cfg(debug_assertions)]
     let debug_dir = if request.pipeline_debug {
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -338,16 +378,18 @@ fn process_image_request(
             .as_millis();
         let dir = std::env::temp_dir().join(format!("pipeline_debug_{}", ts));
         std::fs::create_dir_all(&dir).ok();
-        eprintln!("[DEBUG] writing intermediate images to {:?}", dir);
+        log::debug!("[DEBUG] writing intermediate images to {:?}", dir);
         Some(dir)
     } else {
         None
     };
+    #[cfg(not(debug_assertions))]
+    let debug_dir: Option<std::path::PathBuf> = None;
     if let Some(ref dir) = debug_dir {
         debug_save_image(&current, dir.join("step0_input.png"));
     }
 
-    eprintln!(
+    log::debug!(
         "[Pipeline] begin | source={}x{} | rotated={}x{} | rotate={} | perspective={} | flatten={} | enhance={} | backend={} | grid_pp={}",
         pre_rotation_width, pre_rotation_height,
         input_width, input_height,
@@ -359,7 +401,7 @@ fn process_image_request(
         request.grid_postprocess,
     );
 
-    // ── Step 1: Perspective Transform / Crop ──
+    // 鈹€鈹€ Step 1: Perspective Transform / Crop 鈹€鈹€
 
     if let Some(ref points) = effective_document_points {
         validate_quad_geometry(points, current.width(), current.height())?;
@@ -379,12 +421,12 @@ fn process_image_request(
                 &mut warped,
             );
             current = warped;
-            eprintln!("[Pipeline] step1:perspective → {}x{} ({:.1}ms)", current.width(), current.height(), perspective_ms.unwrap());
+            log::debug!("[Pipeline] step1:perspective 鈫?{}x{} ({:.1}ms)", current.width(), current.height(), perspective_ms.unwrap());
             if let Some(ref dir) = debug_dir {
                 debug_save_image(&current, dir.join("step1_perspective.png"));
             }
         } else {
-            // Perspective is off — still crop to the bounding box of the 4 corner points.
+            // Perspective is off 鈥?still crop to the bounding box of the 4 corner points.
             let min_x = points.iter().map(|p| p.x).fold(f32::INFINITY, f32::min).max(0.0) as u32;
             let min_y = points.iter().map(|p| p.y).fold(f32::INFINITY, f32::min).max(0.0) as u32;
             let max_x = points.iter().map(|p| p.x).fold(f32::NEG_INFINITY, f32::max).ceil() as u32;
@@ -394,12 +436,12 @@ fn process_image_request(
             if max_x > min_x && max_y > min_y {
                 let cropped = image::imageops::crop_imm(&current, min_x, min_y, max_x - min_x, max_y - min_y).to_image();
                 current = cropped;
-                eprintln!("[Pipeline] step1:crop → {}x{}", current.width(), current.height());
+                log::debug!("[Pipeline] step1:crop 鈫?{}x{}", current.width(), current.height());
             }
         }
     }
 
-    // ── Step 2: Spine Flattening ──
+    // 鈹€鈹€ Step 2: Spine Flattening 鈹€鈹€
     if request.spine_flattening {
         if postprocess_backend == ScannerPostProcessBackend::NativeMlV1 {
             let result = attempt_residual_control_point_stage(
@@ -419,8 +461,8 @@ fn process_image_request(
 
             if let Some(image) = result.image {
                 current = image;
-                eprintln!(
-                    "[Pipeline] step2:flatten(ML) → {}x{} (model={:.1}ms warp={:.1}ms)",
+                log::debug!(
+                    "[Pipeline] step2:flatten(ML) 鈫?{}x{} (model={:.1}ms warp={:.1}ms)",
                     current.width(), current.height(),
                     model_ms.unwrap_or(0.0), residual_warp_ms.unwrap_or(0.0),
                 );
@@ -430,7 +472,7 @@ fn process_image_request(
             } else {
                 let reason = result.fallback_reason
                     .unwrap_or_else(|| "Unknown ML pipeline error".to_string());
-                eprintln!("[Pipeline] step2:flatten(ML) FAILED: {}", reason);
+                log::debug!("[Pipeline] step2:flatten(ML) FAILED: {}", reason);
                 return Err(reason);
             }
         } else {
@@ -439,28 +481,28 @@ fn process_image_request(
             flatten_ms = Some(flatten_started_at.elapsed().as_secs_f64() * 1000.0);
             current = flatten_result.image;
             local_flattening_applied = flatten_result.applied;
-            eprintln!(
+            log::debug!(
                 "[Pipeline] step2:flatten(heuristic) applied={} ({:.1}ms)",
                 local_flattening_applied, flatten_ms.unwrap(),
             );
         }
     }
 
-    // ── Step 3: Enhancement ──
+    // 鈹€鈹€ Step 3: Enhancement 鈹€鈹€
     if request.image_enhancement {
         let enhance_started_at = Instant::now();
         current = enhance_document_image(&current, local_flattening_applied, &request.color_mode);
         enhance_ms = Some(enhance_started_at.elapsed().as_secs_f64() * 1000.0);
-        eprintln!("[Pipeline] step3:enhance mode={} ({:.1}ms)", request.color_mode, enhance_ms.unwrap());
+        log::debug!("[Pipeline] step3:enhance mode={} ({:.1}ms)", request.color_mode, enhance_ms.unwrap());
     }
 
-    // ── Step 4: Encode ──
+    // 鈹€鈹€ Step 4: Encode 鈹€鈹€
     let encode_started_at = Instant::now();
     let encoded_png = encode_png(&current)?;
     let encode_ms = encode_started_at.elapsed().as_secs_f64() * 1000.0;
     let total_ms = started_at.elapsed().as_secs_f64() * 1000.0;
 
-    eprintln!(
+    log::debug!(
         "[Pipeline] done | output={}x{} | encode={:.1}ms | total={:.1}ms",
         current.width(), current.height(), encode_ms, total_ms,
     );
@@ -743,7 +785,7 @@ fn refine_document_points(
                     + (centroid.y - candidate_point.y).powi(2))
                 .sqrt();
                 if candidate_to_center < coarse_to_center {
-                    // Corner is near image edge and refinement wants to pull it inward —
+                    // Corner is near image edge and refinement wants to pull it inward 鈥?
                     // this edge is likely the real page boundary (e.g. spine side).
                     // Skip refinement entirely for this corner.
                     continue;
@@ -1626,9 +1668,9 @@ fn compute_document_projection(
 ) -> Result<(u32, u32, Projection, [(f32, f32); 4], [(f32, f32); 4]), String> {
     let [tl, tr, br, bl] = points;
 
-    // ── Edge Length Equalization ──
+    // 鈹€鈹€ Edge Length Equalization 鈹€鈹€
     //
-    // When opposite vertical edges have different lengths (h_left ≠ h_right),
+    // When opposite vertical edges have different lengths (h_left 鈮?h_right),
     // the homography creates non-uniform scale across the output width.
     // Jacobian analysis shows this produces up to 35% h_scale variation and
     // 15% aspect ratio distortion between the free and spine sides.
@@ -1636,25 +1678,25 @@ fn compute_document_projection(
     // Root cause: for a curved book page, the spine edge appears shorter
     // (or longer, depending on camera position) than the free edge.  The
     // homography treats this length difference as perspective and "corrects"
-    // it, creating differential scaling → visible text distortion.
+    // it, creating differential scaling 鈫?visible text distortion.
     //
     // Fix: extend the shorter vertical edge along its direction to match
-    // the longer edge.  This makes the quad closer to a parallelogram →
-    // the homography becomes more affine-like → constant Jacobian →
+    // the longer edge.  This makes the quad closer to a parallelogram 鈫?
+    // the homography becomes more affine-like 鈫?constant Jacobian 鈫?
     // uniform scale across the entire output.
     //
-    // Proven: h_scale variation → 1.0000 for all tested cases (9 scenarios).
+    // Proven: h_scale variation 鈫?1.0000 for all tested cases (9 scenarios).
 
     let h_left = point_distance(*tl, *bl);
     let h_right = point_distance(*tr, *br);
     let h_max = h_left.max(h_right);
     let h_diff_pct = (h_left - h_right).abs() / h_max * 100.0;
 
-    eprintln!(
+    log::debug!(
         "[Perspective] corners: TL=({:.0},{:.0}) TR=({:.0},{:.0}) BR=({:.0},{:.0}) BL=({:.0},{:.0})",
         tl.x, tl.y, tr.x, tr.y, br.x, br.y, bl.x, bl.y,
     );
-    eprintln!(
+    log::debug!(
         "[Perspective] edges: h_left={:.0} h_right={:.0} diff={:.1}%",
         h_left, h_right, h_diff_pct,
     );
@@ -1663,7 +1705,7 @@ fn compute_document_projection(
     // scale variation is < 3% (visually negligible).
     let (adj_tl, adj_tr, adj_br, adj_bl) = if h_diff_pct > 5.0 {
         if h_right < h_left {
-            // Right edge is shorter — extend it to match h_left.
+            // Right edge is shorter 鈥?extend it to match h_left.
             let dx = br.x - tr.x;
             let dy = br.y - tr.y;
             let len = h_right;
@@ -1680,13 +1722,13 @@ fn compute_document_projection(
                 x: (mid_x + half * ux).clamp(0.0, input_width - 1.0),
                 y: (mid_y + half * uy).clamp(0.0, input_height - 1.0),
             };
-            eprintln!(
-                "[Perspective] right edge shorter by {:.1}% → extended: TR=({:.0},{:.0}) BR=({:.0},{:.0})",
+            log::debug!(
+                "[Perspective] right edge shorter by {:.1}% 鈫?extended: TR=({:.0},{:.0}) BR=({:.0},{:.0})",
                 h_diff_pct, new_tr.x, new_tr.y, new_br.x, new_br.y,
             );
             (*tl, new_tr, new_br, *bl)
         } else {
-            // Left edge is shorter — extend it to match h_right.
+            // Left edge is shorter 鈥?extend it to match h_right.
             let dx = bl.x - tl.x;
             let dy = bl.y - tl.y;
             let len = h_left;
@@ -1703,14 +1745,14 @@ fn compute_document_projection(
                 x: (mid_x + half * ux).clamp(0.0, input_width - 1.0),
                 y: (mid_y + half * uy).clamp(0.0, input_height - 1.0),
             };
-            eprintln!(
-                "[Perspective] left edge shorter by {:.1}% → extended: TL=({:.0},{:.0}) BL=({:.0},{:.0})",
+            log::debug!(
+                "[Perspective] left edge shorter by {:.1}% 鈫?extended: TL=({:.0},{:.0}) BL=({:.0},{:.0})",
                 h_diff_pct, new_tl.x, new_tl.y, new_bl.x, new_bl.y,
             );
             (new_tl, *tr, *br, new_bl)
         }
     } else {
-        eprintln!("[Perspective] edge diff={:.1}% < 5% → no adjustment", h_diff_pct);
+        log::debug!("[Perspective] edge diff={:.1}% < 5% 鈫?no adjustment", h_diff_pct);
         (*tl, *tr, *br, *bl)
     };
 
@@ -1750,12 +1792,12 @@ fn compute_true_aspect_ratio_dimensions(
 
     // Use average of opposing edge lengths as the output dimensions.
     // Average is robust for moderate viewing angles and never flips
-    // portrait ↔ landscape (unlike the old vanishing-point method).
+    // portrait 鈫?landscape (unlike the old vanishing-point method).
     let out_w = ((w_top + w_bot) / 2.0).round().max(1.0) as u32;
     let out_h = ((h_left + h_right) / 2.0).round().max(1.0) as u32;
 
-    eprintln!(
-        "[Perspective] edges: w_top={:.0} w_bot={:.0} h_left={:.0} h_right={:.0} → output={}x{}",
+    log::debug!(
+        "[Perspective] edges: w_top={:.0} w_bot={:.0} h_left={:.0} h_right={:.0} 鈫?output={}x{}",
         w_top, w_bot, h_left, h_right, out_w, out_h,
     );
 
@@ -1775,7 +1817,7 @@ fn enhance_document_image(
     _prefer_soft_tone: bool,
     color_mode: &str,
 ) -> RgbaImage {
-    // "none" or unrecognized → return source unchanged.
+    // "none" or unrecognized 鈫?return source unchanged.
     let effective_mode = match color_mode {
         "normalize" | "color" => "normalize",
         "grayscale" => "grayscale",
@@ -1957,9 +1999,9 @@ fn rotate_image(image: RgbaImage, rotation: u16) -> Result<RgbaImage, String> {
 /// mapping performed by `rotate_image` (which delegates to
 /// `image::imageops::rotate90/180/270`).
 ///
-/// rotate90:  src(x,y) → dst(H-1-y, x)   output dims: H×W
-/// rotate180: src(x,y) → dst(W-1-x, H-1-y) output dims: W×H
-/// rotate270: src(x,y) → dst(y, W-1-x)   output dims: H×W
+/// rotate90:  src(x,y) 鈫?dst(H-1-y, x)   output dims: H脳W
+/// rotate180: src(x,y) 鈫?dst(W-1-x, H-1-y) output dims: W脳H
+/// rotate270: src(x,y) 鈫?dst(y, W-1-x)   output dims: H脳W
 fn transform_points_for_rotation(
     points: &[ScannerPoint; 4],
     source_width: u32,
@@ -1988,10 +2030,10 @@ fn transform_points_for_rotation(
 /// corner slots by `rotation / 90` positions.
 ///
 /// ```text
-///   0°:   [TL, TR, BR, BL]  →  identity
-///  90°CW: source BL→TL, TL→TR, TR→BR, BR→BL  →  [3, 0, 1, 2]
-/// 180°:   source BR→TL, BL→TR, TL→BR, TR→BL  →  [2, 3, 0, 1]
-/// 270°CW: source TR→TL, BR→TR, BL→BR, TL→BL  →  [1, 2, 3, 0]
+///   0掳:   [TL, TR, BR, BL]  鈫? identity
+///  90掳CW: source BL鈫扵L, TL鈫扵R, TR鈫払R, BR鈫払L  鈫? [3, 0, 1, 2]
+/// 180掳:   source BR鈫扵L, BL鈫扵R, TL鈫払R, TR鈫払L  鈫? [2, 3, 0, 1]
+/// 270掳CW: source TR鈫扵L, BR鈫扵R, BL鈫払R, TL鈫払L  鈫? [1, 2, 3, 0]
 /// ```
 fn reorder_points_after_rotation(
     points: [ScannerPoint; 4],
@@ -2392,7 +2434,7 @@ mod tests {
         .expect("post-process request should succeed");
 
         assert!(encoded.starts_with(&[0x89, b'P', b'N', b'G']));
-        assert_eq!(response.input_width, 24);   // rotated: 40x24 @90° → 24x40
+        assert_eq!(response.input_width, 24);   // rotated: 40x24 @90掳 鈫?24x40
         assert_eq!(response.input_height, 40);
         assert!(response.output_width >= 19);
         assert!(response.output_height >= 19);
@@ -2439,7 +2481,7 @@ mod tests {
         let points = [
             ScannerPoint { x: 10.0, y: 10.0 },
             ScannerPoint { x: 90.0, y: 10.0 },
-            ScannerPoint { x: 30.0, y: 30.0 }, // pushed deep inside — concave
+            ScannerPoint { x: 30.0, y: 30.0 }, // pushed deep inside 鈥?concave
             ScannerPoint { x: 10.0, y: 90.0 },
         ];
         let result = validate_quad_geometry(&points, 100, 100);
