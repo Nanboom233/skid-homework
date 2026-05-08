@@ -68,11 +68,23 @@ pub fn decode_i420_payload_to_rgb_image(
 
     let width_usize = width as usize;
     let height_usize = height as usize;
-    let luma_len = width_usize * height_usize;
+
+    const MAX_FRAME_DIMENSION: u32 = 4096;
+    if width > MAX_FRAME_DIMENSION || height > MAX_FRAME_DIMENSION {
+        return Err(format!(
+            "Frame dimensions {}x{} exceed maximum allowed {}.",
+            width, height, MAX_FRAME_DIMENSION,
+        ));
+    }
+
+    let luma_len = width_usize.checked_mul(height_usize)
+        .ok_or_else(|| format!("I420 dimension overflow: {}x{}", width, height))?;
     let chroma_width = width_usize / 2;
     let chroma_height = height_usize / 2;
-    let chroma_len = chroma_width * chroma_height;
-    let expected_len = luma_len + (2 * chroma_len);
+    let chroma_len = chroma_width.checked_mul(chroma_height)
+        .ok_or_else(|| format!("I420 chroma dimension overflow: {}x{}", chroma_width, chroma_height))?;
+    let expected_len = luma_len.checked_add(2 * chroma_len)
+        .ok_or_else(|| "I420 total size overflow".to_string())?;
 
     if payload.len() != expected_len {
         return Err(format!(
@@ -87,10 +99,13 @@ pub fn decode_i420_payload_to_rgb_image(
     // Allocate the output buffer without zero-filling — every pixel is
     // unconditionally written by the 2×2 block loop below, so the
     // zero-fill from `RgbImage::new()` (~691 KB for 640×360) is pure waste.
-    let pixel_count = (width_usize * height_usize * 3) as usize;
+    let pixel_count = width_usize.checked_mul(height_usize)
+        .and_then(|v| v.checked_mul(3))
+        .ok_or_else(|| format!("RGB buffer size overflow: {}x{}x3", width, height))?;
     let mut raw_buf = Vec::with_capacity(pixel_count);
     // SAFETY: the loop below writes exactly width×height×3 bytes (all
     // pixels in 2×2 blocks covering the full even-dimensioned image).
+    // All dimensions are validated above with checked arithmetic and MAX cap.
     unsafe { raw_buf.set_len(pixel_count); }
     let output = &mut raw_buf[..];
 

@@ -38,6 +38,9 @@ pub fn build_resource_root_candidates(
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     push_candidate("cargo-manifest-resources", manifest_dir.join("resources"));
 
+    // CWD-based fallbacks are only safe during development; in release
+    // builds the CWD is user-controlled and could point at a hostile tree.
+    #[cfg(debug_assertions)]
     if let Ok(current_dir) = std::env::current_dir() {
         push_candidate("cwd-resources", current_dir.join("resources"));
         push_candidate(
@@ -57,6 +60,7 @@ pub fn select_resource_root(
 ) -> Option<ResourceRootCandidate> {
     candidates
         .iter()
+        .filter(|c| score_resource_root(&c.path, interesting_paths) > 0)
         .max_by_key(|candidate| score_resource_root(&candidate.path, interesting_paths))
         .cloned()
 }
@@ -73,4 +77,22 @@ pub fn score_resource_root(root: &Path, interesting_paths: &[&str]) -> usize {
 /// Convert a path to a display-friendly string (lossy).
 pub fn path_to_string(path: &Path) -> String {
     path.to_string_lossy().into_owned()
+}
+
+/// Validate that a resolved path is contained within the expected root.
+/// Returns an error if the path escapes the root via `..` traversal.
+pub fn validate_path_containment(path: &Path, root: &Path) -> Result<PathBuf, String> {
+    let canonical = path.canonicalize().map_err(|e| {
+        format!("Failed to canonicalize path {:?}: {}", path, e)
+    })?;
+    let canonical_root = root.canonicalize().map_err(|e| {
+        format!("Failed to canonicalize root {:?}: {}", root, e)
+    })?;
+    if !canonical.starts_with(&canonical_root) {
+        return Err(format!(
+            "Path traversal detected: {:?} is not under {:?}",
+            canonical, canonical_root,
+        ));
+    }
+    Ok(canonical)
 }
