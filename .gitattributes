@@ -1,0 +1,21 @@
+# Binary files — prevent git diff/merge on large binaries
+*.onnx binary
+*.dll binary
+*.so binary
+*.dylib binary
+*.jar binary
+*.png binary
+*.ico binary
+*.icns binary
+*.woff binary
+*.woff2 binary
+
+# Force consistent line endings
+*.rs text eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.toml text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
