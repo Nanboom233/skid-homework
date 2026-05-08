@@ -594,6 +594,16 @@ const toErrorMessage = (error: unknown): string => {
 };
 
 const isLocalForwardBindError = (error: unknown): boolean => {
+  // Check structured error codes first (preferred over localized strings)
+  if (typeof error === "object" && error !== null) {
+    const code = (error as Record<string, unknown>).code;
+    if (typeof code === "string") {
+      const bindErrorCodes = ["EADDRINUSE", "EACCES", "EPERM", "WSAEADDRINUSE", "WSAEACCES"];
+      if (bindErrorCodes.includes(code)) return true;
+    }
+  }
+
+  // Fallback: match against known error message patterns (covers ADB relay errors)
   const message = toErrorMessage(error).toLowerCase();
   return [
     "cannot bind listener",
@@ -602,8 +612,6 @@ const isLocalForwardBindError = (error: unknown): boolean => {
     "10048",
     "access permissions",
     "only one usage of each socket address",
-    "访问权限不允许",
-    "访问套接字",
   ].some((pattern) => message.includes(pattern));
 };
 
@@ -625,7 +633,7 @@ const buildForwardPortCandidates = (preferredPort: number): number[] => {
 
 const pushWindowSample = (samples: number[], value: number): void => {
   samples.push(value);
-  if (samples.length > BENCHMARK_WINDOW_SIZE) {
+  if (samples.length >= BENCHMARK_WINDOW_SIZE * 2) {
     samples.splice(0, samples.length - BENCHMARK_WINDOW_SIZE);
   }
 };

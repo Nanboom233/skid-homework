@@ -37,8 +37,8 @@ const FOCUSABLE_SELECTOR = [
 ].join(", ");
 
 const isElementVisible = (element: HTMLElement): boolean => {
-  const style = window.getComputedStyle(element);
-  return style.display !== "none" && style.visibility !== "hidden";
+  // offsetParent is null for hidden/display:none elements, much faster than getComputedStyle
+  return element.offsetParent !== null || element === document.body;
 };
 
 const getFocusableElements = (container: HTMLElement): HTMLElement[] => {
@@ -85,9 +85,10 @@ export function ScannerWorkspace({
   const captureFlashTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const captureProcessingRef = useRef(false);
 
-  // Stable ref to break circular dependency: session needs capture bridges,
+  // TODO: Stable ref to break circular dependency: session needs capture bridges,
   // but capture needs session's runtime refs. The ref is populated after
   // useScannerCapture returns, and only read asynchronously (never during render).
+  // This is acceptable because the refs are stable and only accessed during event handlers.
   const captureRef = useRef<UseScannerCaptureResult | null>(null);
 
   // --- Hook composition (order matters: preview → session → capture) ---

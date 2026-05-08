@@ -251,19 +251,15 @@ function ScannerCapturedDocumentEditorBody({
     };
   }, []);
 
-  useEffect(() => {
-    const handleEscape = (e: KeyboardEvent): void => {
-      if (e.key !== "Escape") return;
-      e.preventDefault();
-      e.stopPropagation();
-      if (previewFullscreen) {
-        setPreviewFullscreen(false);
-      } else {
-        onOpenChange(false);
-      }
-    };
-    window.document.addEventListener("keydown", handleEscape);
-    return () => window.document.removeEventListener("keydown", handleEscape);
+  const handleEditorKeyDown = useCallback((e: React.KeyboardEvent<HTMLDivElement>): void => {
+    if (e.key !== "Escape") return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (previewFullscreen) {
+      setPreviewFullscreen(false);
+    } else {
+      onOpenChange(false);
+    }
   }, [onOpenChange, previewFullscreen]);
 
   // Clean up custom preview URL on unmount
@@ -283,6 +279,8 @@ function ScannerCapturedDocumentEditorBody({
     }
   }, [existingFileUrl, currentFingerprint]);
 
+  const rafRef = useRef<number | null>(null);
+
   const updatePointFromEvent = (event: ReactPointerEvent<SVGSVGElement>): void => {
     const svg = svgRef.current;
     const activeCornerIndex = activeCornerIndexRef.current;
@@ -300,13 +298,20 @@ function ScannerCapturedDocumentEditorBody({
       0, displayDimensions.height,
     );
 
-    setDraftPoints((current) => current.map((point, index) => {
-      if (index !== activeCornerIndex) return point;
-      return {
-        x: clamp(x, 0, displayDimensions.width),
-        y: clamp(y, 0, displayDimensions.height),
-      };
-    }));
+    if (rafRef.current !== null) {
+      cancelAnimationFrame(rafRef.current);
+    }
+    
+    rafRef.current = requestAnimationFrame(() => {
+      setDraftPoints((current) => current.map((point, index) => {
+        if (index !== activeCornerIndex) return point;
+        return {
+          x: clamp(x, 0, displayDimensions.width),
+          y: clamp(y, 0, displayDimensions.height),
+        };
+      }));
+      rafRef.current = null;
+    });
   };
 
   const handlePointerDown = (
@@ -401,7 +406,7 @@ function ScannerCapturedDocumentEditorBody({
   const sourcePreviewHeight = Math.max(1, Math.round(document.sourceHeight * previewScale));
 
   return (
-    <div className="flex h-full min-h-0 flex-col" role="dialog" aria-modal="true" aria-labelledby="scanner-editor-title" aria-describedby="scanner-editor-description">
+    <div className="flex h-full min-h-0 flex-col" role="dialog" aria-modal="true" aria-labelledby="scanner-editor-title" aria-describedby="scanner-editor-description" onKeyDown={handleEditorKeyDown} tabIndex={-1} ref={(el) => el?.focus()}>
       <div className="flex flex-col space-y-1.5 border-b p-4 sm:p-6 shrink-0">
         <h2 id="scanner-editor-title" className="text-lg font-semibold leading-none tracking-tight">{t("document-scanner.editor.title")}</h2>
         <p id="scanner-editor-description" className="text-sm text-muted-foreground">{t("document-scanner.editor.description")}</p>
@@ -562,14 +567,14 @@ function ScannerCapturedDocumentEditorBody({
                 }
               }}
             >
-              {isRefining ? "Refining..." : "Refine Corners"}
+              {isRefining ? t("document-scanner.editor.actions.refining") : t("document-scanner.editor.actions.refine-corners")}
             </Button>
           ) : null}
 
           {/* Perspective Transform */}
           <div className="flex items-center justify-between gap-3">
             <Label htmlFor="editor-perspective" className="text-sm cursor-pointer">
-              Perspective Transform
+              {t("document-scanner.editor.postprocess.perspective-transform")}
             </Label>
             <Switch
               id="editor-perspective"
@@ -581,7 +586,7 @@ function ScannerCapturedDocumentEditorBody({
 
             <div className="flex items-center justify-between gap-3">
               <Label htmlFor="editor-grid-postprocess" className="text-sm shrink-0">
-                Grid Post-Process
+                {t("document-scanner.editor.postprocess.grid-postprocess")}
               </Label>
               <Select
                 value={gridPostprocess}
@@ -592,8 +597,8 @@ function ScannerCapturedDocumentEditorBody({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="none">None (raw)</SelectItem>
-                  <SelectItem value="x-stretch-equalize">X-Stretch Equalize</SelectItem>
+                  <SelectItem value="none">{t("document-scanner.editor.postprocess.grid-options.none")}</SelectItem>
+                  <SelectItem value="x-stretch-equalize">{t("document-scanner.editor.postprocess.grid-options.x-stretch-equalize")}</SelectItem>
                 </SelectContent>
               </Select>
             </div>
