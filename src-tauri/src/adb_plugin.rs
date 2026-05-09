@@ -6,7 +6,7 @@ use std::{
     io::ErrorKind,
     path::{Path, PathBuf},
     process::{Command, Output},
-    sync::OnceLock,
+    sync::{Mutex as StdMutex, OnceLock},
     thread,
     time::{Duration, Instant},
 };
@@ -160,13 +160,56 @@ pub(crate) fn ensure_non_empty(value: &str, field_name: &str) -> Result<String, 
     Ok(trimmed.to_string())
 }
 
-fn ensure_remote_address(value: &str, field_name: &str) -> Result<String, String> {
+fn validate_adb_remote_address(value: &str, field_name: &str) -> Result<String, String> {
     let address = ensure_non_empty(value, field_name)?;
-    if !address.contains(':') {
+
+    if address.len() > 255 {
+        return Err(format!("{field_name} must be 255 characters or less."));
+    }
+
+    if address.chars().any(char::is_whitespace) {
+        return Err(format!("{field_name} must not contain whitespace."));
+    }
+
+    if address.contains("://") {
+        return Err(format!("{field_name} must be a host:port value, not a URL."));
+    }
+
+    if address.contains('/') || address.contains('\\') {
+        return Err(format!("{field_name} must not contain path separators."));
+    }
+
+    let (host, port_text) = address
+        .rsplit_once(':')
+        .ok_or_else(|| format!("{field_name} must use the host:port format."))?;
+
+    if host.is_empty() || port_text.is_empty() {
         return Err(format!("{field_name} must use the host:port format."));
     }
 
+    let port = port_text
+        .parse::<u16>()
+        .map_err(|_| format!("{field_name} port must be a number from 1 to 65535."))?;
+    if port == 0 {
+        return Err(format!("{field_name} port must be a number from 1 to 65535."));
+    }
+
+    if !host
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | ':' | '[' | ']'))
+    {
+        return Err(format!("{field_name} host contains unsupported characters."));
+    }
+
     Ok(address)
+}
+
+fn validate_pairing_code(value: &str) -> Result<String, String> {
+    let pairing_code = ensure_non_empty(value, "Pairing code")?;
+    if pairing_code.len() != 6 || !pairing_code.chars().all(|ch| ch.is_ascii_digit()) {
+        return Err("Pairing code must be exactly 6 digits.".to_string());
+    }
+    Ok(pairing_code)
 }
 
 pub(crate) fn shell_single_quote(value: &str) -> String {
@@ -453,8 +496,8 @@ pub async fn tauri_adb_list_devices() -> Result<Vec<AdbDeviceInfo>, String> {
 #[command]
 pub async fn tauri_adb_pair(request: AdbPairRequest) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let address = ensure_remote_address(&request.address, "Pairing address")?;
-        let pairing_code = ensure_non_empty(&request.pairing_code, "Pairing code")?;
+        let address = validate_adb_remote_address(&request.address, "Pairing address")?;
+        let pairing_code = validate_pairing_code(&request.pairing_code)?;
 
         let args = vec!["pair".to_string(), address.clone(), pairing_code];
         let output = run_adb_checked(&args, &format!("adb pair {address}"))?;
@@ -474,7 +517,7 @@ pub async fn tauri_adb_pair(request: AdbPairRequest) -> Result<String, String> {
 #[command]
 pub async fn tauri_adb_connect(request: AdbConnectRequest) -> Result<AdbConnectResponse, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let address = ensure_remote_address(&request.address, "Remote ADB address")?;
+        let address = validate_adb_remote_address(&request.address, "Remote ADB address")?;
 
         let args = vec!["connect".to_string(), address.clone()];
         let output = run_adb_checked(&args, &format!("adb connect {address}"))?;
@@ -493,27 +536,6 @@ pub async fn tauri_adb_connect(request: AdbConnectRequest) -> Result<AdbConnectR
     })
     .await
     .map_err(|error| format!("ADB connect task failed: {error}"))?
-}
-
-/// Execute an arbitrary shell command on the selected device.
-#[command]
-pub async fn tauri_adb_shell(serial: String, command: String) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let serial = ensure_non_empty(&serial, "ADB serial")?;
-        let command = ensure_non_empty(&command, "ADB shell command")?;
-
-        let args = vec![
-            "-s".to_string(),
-            serial.clone(),
-            "shell".to_string(),
-            command,
-        ];
-        let output = run_adb_checked(&args, &format!("adb -s {serial} shell <command>"))?;
-
-        Ok(combine_command_output(&output))
-    })
-    .await
-    .map_err(|error| format!("ADB shell task failed: {error}"))?
 }
 
 /// Push a local file to the device filesystem.
@@ -754,7 +776,10 @@ pub async fn tauri_adb_stop_server(serial: String, classpath: String) -> Result<
             wrap_shell_c_script(&kill_command),
         ];
 
-        let output = run_adb_command(&args)?;
+        let output = run_adb_checked(
+            &args,
+            &format!("adb -s {serial} shell sh -c <stop scanner server>"),
+        )?;
         let message = combine_command_output(&output);
 
         if message.is_empty() {
@@ -774,38 +799,56 @@ pub async fn tauri_adb_stop_server(serial: String, classpath: String) -> Result<
 // and forwards each line through Rust `log::info!` so that server diagnostics
 // appear in the same Tauri console as decoder/detection logs.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+static LOG_TAILER_HANDLE: OnceLock<StdMutex<Option<tauri::async_runtime::JoinHandle<()>>>> =
+    OnceLock::new();
 
-static SERVER_LOG_TAILER_ACTIVE: AtomicBool = AtomicBool::new(false);
+fn log_tailer_handle() -> &'static StdMutex<Option<tauri::async_runtime::JoinHandle<()>>> {
+    LOG_TAILER_HANDLE.get_or_init(|| StdMutex::new(None))
+}
 
 /// Start tailing the Android server log file.
 /// Lines are forwarded through `log::info!("[AndroidServer] ...")`.
 /// Only one tailer runs at a time; subsequent calls are no-ops.
 #[command]
 pub async fn tauri_adb_start_log_tailer(serial: String) -> Result<(), String> {
-    if SERVER_LOG_TAILER_ACTIVE.swap(true, Ordering::SeqCst) {
+    let serial = ensure_non_empty(&serial, "ADB serial")?;
+    let mut handle_guard = log_tailer_handle()
+        .lock()
+        .map_err(|_| "Log tailer handle lock was poisoned.".to_string())?;
+
+    if handle_guard.is_some() {
         return Ok(()); // Already running
     }
 
-    let serial = ensure_non_empty(&serial, "ADB serial").map_err(|e| {
-        SERVER_LOG_TAILER_ACTIVE.store(false, Ordering::SeqCst);
-        e
-    })?;
-
-    tauri::async_runtime::spawn(async move {
+    let handle = tauri::async_runtime::spawn(async move {
         if let Err(e) = run_log_tailer(&serial).await {
             log::warn!("[LogTailer] Exited: {e}");
         }
-        SERVER_LOG_TAILER_ACTIVE.store(false, Ordering::SeqCst);
+        if let Ok(mut handle_guard) = log_tailer_handle().lock() {
+            handle_guard.take();
+        }
     });
 
+    *handle_guard = Some(handle);
     Ok(())
 }
 
 /// Stop the running log tailer.
 #[command]
 pub async fn tauri_adb_stop_log_tailer() -> Result<(), String> {
-    SERVER_LOG_TAILER_ACTIVE.store(false, Ordering::SeqCst);
+    let handle = log_tailer_handle()
+        .lock()
+        .map_err(|_| "Log tailer handle lock was poisoned.".to_string())?
+        .take();
+    if let Some(handle) = handle {
+        handle.abort();
+        // Wait for the spawned task to actually finish so the child adb process
+        // is cleaned up (via kill_on_drop) before we return.
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            handle,
+        ).await;
+    }
     Ok(())
 }
 
@@ -818,6 +861,7 @@ async fn run_log_tailer(serial: &str) -> Result<(), String> {
     cmd.args(["-s", serial, "shell", "tail", "-f", SCANNER_SERVER_LOG_PATH])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null());
+    cmd.kill_on_drop(true);
 
     #[cfg(target_os = "windows")]
     cmd.creation_flags(CREATE_NO_WINDOW);
@@ -833,7 +877,7 @@ async fn run_log_tailer(serial: &str) -> Result<(), String> {
     let reader = BufReader::new(stdout);
     let mut lines = reader.lines();
 
-    while SERVER_LOG_TAILER_ACTIVE.load(Ordering::SeqCst) {
+    loop {
         match lines.next_line().await {
             Ok(Some(line)) => log::info!("[AndroidServer] {}", line),
             Ok(None) => break,
@@ -843,7 +887,6 @@ async fn run_log_tailer(serial: &str) -> Result<(), String> {
             }
         }
     }
-
     let _ = child.kill().await;
     Ok(())
 }
@@ -855,7 +898,7 @@ const SERVER_READY_SENTINEL: &str = "SCANNER_SERVER_READY";
 /// Wait for the server to print its readiness sentinel in the log file.
 ///
 /// Polls the server log file via `adb shell grep` in a loop. This is a
-/// zero-side-effect readiness check — no TCP connections are made through
+/// zero-side-effect readiness check 鈥?no TCP connections are made through
 /// the ADB forward, so the server's accept loop is never disturbed.
 #[command]
 pub async fn tauri_adb_await_server_ready(
@@ -907,7 +950,7 @@ pub async fn tauri_adb_await_server_ready(
                 return Ok(());
             }
             _ => {
-                // Sentinel not yet present — wait and retry.
+                // Sentinel not yet present 鈥?wait and retry.
                 tokio::time::sleep(poll_interval).await;
             }
         }

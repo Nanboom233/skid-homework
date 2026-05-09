@@ -17,7 +17,6 @@ import {
 import {mapPointsFromRotatedFrameToSource, type PreviewOrientation} from "@/lib/scanner/preview-orientation";
 import {assessDocumentQuad, isDocumentQuadTrustworthy} from "@/lib/scanner/document-quad";
 import type {PostProcessOptions} from "@/components/scanner/ScannerCapturedDocumentEditor";
-import {shellTauriAdbCommand} from "@/lib/tauri/adb";
 import {detectDocumentWithTauriNativeOrt} from "@/lib/tauri/scanner-detect";
 import {processTauriScannerPostProcessSourceFile} from "@/lib/tauri/scanner";
 import {
@@ -471,15 +470,9 @@ export function useScannerCapture({
     }
 
     try {
-      const serverLogTail = await shellTauriAdbCommand(
-        stillCapture.serial,
-        "tail -n 80 /data/local/tmp/skid-scanner-server.log",
-      );
-      if (serverLogTail.trim().length > 0) {
-        console.warn(`[Scanner][StillDiag] Device scanner server log tail:\n${serverLogTail}`);
-      } else {
-        console.warn("[Scanner][StillDiag] Device scanner server log tail was empty.");
-      }
+      // Device log tailing is handled by the dedicated tauri_adb_start_log_tailer command.
+      // The arbitrary shell command path (tauri_adb_shell) was removed for security hardening.
+      console.warn("[Scanner][StillDiag] Device log tail unavailable — use the dedicated log tailer instead.");
     } catch (serverLogError) {
       console.warn("[Scanner][StillDiag] Failed to read device scanner server log tail.", serverLogError);
     }

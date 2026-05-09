@@ -20,7 +20,6 @@ pub fn run() {
             adb_plugin::tauri_adb_list_devices,
             adb_plugin::tauri_adb_pair,
             adb_plugin::tauri_adb_connect,
-            adb_plugin::tauri_adb_shell,
             adb_plugin::tauri_adb_push,
             adb_plugin::tauri_adb_forward,
             adb_plugin::tauri_adb_remove_forward,

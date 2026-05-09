@@ -200,15 +200,6 @@ export const encodeTauriPngRgba = async (
   });
 };
 
-export const shellTauriAdbCommand = async (
-  serial: string,
-  command: string,
-): Promise<string> => {
-  return await invokeTauriCommand<string>("tauri_adb_shell", {
-    serial,
-    command,
-  });
-};
 
 // --- Scanner-related ADB commands ---
 
