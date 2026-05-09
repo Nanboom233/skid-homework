@@ -282,7 +282,7 @@ export function useAvailableModels() {
     };
     // NOTE: `sources` is intentionally excluded — it is accessed via sourcesRef
     // to prevent re-triggering the fetch on every store update.
-     
+
   }, [enabledSources, getClientForSource, sourcesHashSync]);
 
   // Flatten all models for simple list access

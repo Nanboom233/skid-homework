@@ -693,6 +693,7 @@ function ScannerCapturedDocumentEditorBody({
               type="button"
               className="relative w-full max-h-[200px] rounded-lg overflow-hidden border border-white/10 bg-black/40 cursor-zoom-in group"
               onClick={() => setPreviewFullscreen(true)}
+              aria-label={t("document-scanner.editor.postprocess.preview.click-to-enlarge")}
             >
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img

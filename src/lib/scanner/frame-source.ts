@@ -1632,20 +1632,6 @@ export class TauriNativeFrameSource implements FrameSource {
     }
   }
 
-  // @ts-expect-error Retained for future use when still capture endpoint truly fails.
-  private markHighQualityStillCaptureUnavailable(reason: string): void {
-    if (!this.state.capabilities.highQualityStillCapture) {
-      return;
-    }
-
-    this.state.capabilities = {
-      ...this.state.capabilities,
-      highQualityStillCapture: false,
-    };
-    console.warn(`[Scanner][StillDiag] ${reason}`);
-    this.emitState(true);
-  }
-
   private resumePreviewDelivery(): void {
     if (this.previewPauseDepth === 0) {
       return;

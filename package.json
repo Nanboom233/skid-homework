@@ -15,7 +15,7 @@
     "prepare": "husky install",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
-    "tauri:build:frontend": "cross-env TAURI_BUILD=true next build",
+    "tauri:build:frontend": "tsc --noEmit --pretty false && cross-env TAURI_BUILD=true next build",
     "build:server": "pwsh scripts/build-server.ps1"
   },
   "lint-staged": {

@@ -17,6 +17,10 @@ import {listTauriAdbDevices, type TauriAdbDevice} from "@/lib/tauri/adb";
 import {cn} from "@/lib/utils";
 import {Tabs, TabsContent, TabsList, TabsTrigger} from "@/components/ui/tabs";
 
+// Aligned with backend validate_adb_remote_address: alphanumeric + . - : [ ] only
+const ADB_ADDRESS_REGEX = /^[a-zA-Z0-9.\-:\[\]]+:\d{1,5}$/;
+const ADB_PAIRING_CODE_REGEX = /^\d{6}$/;
+
 export interface AdbRemoteConnectDialogProps {
   isOpen: boolean;
   isSubmitting: boolean;
@@ -71,10 +75,15 @@ export const AdbRemoteConnectDialog = ({
     void loadDevices();
   }, [isOpen, loadDevices]);
 
-  const canSubmitConnect = connectAddress.trim().length > 0 && !isSubmitting;
+  const canSubmitConnect =
+    connectAddress.trim().length > 0 &&
+    ADB_ADDRESS_REGEX.test(connectAddress.trim()) &&
+    !isSubmitting;
   const canSubmitPair =
     pairingAddress.trim().length > 0 &&
-    pairingCode.trim().length > 0 &&
+    ADB_ADDRESS_REGEX.test(pairingAddress.trim()) &&
+    pairingCode.trim().length === 6 &&
+    ADB_PAIRING_CODE_REGEX.test(pairingCode.trim()) &&
     !isSubmitting;
 
   const handleConnect = async () => {

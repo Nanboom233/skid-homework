@@ -4,10 +4,11 @@ import {useCallback, useEffect, useRef, useState} from "react";
 import type {MutableRefObject} from "react";
 import {useTranslation} from "react-i18next";
 import {toast} from "sonner";
+import {useShallow} from "zustand/react/shallow";
 
 import {
   createFrameSource,
-  DEFAULT_SCANNER_CONFIG,
+  makeScannerConfigFromSettings,
   type FrameSource,
   type FrameSourceState,
   type Point,
@@ -277,6 +278,12 @@ export function useScannerSession({
 
   const scannerDetectionBackend = useSettingsStore((state) => state.scannerDetectionBackend);
   const scannerNativeOrtStrictMode = useSettingsStore((state) => state.scannerNativeOrtStrictMode);
+  const scannerSettings = useSettingsStore(useShallow((state) => ({
+    scannerPreviewWidth: state.scannerPreviewWidth,
+    scannerPreviewHeight: state.scannerPreviewHeight,
+    scannerFramerate: state.scannerFramerate,
+    scannerCameraId: state.scannerCameraId,
+  })));
 
   const status = useScannerStore((state) => state.status);
   const errorMessage = useScannerStore((state) => state.errorMessage);
@@ -734,7 +741,12 @@ export function useScannerSession({
     }
 
     const config: ScannerConfig = {
-      ...DEFAULT_SCANNER_CONFIG,
+      ...makeScannerConfigFromSettings({
+        scannerPreviewWidth: Math.max(320, Math.min(3840, scannerSettings.scannerPreviewWidth)),
+        scannerPreviewHeight: Math.max(240, Math.min(2160, scannerSettings.scannerPreviewHeight)),
+        scannerFramerate: Math.max(1, Math.min(120, scannerSettings.scannerFramerate)),
+        scannerCameraId: scannerSettings.scannerCameraId || "0",
+      }),
       serial,
       serverJarPath: resolvedJarPath,
     };
@@ -925,6 +937,7 @@ export function useScannerSession({
     requestAutoCapture,
     resetDebugState,
     resetPreview,
+    scannerSettings,
     serverJarPath,
     setCvDebug,
     setConfig,
