@@ -28,6 +28,9 @@ const LINUX_ORT_RELATIVE_PATH: &str = "onnxruntime/linux/libonnxruntime.so";
 const LINUX_TENSORRT_RELATIVE_PATH: &str = "onnxruntime/linux/libonnxruntime_providers_tensorrt.so";
 const LINUX_CUDA_RELATIVE_PATH: &str = "onnxruntime/linux/libonnxruntime_providers_cuda.so";
 
+const MAX_DETECT_IMAGE_BYTES: usize = 50 * 1024 * 1024;
+const MAX_DETECT_IMAGE_PIXELS: u64 = 24_000_000; // 24 megapixels
+
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ScannerModelVariant {
@@ -65,7 +68,7 @@ pub struct ScannerDetectConfig {
     active_public_baseline: ScannerDetectModelConfig,
 }
 
-/// Hardcoded model configuration — these values are tightly coupled to the
+/// Hardcoded model configuration 鈥?these values are tightly coupled to the
 /// bundled ONNX model files and must not be user-editable.
 fn hardcoded_scanner_detect_config() -> ScannerDetectConfig {
     ScannerDetectConfig {
@@ -295,6 +298,44 @@ impl ScannerDetectDocumentResponse {
     }
 }
 
+fn decode_detect_image_with_limits(bytes: &[u8], context: &str) -> Result<DynamicImage, String> {
+    if bytes.len() > MAX_DETECT_IMAGE_BYTES {
+        return Err(format!(
+            "{context}: input size {} bytes exceeds limit of {} bytes.",
+            bytes.len(),
+            MAX_DETECT_IMAGE_BYTES,
+        ));
+    }
+
+    // Header-first check: read dimensions WITHOUT full decode to block compressed bombs.
+    if let Ok(reader) = image::io::Reader::new(std::io::Cursor::new(bytes)).with_guessed_format() {
+        if let Ok((w, h)) = reader.into_dimensions() {
+            let header_pixels = u64::from(w) * u64::from(h);
+            if header_pixels > MAX_DETECT_IMAGE_PIXELS {
+                return Err(format!(
+                    "{context}: header dimensions {w}x{h} ({header_pixels} pixels) exceed limit of {MAX_DETECT_IMAGE_PIXELS}.",
+                ));
+            }
+        }
+    }
+
+    let decoded = image::load_from_memory(bytes)
+        .map_err(|error| format!("Failed to decode {context}: {error}"))?;
+    let pixel_count = u64::from(decoded.width()) * u64::from(decoded.height());
+
+    if pixel_count > MAX_DETECT_IMAGE_PIXELS {
+        return Err(format!(
+            "{context}: decoded image {}x{} ({} pixels) exceeds limit of {}.",
+            decoded.width(),
+            decoded.height(),
+            pixel_count,
+            MAX_DETECT_IMAGE_PIXELS,
+        ));
+    }
+
+    Ok(decoded)
+}
+
 #[command]
 pub async fn tauri_scanner_probe_detect(app: AppHandle) -> Result<ScannerDetectProbeResponse, String> {
     let resource_dir_hint = app.path().resource_dir().ok();
@@ -474,8 +515,8 @@ fn detect_document_opencv_from_bytes(
     request: ScannerDetectDocumentRequest,
 ) -> Result<ScannerDetectDocumentResponse, String> {
     let started_at = Instant::now();
-    let dynamic_image = image::load_from_memory(&request.source_bytes)
-        .map_err(|e| format!("Failed to decode source for OpenCV detect: {e}"))?;
+    let dynamic_image =
+        decode_detect_image_with_limits(&request.source_bytes, "source for OpenCV detect")?;
     let (w, h) = (dynamic_image.width(), dynamic_image.height());
     let points = crate::scanner_cv_detect::detect_contour_quad(
         &dynamic_image, request.max_width, request.max_height,
@@ -702,9 +743,9 @@ fn resolve_detect_input(
     Ok(ResolvedDetectInput {
         // Skip the max_width/max_height pre-shrink for the Native ORT path.
         // The model function (`run_docaligner_fastvit_sa24`) will resize the
-        // image to the model's input_size (e.g. 256×256) in a single step.
+        // image to the model's input_size (e.g. 256脳256) in a single step.
         // Applying the frontend's processing bounds here would create a wasteful
-        // double-resize chain (e.g. 640×360 →320×180 →256×256) that degrades
+        // double-resize chain (e.g. 640脳360 鈫?20脳180 鈫?56脳256) that degrades
         // the heatmap quality through accumulated interpolation blur.
         prepared_image: decoded_image.map(|image| prepare_inference_image(image, None, None)),
         input_transport,
@@ -735,6 +776,15 @@ fn resolve_detect_from_rgba_owned(
         return Err("RGBA native scanner dimensions must be greater than zero.".to_string());
     }
 
+    let pixel_count = u64::from(width) * u64::from(height);
+    if pixel_count > MAX_DETECT_IMAGE_PIXELS {
+        return Err(format!(
+            "RGBA native scanner dimensions {width}x{height} ({} pixels) exceed limit of {}.",
+            pixel_count,
+            MAX_DETECT_IMAGE_PIXELS,
+        ));
+    }
+
     let expected_len = (width as usize)
         .checked_mul(height as usize)
         .and_then(|pixels| pixels.checked_mul(4))
@@ -760,9 +810,10 @@ fn resolve_detect_from_encoded_owned(
     request: &mut ScannerDetectDocumentRequest,
 ) -> Result<DynamicImage, String> {
     let source_bytes = std::mem::take(&mut request.source_bytes);
-    image::load_from_memory(&source_bytes).map_err(|error| {
-        format!("Failed to decode source image for native scanner inference: {error}")
-    })
+    decode_detect_image_with_limits(
+        &source_bytes,
+        "source image for native scanner inference",
+    )
 }
 
 pub(crate) fn build_dynamic_image_from_preview_frame_packet(packet: &[u8]) -> Result<DynamicImage, String> {
@@ -781,7 +832,7 @@ fn prepare_inference_image(
     let working_image = if working_width == original_width && working_height == original_height {
         image
     } else {
-        // Resize in RGB to avoid unnecessary RGBA roundtrip →the downstream
+        // Resize in RGB to avoid unnecessary RGBA roundtrip 鈫抰he downstream
         // inference path (`run_docaligner_fastvit_sa24`) converts to RGB anyway.
         DynamicImage::ImageRgb8(image::imageops::resize(
             &image.to_rgb8(),
@@ -1338,7 +1389,7 @@ fn run_docaligner_fastvit_sa24(
             .map_err(|error| format!("Failed to extract heatmap tensor: {error}"))?;
         // Copy tensor data into an owned Vec so we can drop the MutexGuard.
         (tensor_view.to_vec(), shape.to_vec())
-        // MutexGuard is dropped here →lock is released before post-processing.
+        // MutexGuard is dropped here 鈫抣ock is released before post-processing.
     };
 
     decode_docaligner_heatmap_output(
