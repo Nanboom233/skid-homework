@@ -144,3 +144,25 @@ body {
         overflow-y: auto;
     }
 }
+
+/*
+ * Fix react-photo-view portals inside Radix Dialog (modal).
+ * Radix sets `pointer-events: none` on document.body when a modal Dialog
+ * is open (via disableOutsidePointerEvents). PhotoView's portal renders as
+ * a direct child of body and inherits pointer-events: none, which blocks
+ * all mouse interactions (cursor, drag, click, zoom).
+ * Note: Do NOT override z-index here — PhotoView's default z-index: 2000
+ * already exceeds Dialog's z-50. Lowering it would cause regressions.
+ */
+.PhotoView-Portal {
+  pointer-events: auto !important;
+}
+
+/*
+ * Offset PhotoView's top banner below the Tauri custom title bar.
+ * Title bar is fixed at top: 0, height: 32px, z-index: 9999 — it renders
+ * above PhotoView (z-index: 2000) and covers the close button / counter.
+ */
+body:has(.tauri-title-bar) .PhotoView-Slider__BannerWrap {
+  top: 32px;
+}

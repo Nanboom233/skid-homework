@@ -1,4 +1,5 @@
 import {useCallback, useEffect, useMemo, useRef, useState} from "react";
+import {useScannerStore} from "@/store/scanner-store";
 import type {KeyboardEvent as ReactKeyboardEvent} from "react";
 import {useTranslation} from "react-i18next";
 
@@ -84,6 +85,8 @@ export function ScannerWorkspace({
   const workspaceRef = useRef<HTMLDivElement | null>(null);
   const captureFlashTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const captureProcessingRef = useRef(false);
+  const closingRef = useRef(false);
+  const reset = useScannerStore((s) => s.reset);
 
   // TODO: Stable ref to break circular dependency: session needs capture bridges,
   // but capture needs session's runtime refs. The ref is populated after
@@ -189,12 +192,20 @@ export function ScannerWorkspace({
     }
   }, [clearCaptureFlashTimeout, isOpen]);
 
-  const handleCloseWorkspace = useCallback(() => {
+  const handleCloseWorkspace = useCallback(async () => {
+    if (closingRef.current) return;
+    closingRef.current = true;
     // M1 fix: Reset local UI state to prevent stale editing state on reopen.
     setEditingDocId(null);
     setIsDiagnosticsOpen(false);
-    onOpenChange(false);
-  }, [onOpenChange]);
+    try {
+      await stopStream();
+    } finally {
+      reset();
+      onOpenChange(false);
+      closingRef.current = false;
+    }
+  }, [onOpenChange, reset, stopStream]);
 
   const handleCapture = useCallback(() => {
     if (!isStreaming || isEditing || capture.isCapturing) {
@@ -358,11 +369,18 @@ export function ScannerWorkspace({
   const sidePanelsWidth = isEditing ? "0px" : hasTray ? "44rem" : "24rem";
 
   return (
-    <Dialog open={isOpen} onOpenChange={onOpenChange}>
+    <Dialog open={isOpen} onOpenChange={(open) => {
+      if (!open) {
+        void handleCloseWorkspace();
+      }
+    }}>
       <DialogContent
         size="scanner"
         className="!flex h-[min(85vh,820px)] flex-col overflow-hidden p-0 transition-[max-width] duration-300 ease-out"
         showCloseButton={false}
+        onInteractOutside={(e) => e.preventDefault()}
+        onPointerDownOutside={(e) => e.preventDefault()}
+        onEscapeKeyDown={(e) => e.preventDefault()}
         style={{
           "--camera-aspect": aspectValue,
           "--side-panels-w": sidePanelsWidth,

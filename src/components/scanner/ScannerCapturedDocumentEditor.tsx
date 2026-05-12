@@ -1,4 +1,5 @@
 import {type PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState} from "react";
+import {PhotoProvider, PhotoView} from "react-photo-view";
 import {useTranslation} from "react-i18next";
 
 import type {Point} from "@/lib/scanner";
@@ -208,7 +209,7 @@ function ScannerCapturedDocumentEditorBody({
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewProcessingMs, setPreviewProcessingMs] = useState<number | null>(null);
-  const [previewFullscreen, setPreviewFullscreen] = useState(false);
+
   /** Fingerprint of the options that produced the current preview. */
   const lastPreviewFingerprintRef = useRef<string | null>(null);
 
@@ -255,12 +256,8 @@ function ScannerCapturedDocumentEditorBody({
     if (e.key !== "Escape") return;
     e.preventDefault();
     e.stopPropagation();
-    if (previewFullscreen) {
-      setPreviewFullscreen(false);
-    } else {
-      onOpenChange(false);
-    }
-  }, [onOpenChange, previewFullscreen]);
+    onOpenChange(false);
+  }, [onOpenChange]);
 
   // Clean up custom preview URL on unmount
   useEffect(() => {
@@ -689,22 +686,21 @@ function ScannerCapturedDocumentEditorBody({
           </div>
 
           {displayedPreviewUrl ? (
-            <button
-              type="button"
-              className="relative w-full max-h-[200px] rounded-lg overflow-hidden border border-white/10 bg-black/40 cursor-zoom-in group"
-              onClick={() => setPreviewFullscreen(true)}
-              aria-label={t("document-scanner.editor.postprocess.preview.click-to-enlarge")}
-            >
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img
-                src={displayedPreviewUrl}
-                alt={t("document-scanner.editor.postprocess.preview.fullscreen-alt")}
-                className="w-full h-full object-contain max-h-[200px]"
-              />
-              <span className="absolute bottom-1 right-2 text-[10px] text-white/60 opacity-0 group-hover:opacity-100 transition-opacity">
-                {t("document-scanner.editor.postprocess.preview.click-to-enlarge")}
-              </span>
-            </button>
+            <PhotoProvider portalContainer={typeof globalThis.document !== "undefined" ? globalThis.document.body : undefined}>
+              <div className="relative w-full max-h-[200px] rounded-lg overflow-hidden border border-white/10 bg-black/40 group">
+                <PhotoView src={displayedPreviewUrl}>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={displayedPreviewUrl}
+                    alt={t("document-scanner.editor.postprocess.preview.fullscreen-alt")}
+                    className="w-full h-full object-contain max-h-[200px] cursor-pointer"
+                  />
+                </PhotoView>
+                <span className="pointer-events-none absolute bottom-1 right-2 text-[10px] text-white/60 opacity-0 group-hover:opacity-100 transition-opacity">
+                  {t("document-scanner.editor.postprocess.preview.click-to-enlarge")}
+                </span>
+              </div>
+            </PhotoProvider>
           ) : null}
         </div>
       </div>
@@ -726,25 +722,7 @@ function ScannerCapturedDocumentEditorBody({
         </div>
       </div>
 
-      {previewFullscreen && displayedPreviewUrl && (
-        <div
-          ref={(el) => el?.focus()}
-          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/95 backdrop-blur-sm"
-          onClick={() => setPreviewFullscreen(false)}
-          tabIndex={-1}
-          role="dialog"
-          aria-modal="true"
-          aria-label={t("document-scanner.editor.postprocess.preview.fullscreen-alt")}
-        >
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={displayedPreviewUrl}
-            alt={t("document-scanner.editor.postprocess.preview.fullscreen-alt")}
-            className="max-w-[95vw] max-h-[90vh] object-contain cursor-zoom-out"
-            onClick={() => setPreviewFullscreen(false)}
-          />
-        </div>
-      )}
+
     </div>
   );
 }

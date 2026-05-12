@@ -1034,8 +1034,11 @@ export function useScannerSession({
     const wasOpen = dialogOpenRef.current;
     dialogOpenRef.current = isOpen;
     if (wasOpen && !isOpen) {
-      void stopScannerRef.current?.();
-      reset();
+      const doCleanup = async () => {
+        await stopScannerRef.current?.();
+        reset();
+      };
+      void doCleanup();
     }
   }, [isOpen, reset]);
 
