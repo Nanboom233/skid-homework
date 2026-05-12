@@ -1,9 +1,9 @@
-import type {Point} from "@/lib/scanner";
+import type {Point} from "../../lib/scanner";
 import {
   getOrientedFrameDimensions,
   orientPointsForPreview,
   type PreviewOrientation,
-} from "@/lib/scanner/preview-orientation";
+} from "../../lib/scanner/preview-orientation";
 
 interface ScannerOverlayProps {
   /** The 4 document corner points detected in the frame. */

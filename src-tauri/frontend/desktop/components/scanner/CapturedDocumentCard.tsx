@@ -6,7 +6,7 @@ import {Badge} from "@/components/ui/badge";
 import {Button} from "@/components/ui/button";
 import {Card} from "@/components/ui/card";
 import {useBlobDataUrl} from "@/hooks/use-blob-data-url";
-import type {ScannerCapturedDocument} from "@/store/scanner-store";
+import type {ScannerCapturedDocument} from "../../store/scanner-store";
 import {cn} from "@/lib/utils";
 
 interface CapturedDocumentCardProps {

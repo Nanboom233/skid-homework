@@ -3,7 +3,7 @@ import {PhotoProvider} from "react-photo-view";
 
 import {Button} from "@/components/ui/button";
 import {ScrollArea, ScrollBar} from "@/components/ui/scroll-area";
-import type {ScannerCapturedDocument} from "@/store/scanner-store";
+import type {ScannerCapturedDocument} from "../../store/scanner-store";
 import {CapturedDocumentCard} from "./CapturedDocumentCard";
 
 interface CapturedDocumentTrayProps {

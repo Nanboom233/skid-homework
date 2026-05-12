@@ -21,8 +21,8 @@ import {
   stopTauriDecodeStream,
   type TauriDecodeStreamHandle,
   type TauriDecodeStreamLifecycleEvent,
-} from "@/lib/tauri/adb";
-import {isTauri} from "@/lib/tauri/platform";
+} from "../tauri/adb";
+import {isTauri} from "../tauri/platform";
 
 import {decodeFramePacketToRgba, FRAME_PACKET_HEADER_SIZE, FRAME_PACKET_TELEMETRY_SIZE,} from "./frame-codec";
 

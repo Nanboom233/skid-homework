@@ -6,8 +6,8 @@ import {
   listTauriAdbDevices,
   pairTauriAdbDevice,
   type TauriAdbDevice,
-} from "@/lib/tauri/adb";
-import {isTauri} from "@/lib/tauri/platform";
+} from "../tauri/adb";
+import {isTauri} from "../tauri/platform";
 import {AdbManager, UnsupportedEnvironmentError} from "./manager";
 
 export interface RemoteAdbPairRequest {

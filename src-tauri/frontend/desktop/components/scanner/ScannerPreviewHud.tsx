@@ -4,7 +4,7 @@ import {Activity, Gauge, Wifi} from "lucide-react";
 import {useTranslation} from "react-i18next";
 
 import {Badge} from "@/components/ui/badge";
-import {useScannerStore} from "@/store/scanner-store";
+import {useScannerStore} from "../../store/scanner-store";
 
 const FPS_TARGET = 30;
 

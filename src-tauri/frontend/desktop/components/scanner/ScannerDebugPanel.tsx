@@ -9,7 +9,7 @@ import {Button} from "@/components/ui/button";
 import {Card, CardContent, CardDescription, CardHeader, CardTitle} from "@/components/ui/card";
 import {Collapsible, CollapsibleContent, CollapsibleTrigger} from "@/components/ui/collapsible";
 import {Separator} from "@/components/ui/separator";
-import {useScannerStore} from "@/store/scanner-store";
+import {useScannerStore} from "../../store/scanner-store";
 
 const CORNER_LABELS = ["TL", "TR", "BR", "BL"] as const;
 

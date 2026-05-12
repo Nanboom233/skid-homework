@@ -9,20 +9,20 @@ import {
   type FrameSource,
   type Point,
   type ScannerStillCapture,
-} from "@/lib/scanner";
+} from "../lib/scanner";
 import {
   decodeBlobToImageData,
   type OrthogonalRotation,
-} from "@/lib/scanner/image-data";
-import {mapPointsFromRotatedFrameToSource, type PreviewOrientation} from "@/lib/scanner/preview-orientation";
-import {assessDocumentQuad, isDocumentQuadTrustworthy} from "@/lib/scanner/document-quad";
-import type {PostProcessOptions} from "@/components/scanner/ScannerCapturedDocumentEditor";
-import {detectDocumentWithTauriNativeOrt} from "@/lib/tauri/scanner-detect";
-import {processTauriScannerPostProcessSourceFile} from "@/lib/tauri/scanner";
+} from "../lib/scanner/image-data";
+import {mapPointsFromRotatedFrameToSource, type PreviewOrientation} from "../lib/scanner/preview-orientation";
+import {assessDocumentQuad, isDocumentQuadTrustworthy} from "../lib/scanner/document-quad";
+import type {PostProcessOptions} from "../components/scanner/ScannerCapturedDocumentEditor";
+import {detectDocumentWithTauriNativeOrt} from "../lib/tauri/scanner-detect";
+import {processTauriScannerPostProcessSourceFile} from "../lib/tauri/scanner";
 import {
   type ScannerCapturedDocument,
   useScannerStore,
-} from "@/store/scanner-store";
+} from "../store/scanner-store";
 import {
   type ScannerDetectionBackend,
   type ScannerPostProcessBackend,

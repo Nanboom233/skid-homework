@@ -13,7 +13,7 @@ import {
 } from "@/components/ui/dialog";
 import {Input} from "@/components/ui/input";
 import {Label} from "@/components/ui/label";
-import {listTauriAdbDevices, type TauriAdbDevice} from "@/lib/tauri/adb";
+import {listTauriAdbDevices, type TauriAdbDevice} from "../../lib/tauri/adb";
 import {cn} from "@/lib/utils";
 import {Tabs, TabsContent, TabsList, TabsTrigger} from "@/components/ui/tabs";
 

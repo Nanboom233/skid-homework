@@ -1,5 +1,5 @@
-import type {Point} from "@/lib/scanner/types";
-import type {OrthogonalRotation} from "@/lib/scanner/image-data";
+import type {Point} from "../scanner/types";
+import type {OrthogonalRotation} from "../scanner/image-data";
 import type {ScannerPostProcessBackend} from "@/store/settings-store";
 
 import {isTauri} from "./platform";

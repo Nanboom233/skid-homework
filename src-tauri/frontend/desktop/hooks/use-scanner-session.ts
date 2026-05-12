@@ -13,8 +13,8 @@ import {
   type FrameSourceState,
   type Point,
   type ScannerConfig,
-} from "@/lib/scanner";
-import {isConvexOrderedQuad, validateQuadGeometry} from "@/lib/scanner/document-quad";
+} from "../lib/scanner";
+import {isConvexOrderedQuad, validateQuadGeometry} from "../lib/scanner/document-quad";
 import {
   type DetectionResultEvent,
   listenTauriDetectionEvents,
@@ -22,14 +22,14 @@ import {
   startTauriDetectionLoop,
   stopTauriDetectionLoop,
   type TauriScannerDetectProbeResult,
-} from "@/lib/tauri/scanner-detect";
-import {getSelectedDesktopAdbSerial} from "@/lib/webadb/screenshot";
+} from "../lib/tauri/scanner-detect";
+import {getSelectedDesktopAdbSerial} from "../lib/webadb/screenshot";
 import {
   type ScannerConnectionDebugState,
   type ScannerCvDebugState,
   type ScannerStatus,
   useScannerStore,
-} from "@/store/scanner-store";
+} from "../store/scanner-store";
 import {
   type ScannerDetectionBackend,
   useSettingsStore,

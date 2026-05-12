@@ -2,8 +2,8 @@ import {type PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo,
 import {PhotoProvider, PhotoView} from "react-photo-view";
 import {useTranslation} from "react-i18next";
 
-import type {Point} from "@/lib/scanner";
-import type {ScannerCapturedDocument} from "@/store/scanner-store";
+import type {Point} from "../../lib/scanner";
+import type {ScannerCapturedDocument} from "../../store/scanner-store";
 import type {ScannerPostProcessBackend} from "@/store/settings-store";
 import {useSettingsStore} from "@/store/settings-store";
 import {Button} from "@/components/ui/button";
@@ -18,8 +18,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {useBlobDataUrl} from "@/hooks/use-blob-data-url";
-import {mapPointFromSourceToRotatedFrame, mapPointFromRotatedFrameToSource} from "@/lib/scanner/preview-orientation";
-import {refineDocumentCorners} from "@/lib/tauri/scanner";
+import {mapPointFromSourceToRotatedFrame, mapPointFromRotatedFrameToSource} from "../../lib/scanner/preview-orientation";
+import {refineDocumentCorners} from "../../lib/tauri/scanner";
 
 export type EditorColorMode = "auto" | "color" | "grayscale" | "binary";
 

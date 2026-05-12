@@ -1,11 +1,11 @@
 import {useCallback, useEffect, useMemo, useRef, useState} from "react";
-import {useScannerStore} from "@/store/scanner-store";
+import {useScannerStore} from "../../store/scanner-store";
 import type {KeyboardEvent as ReactKeyboardEvent} from "react";
 import {useTranslation} from "react-i18next";
 
-import {useScannerCapture, type UseScannerCaptureResult} from "@/hooks/use-scanner-capture";
-import {useScannerPreview} from "@/hooks/use-scanner-preview";
-import {useScannerSession} from "@/hooks/use-scanner-session";
+import {useScannerCapture, type UseScannerCaptureResult} from "../../hooks/use-scanner-capture";
+import {useScannerPreview} from "../../hooks/use-scanner-preview";
+import {useScannerSession} from "../../hooks/use-scanner-session";
 import {useMediaQuery} from "@/hooks/use-media-query";
 import {useSettingsStore} from "@/store/settings-store";
 import {Dialog, DialogContent, DialogTitle} from "@/components/ui/dialog";
@@ -384,7 +384,7 @@ export function ScannerWorkspace({
         style={{
           "--camera-aspect": aspectValue,
           "--side-panels-w": sidePanelsWidth,
-          "--preview-h": "calc(min(85vh, 820px) - 56px - 32px)",
+          "--preview-h": "calc(min(85vh, 820px) - 88px)",
           "--ideal-w": "calc((var(--preview-h) * var(--camera-aspect)) + var(--side-panels-w))",
           width: "100%",
           maxWidth: "min(calc(100vw - 2rem), var(--ideal-w), 1280px)",

@@ -1,4 +1,4 @@
-import {isTauri} from "@/lib/tauri/platform";
+import {isTauri} from "../tauri/platform";
 
 export type OrthogonalRotation = 0 | 90 | 180 | 270;
 
@@ -237,7 +237,7 @@ const encodeImageDataToPngBlobViaNative = async (frame: ImageData): Promise<Blob
     throw new Error("Native PNG encode is only available in Tauri desktop builds.");
   }
 
-  const { encodeTauriPngRgba } = await import("@/lib/tauri/adb");
+  const { encodeTauriPngRgba } = await import("../tauri/adb");
   const rgba = new Uint8Array(frame.data);
   const encodedBytes = await encodeTauriPngRgba(frame.width, frame.height, rgba);
   return new Blob([new Uint8Array(encodedBytes)], { type: "image/png" });

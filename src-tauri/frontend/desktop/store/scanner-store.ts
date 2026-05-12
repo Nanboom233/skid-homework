@@ -1,11 +1,11 @@
 import {create} from "zustand";
-import type {FrameSource, Point, ScannerConfig} from "@/lib/scanner";
-import type {OrthogonalRotation} from "@/lib/scanner/image-data";
+import type {FrameSource, Point, ScannerConfig} from "../lib/scanner";
+import type {OrthogonalRotation} from "../lib/scanner/image-data";
 import type {
   ScannerDetectionBackend,
   ScannerPostProcessBackend,
 } from "@/store/settings-store";
-import type {PostProcessOptions} from "@/components/scanner/ScannerCapturedDocumentEditor";
+import type {PostProcessOptions} from "../components/scanner/ScannerCapturedDocumentEditor";
 
 /**
  * Scanner state management for the ADB camera document scanner.

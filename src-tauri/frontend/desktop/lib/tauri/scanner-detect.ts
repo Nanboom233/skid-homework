@@ -1,4 +1,4 @@
-import type {Point} from "@/lib/scanner/types";
+import type {Point} from "../scanner/types";
 
 import {isTauri} from "./platform";
 

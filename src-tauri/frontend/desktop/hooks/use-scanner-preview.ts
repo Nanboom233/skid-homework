@@ -1,7 +1,7 @@
 import {useCallback, useEffect, useMemo, useRef, useState} from "react";
 import type {Dispatch, MutableRefObject, RefObject, SetStateAction} from "react";
 
-import {useScannerStore} from "@/store/scanner-store";
+import {useScannerStore} from "../store/scanner-store";
 
 export type PreviewOrientation = "landscape" | "portrait";
 
