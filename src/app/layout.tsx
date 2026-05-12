@@ -2,11 +2,9 @@ import "../index.css";
 import type {Metadata, Viewport} from "next";
 import Providers from "./providers";
 import {TauriAwareSerwist} from "@/components/guards/tauri-aware-serwist";
-import {TauriTitleBar} from "@/components/customized/tauri-title-bar";
 import {TauriLinkInterceptor} from "@/components/guards/tauri-link-interceptor";
 
 import "@/css/jsxgraph.css";
-import "@/css/tauri-title-bar.css";
 
 export const metadata: Metadata = {
   title: "Skid Homework",
@@ -55,7 +53,6 @@ export default function RootLayout({
       <body suppressHydrationWarning>
         <TauriAwareSerwist>
           <TauriLinkInterceptor>
-            <TauriTitleBar />
             <Providers>{children}</Providers>
           </TauriLinkInterceptor>
         </TauriAwareSerwist>

@@ -158,11 +158,3 @@ body {
   pointer-events: auto !important;
 }
 
-/*
- * Offset PhotoView's top banner below the Tauri custom title bar.
- * Title bar is fixed at top: 0, height: 32px, z-index: 9999 — it renders
- * above PhotoView (z-index: 2000) and covers the close button / counter.
- */
-body:has(.tauri-title-bar) .PhotoView-Slider__BannerWrap {
-  top: 32px;
-}
