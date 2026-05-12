@@ -5,7 +5,7 @@ use std::time::Instant;
 
 
 use image::imageops::{rotate180, rotate270, rotate90};
-use image::{ColorType, GrayImage, ImageEncoder, Luma, Rgba, RgbaImage};
+use image::{ColorType, GrayImage, ImageEncoder, ImageReader, Luma, Rgba, RgbaImage};
 use imageproc::contrast::otsu_level;
 use imageproc::filter::gaussian_blur_f32;
 use imageproc::geometric_transformations::{warp_into, Interpolation, Projection};
@@ -190,7 +190,7 @@ pub async fn tauri_scanner_refine_document_corners(
             ));
         }
         // Header-first check to block compressed bombs before full decode.
-        if let Ok(reader) = image::io::Reader::new(std::io::Cursor::new(&request.source_bytes)).with_guessed_format() {
+        if let Ok(reader) = ImageReader::new(std::io::Cursor::new(&request.source_bytes)).with_guessed_format() {
             if let Ok((w, h)) = reader.into_dimensions() {
                 let pixel_count = (w as u64) * (h as u64);
                 if pixel_count > MAX_PIXELS {
@@ -293,7 +293,7 @@ fn decode_image_with_limits(bytes: &[u8], context: &str) -> Result<image::Dynami
         ));
     }
     // Header-first check: read dimensions WITHOUT full decode to block compressed bombs.
-    if let Ok(reader) = image::io::Reader::new(std::io::Cursor::new(bytes)).with_guessed_format() {
+    if let Ok(reader) = ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format() {
         if let Ok((w, h)) = reader.into_dimensions() {
             let header_pixels = (w as u64) * (h as u64);
             if header_pixels > MAX_PIXELS {

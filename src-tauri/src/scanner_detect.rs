@@ -4,7 +4,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
 use image::imageops::FilterType;
-use image::{DynamicImage, GenericImageView, RgbImage, RgbaImage};
+use image::{DynamicImage, GenericImageView, ImageReader, RgbImage, RgbaImage};
 use ort::ep::ExecutionProvider as _;
 use ort::{
     ep,
@@ -308,7 +308,7 @@ fn decode_detect_image_with_limits(bytes: &[u8], context: &str) -> Result<Dynami
     }
 
     // Header-first check: read dimensions WITHOUT full decode to block compressed bombs.
-    if let Ok(reader) = image::io::Reader::new(std::io::Cursor::new(bytes)).with_guessed_format() {
+    if let Ok(reader) = ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format() {
         if let Ok((w, h)) = reader.into_dimensions() {
             let header_pixels = u64::from(w) * u64::from(h);
             if header_pixels > MAX_DETECT_IMAGE_PIXELS {
