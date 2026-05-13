@@ -83,3 +83,4 @@ scripts/scanner_yolo/*
 agents.md
 claude.md
 .ace-tool/
+.codex/
