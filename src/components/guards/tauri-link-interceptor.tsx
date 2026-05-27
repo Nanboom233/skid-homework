@@ -1,7 +1,7 @@
 "use client";
 
 import {useEffect} from "react";
-import {usePlatform} from "@/hooks/use-platform";
+import {isWebTarget, openExternalUrl} from "@/platform";
 
 /**
  * Intercepts external link clicks in Tauri and opens them in the
@@ -16,10 +16,8 @@ export function TauriLinkInterceptor({
 }: {
   children: React.ReactNode;
 }) {
-  const platform = usePlatform();
-
   useEffect(() => {
-    if (platform !== "tauri") return;
+    if (isWebTarget) return;
 
     const handleClick = async (e: MouseEvent) => {
       const anchor = (e.target as HTMLElement).closest("a");
@@ -32,8 +30,7 @@ export function TauriLinkInterceptor({
       if (href.startsWith("http://") || href.startsWith("https://")) {
         e.preventDefault();
         e.stopPropagation();
-        const { openUrl } = await import("@tauri-apps/plugin-opener");
-        await openUrl(href);
+        await openExternalUrl(href);
       }
     };
 
@@ -55,7 +52,7 @@ export function TauriLinkInterceptor({
       document.removeEventListener("dragover", handleDragOver);
       document.removeEventListener("drop", handleDrop);
     };
-  }, [platform]);
+  }, []);
 
   return <>{children}</>;
 }

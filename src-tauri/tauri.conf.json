@@ -6,7 +6,7 @@
   "build": {
     "frontendDist": "../out",
     "devUrl": "http://localhost:3000",
-    "beforeDevCommand": "pnpm dev",
+    "beforeDevCommand": "pnpm tauri:dev:frontend",
     "beforeBuildCommand": "pnpm tauri:build:frontend"
   },
   "app": {
@@ -15,7 +15,7 @@
         "title": "Skid Homework",
         "width": 1280,
         "height": 800,
-        "decorations": false,
+        "decorations": true,
         "resizable": true,
         "fullscreen": false,
         "dragDropEnabled": true

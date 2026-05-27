@@ -1,7 +1,7 @@
 import {Adb, AdbDaemonTransport} from "@yume-chan/adb";
 import {AdbDaemonWebUsbDevice, AdbDaemonWebUsbDeviceManager,} from "@yume-chan/adb-daemon-webusb";
 import AdbWebCredentialStore from "@yume-chan/adb-credential-web";
-import {isTauri} from "@/lib/tauri/platform";
+import {isTauri} from "../tauri/platform";
 
 export interface AdbDevice {
   serial: string;

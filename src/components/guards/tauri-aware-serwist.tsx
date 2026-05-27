@@ -1,7 +1,7 @@
 "use client";
 
 import {SerwistProvider} from "@/app/serwist";
-import {usePlatform} from "@/hooks/use-platform";
+import {shouldEnableSerwist} from "@/platform";
 
 /**
  * Conditionally wraps children with SerwistProvider.
@@ -13,9 +13,7 @@ export function TauriAwareSerwist({
 }: {
   children: React.ReactNode;
 }) {
-  const platform = usePlatform();
-
-  if (platform === "tauri") {
+  if (!shouldEnableSerwist()) {
     return <>{children}</>;
   }
 

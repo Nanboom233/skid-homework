@@ -204,8 +204,8 @@ export function useAvailableModels() {
           const sourcesChanged = cache.sourcesHash !== sourcesHash;
 
           if (!isExpired && !sourcesChanged) {
-            // Use cached data (hydrate with current sources)
-            setSourceModelsMap(hydrateCachedData(cache.data, sources));
+            // Use cached data (hydrate with current sources via ref)
+            setSourceModelsMap(hydrateCachedData(cache.data, useAiStore.getState().sources));
             return;
           }
         }
@@ -214,7 +214,7 @@ export function useAvailableModels() {
       // Fetch fresh data
       await forceRefetch();
     },
-    [forceRefetch, sourcesHash, sources]
+    [forceRefetch, sourcesHash]
   );
 
   useEffect(() => {
@@ -244,9 +244,9 @@ export function useAvailableModels() {
         const cacheSourcesChanged = cache.sourcesHash !== asyncHash;
 
         if (!isExpired && !cacheSourcesChanged) {
-          // Use cached data (hydrate with current sources)
+          // Use cached data (hydrate with current sources via ref)
           if (!cancelled) {
-            setSourceModelsMap(hydrateCachedData(cache.data, sources));
+            setSourceModelsMap(hydrateCachedData(cache.data, useAiStore.getState().sources));
           }
           return;
         }
@@ -280,7 +280,10 @@ export function useAvailableModels() {
     return () => {
       cancelled = true;
     };
-  }, [enabledSources, getClientForSource, sourcesHashSync, sources]);
+    // NOTE: `sources` is intentionally excluded — it is accessed via sourcesRef
+    // to prevent re-triggering the fetch on every store update.
+
+  }, [enabledSources, getClientForSource, sourcesHashSync]);
 
   // Flatten all models for simple list access
   const allModels = useMemo(() => {

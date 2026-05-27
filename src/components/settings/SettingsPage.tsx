@@ -1,9 +1,6 @@
 "use client";
 
 import {
-  type AiProvider,
-  DEFAULT_GEMINI_BASE_URL,
-  DEFAULT_OPENAI_BASE_URL,
   useAiStore,
 } from "@/store/ai-store";
 import {
@@ -12,7 +9,7 @@ import {
   type ThemePreference,
   useSettingsStore
 } from "@/store/settings-store";
-import Link from "next/link";
+
 import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
@@ -36,30 +33,21 @@ import ExplanationModeSelector from "./ExplanationModeSelector";
 import ModelSelector, { CUSTOM_MODEL_VALUE } from "../ui/model-selector";
 import { RefreshCw } from "lucide-react";
 
-export const DEFAULT_BASE_BY_PROVIDER: Record<AiProvider, string> = {
-  gemini: DEFAULT_GEMINI_BASE_URL,
-  openai: DEFAULT_OPENAI_BASE_URL
-};
 
-type BackButtonProps = {
-  href?: string | null;
-};
-
-function BackButton({ href }: BackButtonProps) {
+function BackButton({ onBack }: { onBack: () => void }) {
   const { t } = useTranslation("commons", {
     keyPrefix: "settings-page"
   });
 
   return (
     <div className="flex flex-col gap-3 sm:flex-row">
-      <Link href={href ?? "/"} className="w-full sm:flex-1">
-        <Button className="w-full">
-          {t("back")} <Kbd>ESC</Kbd>
-        </Button>
-      </Link>
+      <Button className="w-full sm:flex-1" onClick={onBack}>
+        {t("back")} <Kbd>ESC</Kbd>
+      </Button>
     </div>
   );
 }
+
 
 export default function SettingsPage() {
   const { t, i18n } = useTranslation("commons", {
@@ -69,30 +57,30 @@ export default function SettingsPage() {
 
   const searchParams = useSearchParams();
 
-  const navTargetPath = searchParams.get("from");
+  const rawFrom = searchParams.get("from");
+  // Only allow internal paths to prevent open redirect / XSS via javascript: scheme
+  const navTargetPath = rawFrom?.startsWith("/") && !rawFrom.startsWith("//") ? rawFrom : null;
 
-  const {
-    sources,
-    activeSourceId,
-    setActiveSource,
-    fallbackModel,
-    currentModel,
-    updateSource,
-    setFallbackModel,
-    setCurrentModel,
-    isCustomModel,
-    setIsCustomModel,
-    isCustomFallback,
-    setIsCustomFallback,
-    customModelName,
-    setCustomModelName,
-    customModelSourceId,
-    setCustomModelSourceId,
-    customFallbackName,
-    setCustomFallbackName,
-    customFallbackSourceId,
-    setCustomFallbackSourceId
-  } = useAiStore((s) => s);
+  const sources = useAiStore((s) => s.sources);
+  const activeSourceId = useAiStore((s) => s.activeSourceId);
+  const setActiveSource = useAiStore((s) => s.setActiveSource);
+  const fallbackModel = useAiStore((s) => s.fallbackModel);
+  const currentModel = useAiStore((s) => s.currentModel);
+  const updateSource = useAiStore((s) => s.updateSource);
+  const setFallbackModel = useAiStore((s) => s.setFallbackModel);
+  const setCurrentModel = useAiStore((s) => s.setCurrentModel);
+  const isCustomModel = useAiStore((s) => s.isCustomModel);
+  const setIsCustomModel = useAiStore((s) => s.setIsCustomModel);
+  const isCustomFallback = useAiStore((s) => s.isCustomFallback);
+  const setIsCustomFallback = useAiStore((s) => s.setIsCustomFallback);
+  const customModelName = useAiStore((s) => s.customModelName);
+  const setCustomModelName = useAiStore((s) => s.setCustomModelName);
+  const customModelSourceId = useAiStore((s) => s.customModelSourceId);
+  const setCustomModelSourceId = useAiStore((s) => s.setCustomModelSourceId);
+  const customFallbackName = useAiStore((s) => s.customFallbackName);
+  const setCustomFallbackName = useAiStore((s) => s.setCustomFallbackName);
+  const customFallbackSourceId = useAiStore((s) => s.customFallbackSourceId);
+  const setCustomFallbackSourceId = useAiStore((s) => s.setCustomFallbackSourceId);
 
   const {
     imageEnhancement: imageEnhancement,
@@ -324,7 +312,7 @@ export default function SettingsPage() {
       <div className="mx-auto max-w-3xl space-y-8 p-4 md:p-8">
         <h1 className="text-2xl font-bold tracking-tight">{t("heading")}</h1>
 
-        <BackButton href={navTargetPath} />
+        <BackButton onBack={handleBack} />
 
         <AISourceManager />
 
@@ -764,7 +752,7 @@ export default function SettingsPage() {
           </CardContent>
         </Card>
 
-        <BackButton href={navTargetPath} />
+        <BackButton onBack={handleBack} />
       </div>
     </>
   );

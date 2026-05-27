@@ -16,11 +16,14 @@ use std::os::windows::process::CommandExt;
 
 use serde::{Deserialize, Serialize};
 use tauri::command;
+use tauri::ipc::{Channel, InvokeResponseBody};
 
 static ADB_EXECUTABLE: OnceLock<PathBuf> = OnceLock::new();
 
 const CONNECT_READY_TIMEOUT: Duration = Duration::from_secs(3);
 const CONNECT_READY_POLL_INTERVAL: Duration = Duration::from_millis(250);
+const ADB_SERVER_RECOVERY_RETRY_DELAY: Duration = Duration::from_millis(200);
+
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -96,7 +99,10 @@ fn discover_adb_executable() -> PathBuf {
     if cfg!(target_os = "macos") {
         if let Ok(home) = env::var("HOME") {
             candidates.push(candidate_from_sdk_root(
-                &PathBuf::from(home).join("Library").join("Android").join("sdk"),
+                &PathBuf::from(home)
+                    .join("Library")
+                    .join("Android")
+                    .join("sdk"),
             ));
         }
     }
@@ -127,14 +133,14 @@ fn configure_adb_command(command: &mut Command) {
     }
 }
 
-fn normalize_text_output(bytes: &[u8]) -> String {
+pub(crate) fn normalize_text_output(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes)
         .replace("\r\n", "\n")
         .trim()
         .to_string()
 }
 
-fn combine_command_output(output: &Output) -> String {
+pub(crate) fn combine_command_output(output: &Output) -> String {
     let stdout = normalize_text_output(&output.stdout);
     let stderr = normalize_text_output(&output.stderr);
 
@@ -146,7 +152,7 @@ fn combine_command_output(output: &Output) -> String {
     }
 }
 
-fn ensure_non_empty(value: &str, field_name: &str) -> Result<String, String> {
+pub(crate) fn ensure_non_empty(value: &str, field_name: &str) -> Result<String, String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
         return Err(format!("{field_name} is required."));
@@ -155,16 +161,59 @@ fn ensure_non_empty(value: &str, field_name: &str) -> Result<String, String> {
     Ok(trimmed.to_string())
 }
 
-fn ensure_remote_address(value: &str, field_name: &str) -> Result<String, String> {
+fn validate_adb_remote_address(value: &str, field_name: &str) -> Result<String, String> {
     let address = ensure_non_empty(value, field_name)?;
-    if !address.contains(':') {
+
+    if address.len() > 255 {
+        return Err(format!("{field_name} must be 255 characters or less."));
+    }
+
+    if address.chars().any(char::is_whitespace) {
+        return Err(format!("{field_name} must not contain whitespace."));
+    }
+
+    if address.contains("://") {
+        return Err(format!("{field_name} must be a host:port value, not a URL."));
+    }
+
+    if address.contains('/') || address.contains('\\') {
+        return Err(format!("{field_name} must not contain path separators."));
+    }
+
+    let (host, port_text) = address
+        .rsplit_once(':')
+        .ok_or_else(|| format!("{field_name} must use the host:port format."))?;
+
+    if host.is_empty() || port_text.is_empty() {
         return Err(format!("{field_name} must use the host:port format."));
+    }
+
+    let port = port_text
+        .parse::<u16>()
+        .map_err(|_| format!("{field_name} port must be a number from 1 to 65535."))?;
+    if port == 0 {
+        return Err(format!("{field_name} port must be a number from 1 to 65535."));
+    }
+
+    if !host
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | ':' | '[' | ']'))
+    {
+        return Err(format!("{field_name} host contains unsupported characters."));
     }
 
     Ok(address)
 }
 
-fn run_adb_command(args: &[String]) -> Result<Output, String> {
+fn validate_pairing_code(value: &str) -> Result<String, String> {
+    let pairing_code = ensure_non_empty(value, "Pairing code")?;
+    if pairing_code.len() != 6 || !pairing_code.chars().all(|ch| ch.is_ascii_digit()) {
+        return Err("Pairing code must be exactly 6 digits.".to_string());
+    }
+    Ok(pairing_code)
+}
+
+pub(crate) fn run_adb_command(args: &[String]) -> Result<Output, String> {
     let executable = resolve_adb_executable();
     let mut command = Command::new(&executable);
     configure_adb_command(&mut command);
@@ -181,7 +230,84 @@ fn run_adb_command(args: &[String]) -> Result<Output, String> {
         })
 }
 
-fn run_adb_checked(args: &[String], action: &str) -> Result<Output, String> {
+fn build_failed_action_error(action: &str, output: &Output) -> String {
+    let details = combine_command_output(output);
+    if details.is_empty() {
+        format!("{action} failed with status {}.", output.status)
+    } else {
+        format!("{action} failed: {details}")
+    }
+}
+
+fn is_adb_server_recoverable_failure(details: &str) -> bool {
+    let normalized = details.to_ascii_lowercase();
+    [
+        "daemon not running",
+        "failed to start daemon",
+        "cannot connect to daemon",
+        "could not read ok from adb server",
+        "failed to check server version",
+    ]
+    .iter()
+    .any(|pattern| normalized.contains(pattern))
+}
+
+fn is_adb_server_management_command(args: &[String]) -> bool {
+    matches!(
+        args.first().map(String::as_str),
+        Some("start-server") | Some("kill-server")
+    )
+}
+
+fn run_adb_management_command(args: &[&str], action: &str) -> Result<Output, String> {
+    let owned_args = args
+        .iter()
+        .map(|value| value.to_string())
+        .collect::<Vec<String>>();
+    let output = run_adb_command(&owned_args)?;
+    if output.status.success() {
+        Ok(output)
+    } else {
+        Err(build_failed_action_error(action, &output))
+    }
+}
+
+fn recover_adb_server() -> Result<(), String> {
+    let first_start_error = match run_adb_management_command(&["start-server"], "adb start-server")
+    {
+        Ok(_) => return Ok(()),
+        Err(error) => error,
+    };
+
+    let mut recovery_messages = vec![format!(
+        "Initial adb start-server attempt failed: {first_start_error}"
+    )];
+
+    match run_adb_command(&["kill-server".to_string()]) {
+        Ok(output) if !output.status.success() => {
+            let details = combine_command_output(&output);
+            if !details.is_empty() {
+                recovery_messages.push(format!("adb kill-server reported: {details}"));
+            }
+        }
+        Err(error) => {
+            recovery_messages.push(format!("Failed to launch adb kill-server: {error}"));
+        }
+        Ok(_) => {}
+    }
+
+    thread::sleep(ADB_SERVER_RECOVERY_RETRY_DELAY);
+
+    match run_adb_management_command(&["start-server"], "adb start-server") {
+        Ok(_) => Ok(()),
+        Err(error) => {
+            recovery_messages.push(format!("Retry adb start-server attempt failed: {error}"));
+            Err(recovery_messages.join("\n"))
+        }
+    }
+}
+
+pub(crate) fn run_adb_checked(args: &[String], action: &str) -> Result<Output, String> {
     let output = run_adb_command(args)?;
 
     if output.status.success() {
@@ -189,11 +315,28 @@ fn run_adb_checked(args: &[String], action: &str) -> Result<Output, String> {
     }
 
     let details = combine_command_output(&output);
-    if details.is_empty() {
-        Err(format!("{action} failed with status {}.", output.status))
-    } else {
-        Err(format!("{action} failed: {details}"))
+    if !details.is_empty()
+        && !is_adb_server_management_command(args)
+        && is_adb_server_recoverable_failure(&details)
+    {
+        if let Err(recovery_error) = recover_adb_server() {
+            return Err(format!(
+                "{action} failed: {details}\nADB server auto-recovery failed: {recovery_error}"
+            ));
+        }
+
+        let retried_output = run_adb_command(args)?;
+        if retried_output.status.success() {
+            return Ok(retried_output);
+        }
+
+        return Err(build_failed_action_error(
+            &format!("{action} after ADB server auto-recovery"),
+            &retried_output,
+        ));
     }
+
+    Err(build_failed_action_error(action, &output))
 }
 
 fn find_device_attribute(attributes: &[&str], key: &str) -> Option<String> {
@@ -213,10 +356,7 @@ fn list_devices_inner() -> Result<Vec<AdbDeviceInfo>, String> {
 
     for line in stdout.lines() {
         let trimmed = line.trim();
-        if trimmed.is_empty()
-            || trimmed.starts_with('*')
-            || trimmed == "List of devices attached"
-        {
+        if trimmed.is_empty() || trimmed.starts_with('*') || trimmed == "List of devices attached" {
             continue;
         }
 
@@ -281,7 +421,10 @@ fn extract_connected_serial(message: &str) -> Option<String> {
     None
 }
 
-fn wait_for_ready_device(address: &str, serial_hint: Option<&str>) -> Result<AdbDeviceInfo, String> {
+fn wait_for_ready_device(
+    address: &str,
+    serial_hint: Option<&str>,
+) -> Result<AdbDeviceInfo, String> {
     let deadline = Instant::now() + CONNECT_READY_TIMEOUT;
 
     loop {
@@ -329,8 +472,8 @@ pub async fn tauri_adb_list_devices() -> Result<Vec<AdbDeviceInfo>, String> {
 #[command]
 pub async fn tauri_adb_pair(request: AdbPairRequest) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let address = ensure_remote_address(&request.address, "Pairing address")?;
-        let pairing_code = ensure_non_empty(&request.pairing_code, "Pairing code")?;
+        let address = validate_adb_remote_address(&request.address, "Pairing address")?;
+        let pairing_code = validate_pairing_code(&request.pairing_code)?;
 
         let args = vec!["pair".to_string(), address.clone(), pairing_code];
         let output = run_adb_checked(&args, &format!("adb pair {address}"))?;
@@ -350,7 +493,7 @@ pub async fn tauri_adb_pair(request: AdbPairRequest) -> Result<String, String> {
 #[command]
 pub async fn tauri_adb_connect(request: AdbConnectRequest) -> Result<AdbConnectResponse, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let address = ensure_remote_address(&request.address, "Remote ADB address")?;
+        let address = validate_adb_remote_address(&request.address, "Remote ADB address")?;
 
         let args = vec!["connect".to_string(), address.clone()];
         let output = run_adb_checked(&args, &format!("adb connect {address}"))?;
@@ -371,12 +514,108 @@ pub async fn tauri_adb_connect(request: AdbConnectRequest) -> Result<AdbConnectR
     .map_err(|error| format!("ADB connect task failed: {error}"))?
 }
 
-/// Capture a PNG screenshot from the selected device using `exec-out screencap -p`.
+/// Push a local file to the device filesystem.
 #[command]
-pub async fn tauri_adb_screenshot(serial: String) -> Result<Vec<u8>, String> {
+pub async fn tauri_adb_push(
+    serial: String,
+    local_path: String,
+    remote_path: String,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let serial = ensure_non_empty(&serial, "ADB serial")?;
+        let local_path = ensure_non_empty(&local_path, "Local file path")?;
+        let remote_path = ensure_non_empty(&remote_path, "Remote file path")?;
+
+        let args = vec![
+            "-s".to_string(),
+            serial.clone(),
+            "push".to_string(),
+            local_path,
+            remote_path.clone(),
+        ];
+        let output = run_adb_checked(&args, &format!("adb -s {serial} push -> {remote_path}"))?;
+
+        Ok(combine_command_output(&output))
+    })
+    .await
+    .map_err(|error| format!("ADB push task failed: {error}"))?
+}
+
+/// Set up TCP port forwarding to a device-side abstract socket.
+#[command]
+pub async fn tauri_adb_forward(
+    serial: String,
+    local_port: u16,
+    remote_socket_name: String,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let serial = ensure_non_empty(&serial, "ADB serial")?;
+        let remote_socket_name = ensure_non_empty(&remote_socket_name, "Remote socket name")?;
+
+        let args = vec![
+            "-s".to_string(),
+            serial.clone(),
+            "forward".to_string(),
+            format!("tcp:{local_port}"),
+            format!("localabstract:{remote_socket_name}"),
+        ];
+        let output = run_adb_checked(
+            &args,
+            &format!("adb -s {serial} forward tcp:{local_port} localabstract:{remote_socket_name}"),
+        )?;
+
+        Ok(combine_command_output(&output))
+    })
+    .await
+    .map_err(|error| format!("ADB forward task failed: {error}"))?
+}
+
+/// Remove a previously established TCP port forward.
+#[command]
+pub async fn tauri_adb_remove_forward(serial: String, local_port: u16) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let serial = ensure_non_empty(&serial, "ADB serial")?;
 
+        let args = vec![
+            "-s".to_string(),
+            serial.clone(),
+            "forward".to_string(),
+            "--remove".to_string(),
+            format!("tcp:{local_port}"),
+        ];
+        let output = run_adb_checked(
+            &args,
+            &format!("adb -s {serial} forward --remove tcp:{local_port}"),
+        )?;
+
+        Ok(combine_command_output(&output))
+    })
+    .await
+    .map_err(|error| format!("ADB remove-forward task failed: {error}"))?
+}
+
+// ---------------------------------------------------------------------------
+// Screenshot command
+// ---------------------------------------------------------------------------
+
+fn send_raw_payload(
+    channel: &Channel<InvokeResponseBody>,
+    bytes: Vec<u8>,
+    context: &str,
+) -> Result<(), String> {
+    channel
+        .send(InvokeResponseBody::Raw(bytes))
+        .map_err(|error| format!("Failed to deliver {context} to the frontend: {error}"))
+}
+
+/// Capture a device screenshot via `adb exec-out screencap -p`.
+#[command]
+pub async fn tauri_adb_screenshot(
+    serial: String,
+    payload_channel: Channel<InvokeResponseBody>,
+) -> Result<(), String> {
+    let png_bytes: Result<Vec<u8>, String> = tauri::async_runtime::spawn_blocking(move || {
+        let serial = ensure_non_empty(&serial, "ADB serial")?;
         let args = vec![
             "-s".to_string(),
             serial.clone(),
@@ -385,34 +624,10 @@ pub async fn tauri_adb_screenshot(serial: String) -> Result<Vec<u8>, String> {
             "-p".to_string(),
         ];
         let output = run_adb_checked(&args, &format!("adb -s {serial} exec-out screencap -p"))?;
-
-        if output.stdout.is_empty() {
-            return Err(format!("ADB screenshot returned no data for {serial}."));
-        }
-
         Ok(output.stdout)
     })
     .await
-    .map_err(|error| format!("ADB screenshot task failed: {error}"))?
-}
+    .map_err(|error| format!("ADB screenshot task failed: {error}"))?;
 
-/// Execute an arbitrary shell command on the selected device.
-#[command]
-pub async fn tauri_adb_shell(serial: String, command: String) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        let serial = ensure_non_empty(&serial, "ADB serial")?;
-        let command = ensure_non_empty(&command, "ADB shell command")?;
-
-        let args = vec![
-            "-s".to_string(),
-            serial.clone(),
-            "shell".to_string(),
-            command,
-        ];
-        let output = run_adb_checked(&args, &format!("adb -s {serial} shell <command>"))?;
-
-        Ok(combine_command_output(&output))
-    })
-    .await
-    .map_err(|error| format!("ADB shell task failed: {error}"))?
+    send_raw_payload(&payload_channel, png_bytes?, "ADB screenshot")
 }
