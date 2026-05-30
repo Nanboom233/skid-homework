@@ -53,6 +53,10 @@ out
 src-tauri/target
 
 # local AI Agent Settings
-.claude
+.claude/
+.agents/
+.codex/
+.trellis/
+.tmp/
 agents.md
 claude.md
