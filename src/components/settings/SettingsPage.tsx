@@ -87,10 +87,10 @@ export default function SettingsPage() {
     setImageEnhancement: setImageEnhancement,
     onlineSearchEnabled,
     setOnlineSearchEnabled,
-    showModelSelectorInScanner,
-    setShowModelSelectorInScanner,
-    showOnlineSearchInScanner,
-    setShowOnlineSearchInScanner,
+    showModelSelectorInScanPage,
+    setShowModelSelectorInScanPage,
+    showOnlineSearchInScanPage,
+    setShowOnlineSearchInScanPage,
     theme: themePreference,
     setThemePreference,
     language,
@@ -489,13 +489,13 @@ export default function SettingsPage() {
               <div className="flex items-center gap-3">
                 <Checkbox
                   id="show-model-selector"
-                  checked={showModelSelectorInScanner}
+                  checked={showModelSelectorInScanPage}
                   onCheckedChange={(state) =>
-                    setShowModelSelectorInScanner(Boolean(state))
+                    setShowModelSelectorInScanPage(Boolean(state))
                   }
                 />
                 <Label htmlFor="show-model-selector">
-                  {t("model.show-selector-in-scanner")}
+                  {t("model.show-selector-in-scan-page")}
                 </Label>
               </div>
             </div>
@@ -664,14 +664,14 @@ export default function SettingsPage() {
             <div className="space-y-2">
               <div className="flex items-center gap-3">
                 <Checkbox
-                  id="show-online-search-scanner"
-                  checked={showOnlineSearchInScanner}
+                  id="show-online-search-scan-page"
+                  checked={showOnlineSearchInScanPage}
                   onCheckedChange={(state) =>
-                    setShowOnlineSearchInScanner(state === true)
+                    setShowOnlineSearchInScanPage(state === true)
                   }
                 />
-                <Label htmlFor="show-online-search-scanner">
-                  {t("thinking.online-search.show-toggle-in-scanner")}
+                <Label htmlFor="show-online-search-scan-page">
+                  {t("thinking.online-search.show-toggle-in-scan-page")}
                 </Label>
               </div>
             </div>

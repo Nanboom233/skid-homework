@@ -60,11 +60,11 @@ export interface SettingsState {
   onlineSearchEnabled: boolean;
   setOnlineSearchEnabled: (state: boolean) => void;
 
-  showModelSelectorInScanner: boolean;
-  setShowModelSelectorInScanner: (state: boolean) => void;
+  showModelSelectorInScanPage: boolean;
+  setShowModelSelectorInScanPage: (state: boolean) => void;
 
-  showOnlineSearchInScanner: boolean;
-  setShowOnlineSearchInScanner: (state: boolean) => void;
+  showOnlineSearchInScanPage: boolean;
+  setShowOnlineSearchInScanPage: (state: boolean) => void;
 }
 
 export const useSettingsStore = create<SettingsState>()(
@@ -80,8 +80,8 @@ export const useSettingsStore = create<SettingsState>()(
       devtoolsEnabled: false,
       clearDialogOnSubmit: true,
       onlineSearchEnabled: false,
-      showModelSelectorInScanner: false,
-      showOnlineSearchInScanner: false,
+      showModelSelectorInScanPage: false,
+      showOnlineSearchInScanPage: false,
 
       setImageEnhancement: (state) => set({ imageEnhancement: state }),
       setThemePreference: (theme) => set({ theme }),
@@ -116,10 +116,10 @@ export const useSettingsStore = create<SettingsState>()(
       setDevtoolsState: (state) => set({ devtoolsEnabled: state }),
       setClearDialogOnSubmit: (state) => set({ clearDialogOnSubmit: state }),
       setOnlineSearchEnabled: (state) => set({ onlineSearchEnabled: state }),
-      setShowModelSelectorInScanner: (state) =>
-        set({ showModelSelectorInScanner: state }),
-      setShowOnlineSearchInScanner: (state) =>
-        set({ showOnlineSearchInScanner: state }),
+      setShowModelSelectorInScanPage: (state) =>
+        set({ showModelSelectorInScanPage: state }),
+      setShowOnlineSearchInScanPage: (state) =>
+        set({ showOnlineSearchInScanPage: state }),
     }),
     {
       name: "skidhw-storage",
@@ -135,10 +135,10 @@ export const useSettingsStore = create<SettingsState>()(
         devtoolsEnabled: state.devtoolsEnabled,
         clearDialogOnSubmit: state.clearDialogOnSubmit,
         onlineSearchEnabled: state.onlineSearchEnabled,
-        showModelSelectorInScanner: state.showModelSelectorInScanner,
-        showOnlineSearchInScanner: state.showOnlineSearchInScanner,
+        showModelSelectorInScanPage: state.showModelSelectorInScanPage,
+        showOnlineSearchInScanPage: state.showOnlineSearchInScanPage,
       }),
-      version: 8,
+      version: 9,
       migrate: (persistedState, version) => {
         const data: Partial<SettingsState> & Record<string, unknown> =
           persistedState && typeof persistedState === "object"
@@ -166,12 +166,12 @@ export const useSettingsStore = create<SettingsState>()(
           onlineSearchEnabled:
             (data as { onlineSearchEnabled?: boolean }).onlineSearchEnabled ??
             false,
-          showModelSelectorInScanner:
-            (data as { showModelSelectorInScanner?: boolean })
-              .showModelSelectorInScanner ?? false,
-          showOnlineSearchInScanner:
-            (data as { showOnlineSearchInScanner?: boolean })
-              .showOnlineSearchInScanner ?? false,
+          showModelSelectorInScanPage:
+            (data as { showModelSelectorInScanPage?: boolean })
+              .showModelSelectorInScanPage ?? false,
+          showOnlineSearchInScanPage:
+            (data as { showOnlineSearchInScanPage?: boolean })
+              .showOnlineSearchInScanPage ?? false,
           devtoolsEnabled:
             (data as { devtoolsEnabled?: boolean }).devtoolsEnabled ??
             legacyDevtools ??

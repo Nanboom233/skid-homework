@@ -137,7 +137,7 @@ export const captureTauriAdbScreenshot = async (
   });
 };
 
-// --- Generic ADB primitives (kept for future scanner-feature rebuilds) ---
+// --- Generic ADB primitives for future desktop integrations ---
 
 export const pushTauriAdbFile = async (
   serial: string,
