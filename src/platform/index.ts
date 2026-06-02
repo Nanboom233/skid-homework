@@ -25,3 +25,6 @@ export function PlatformCaptureActions(
   void _props;
   return null;
 }
+
+export { default as PlatformInitPage } from "./WebInitPage";
+export { default as PlatformInitGuard } from "./WebInitGuard";

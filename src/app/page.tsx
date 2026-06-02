@@ -1,10 +1,10 @@
-import RequireInit from "@/components/guards/RequireInit";
+import { PlatformInitGuard } from "@/platform";
 import ScanPage from "@/components/pages/ScanPage";
 
 export default function HomePage() {
   return (
-    <RequireInit>
+    <PlatformInitGuard>
       <ScanPage />
-    </RequireInit>
+    </PlatformInitGuard>
   );
 }

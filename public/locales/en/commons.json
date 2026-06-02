@@ -571,7 +571,17 @@
       "api-hint-gemini": "Get an API key at <link>Google AI Studio</link>.",
       "api-hint-openai": "Get an API key at <link>OpenAI Dashboard</link>.",
       "storage-note": "Keys are stored locally and never sent to our servers.",
-      "enabled": "Enabled"
+      "enabled": "Enabled",
+      "status": {
+        "loading": "Verifying API keys...",
+        "connected": "Connected successfully.",
+        "errors": {
+          "auth": "Invalid API key or access denied.",
+          "rate-limit": "Rate limited. Please try again later.",
+          "network": "Connection failed. Check the URL and network.",
+          "unknown": "Failed to connect. Check the key and URL."
+        }
+      }
     },
     "preferences": {
       "title": "Preferences",
@@ -620,7 +630,8 @@
       "back": "Back",
       "next": "Next",
       "skip": "Skip",
-      "finish": "Get Started"
+      "finish": "Get Started",
+      "advanced": "Advanced Settings"
     },
     "footer": {
       "notice": "Licensed under GPLv3, created by cubewhy.",
@@ -767,6 +778,45 @@
       "requires-responses-api-online-search": "Using online search requires Responses API to be enabled",
       "requires-responses-api-pdf": "Using PDF recognition requires Responses API to be enabled",
       "web-search-not-supported": "Model {{model}} does not support web search, continuing without it"
+    }
+  },
+  "web-init-page": {
+    "tagline": "Local • Private • Free",
+    "headline": {
+      "highlight": "Welcome to SkidHomework",
+      "subtitle": "Escape the homework grind."
+    },
+    "intro": "Prefer Khan Academy–style self-study but still get stuck with endless assignments? SkidHomework runs locally, respects your privacy, and helps you focus on learning instead of busywork.",
+    "features": {
+      "telemetry": "No telemetry or spammy calls. Just the Gemini API.",
+      "camera": "Snap homework and get step-by-step help.",
+      "setup": "Fast setup — paste your Gemini API key and go."
+    },
+    "form": {
+      "key-placeholder": "{{provider}} API Key",
+      "submit": "Get My Time Back!",
+      "advanced": {
+        "title": "Advanced",
+        "base-url-label": "API Base URL (optional)",
+        "base-url-placeholder": "Default endpoint for {{provider}}",
+        "base-url-helper": "Leave blank to use the default endpoint for {{provider}}."
+      },
+      "api-hint": "Get an API key at <link>Google AI Studio</link>.",
+      "storage-note": "We store your key locally using encrypted browser storage and never send it to our servers.",
+      "provider": {
+        "label": "AI provider"
+      },
+      "api-hint-openai": "Get an API key at <link>OpenAI Dashboard</link>."
+    },
+    "preview": {
+      "title": "Homework Camera",
+      "ocr": "OCR",
+      "steps": "Steps",
+      "hints": "Hints"
+    },
+    "footer": {
+      "notice": "Licensed under GPLv3, created by cubewhy.",
+      "source": "Source Code"
     }
   }
 }

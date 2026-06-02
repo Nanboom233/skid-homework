@@ -571,7 +571,17 @@
       "api-hint-gemini": "在 <link>Google AI Studio</link> 申请 API Key。",
       "api-hint-openai": "在 <link>OpenAI 控制台</link> 申请 API Key。",
       "storage-note": "密钥仅存储在本地，绝不会上传到服务器。",
-      "enabled": "已启用"
+      "enabled": "已启用",
+      "status": {
+        "loading": "正在验证 API 密钥...",
+        "connected": "连接成功。",
+        "errors": {
+          "auth": "API 密钥无效或访问被拒绝。",
+          "rate-limit": "请求频率受限，请稍后重试。",
+          "network": "连接失败，请检查地址和网络。",
+          "unknown": "连接失败，请检查密钥和地址。"
+        }
+      }
     },
     "preferences": {
       "title": "偏好设置",
@@ -620,7 +630,8 @@
       "back": "上一步",
       "next": "下一步",
       "skip": "跳过",
-      "finish": "开始使用"
+      "finish": "开始使用",
+      "advanced": "高级设置"
     },
     "footer": {
       "notice": "基于 GPLv3 许可，由 cubewhy 创建。",
@@ -771,6 +782,45 @@
       "requires-responses-api-online-search": "使用联网搜索功能需要开启 Responses API 设置",
       "requires-responses-api-pdf": "使用 PDF 识别功能需要开启 Responses API 设置",
       "web-search-not-supported": "模型 {{model}} 不支持联网搜索，已自动禁用该功能继续处理"
+    }
+  },
+  "web-init-page": {
+    "tagline": "本地 • 私密 • 免费",
+    "headline": {
+      "highlight": "欢迎来到 SkidHomework",
+      "subtitle": "摆脱作业内卷。"
+    },
+    "intro": "喜欢可汗学院式的自学，却常被堆积如山的作业拖住脚步？SkidHomework 本地运行，尊重你的隐私，让你把精力放在学习上，而不是重复劳动。",
+    "features": {
+      "telemetry": "无遥测、无骚扰请求，只使用 Gemini API。",
+      "camera": "拍下作业，立刻获得逐步讲解。",
+      "setup": "快速上手——粘贴 Gemini API Key 就能开始。"
+    },
+    "form": {
+      "key-placeholder": "{{provider}} API 密钥",
+      "submit": "帮我省时间！",
+      "advanced": {
+        "title": "高级选项",
+        "base-url-label": "API 基础地址（可选）",
+        "base-url-placeholder": "{{provider}} 的默认接口地址",
+        "base-url-helper": "留空将使用 {{provider}} 的默认地址。"
+      },
+      "api-hint": "在 <link>Google AI Studio</link> 申请 API Key。",
+      "storage-note": "我们使用加密浏览器存储在本地保存你的密钥，绝不会上传到服务器。",
+      "provider": {
+        "label": "AI 提供商"
+      },
+      "api-hint-openai": "在 <link>OpenAI 控制台</link> 申请 API Key。"
+    },
+    "preview": {
+      "title": "作业相机",
+      "ocr": "OCR",
+      "steps": "步骤",
+      "hints": "提示"
+    },
+    "footer": {
+      "notice": "基于 GPLv3 许可，由 cubewhy 创建。",
+      "source": "源代码"
     }
   }
 }

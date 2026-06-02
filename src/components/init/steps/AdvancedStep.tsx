@@ -2,16 +2,22 @@
 
 import { useState, useMemo } from "react";
 import { useTranslation } from "react-i18next";
-import { useAiStore } from "@/store/ai-store";
+import { useAiStore, type AiModelSummary } from "@/store/ai-store";
 import { useSettingsStore } from "@/store/settings-store";
-import { useAvailableModels } from "@/hooks/use-available-models";
+import type { SourceModels } from "@/hooks/use-available-models";
 import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import ModelSelector from "@/components/ui/model-selector";
 
-export default function AdvancedStep() {
+export interface AdvancedStepProps {
+  sourceModelsMap: SourceModels[];
+  allModels: AiModelSummary[];
+  isLoadingModels: boolean;
+}
+
+export default function AdvancedStep({ sourceModelsMap, allModels, isLoadingModels }: AdvancedStepProps) {
   const { t } = useTranslation("commons", {
     keyPrefix: "init-page.advanced",
   });
@@ -22,8 +28,6 @@ export default function AdvancedStep() {
   const fallbackModel = useAiStore((s) => s.fallbackModel);
   const setFallbackModel = useAiStore((s) => s.setFallbackModel);
 
-  const imageEnhancement = useSettingsStore((s) => s.imageEnhancement);
-  const setImageEnhancement = useSettingsStore((s) => s.setImageEnhancement);
   const onlineSearchEnabled = useSettingsStore((s) => s.onlineSearchEnabled);
   const setOnlineSearchEnabled = useSettingsStore(
     (s) => s.setOnlineSearchEnabled,
@@ -44,7 +48,7 @@ export default function AdvancedStep() {
     [activeSource],
   );
 
-  const { sourceModelsMap, allModels, isLoading } = useAvailableModels();
+  const isLoading = isLoadingModels;
   const [fallbackSelectorOpen, setFallbackSelectorOpen] = useState(false);
 
   const handleFallbackChange = (
@@ -104,23 +108,6 @@ export default function AdvancedStep() {
           </p>
         </div>
       )}
-
-      {/* Image Enhancement */}
-      <div className="flex items-center gap-3">
-        <Checkbox
-          id="init-image-enhancement"
-          checked={imageEnhancement}
-          onCheckedChange={(state) => setImageEnhancement(state === true)}
-        />
-        <div>
-          <Label htmlFor="init-image-enhancement">
-            {t("image-enhancement")}
-          </Label>
-          <p className="text-xs text-muted-foreground">
-            {t("image-enhancement-tip")}
-          </p>
-        </div>
-      </div>
 
       {/* Online Search */}
       <div className="flex items-center gap-3">

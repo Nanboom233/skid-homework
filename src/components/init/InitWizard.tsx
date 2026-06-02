@@ -1,8 +1,10 @@
 "use client";
-import { useCallback } from "react";
+import { useCallback, useMemo } from "react";
+import { useTranslation } from "react-i18next";
 import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import { useInitStore } from "@/store/init-store";
+import { useAvailableModels } from "@/hooks/use-available-models";
 import StepIndicator from "./StepIndicator";
 import WizardNavigation from "./WizardNavigation";
 import WelcomeStep from "./steps/WelcomeStep";
@@ -32,15 +34,18 @@ const transition = {
   ease: [0.25, 0.1, 0.25, 1] as const,
 };
 
-const STEPS = [WelcomeStep, AiConfigStep, PreferencesStep, AdvancedStep];
-
 export default function InitWizard() {
   const currentStep = useInitStore((s) => s.currentStep);
   const direction = useInitStore((s) => s.direction);
   const nextStep = useInitStore((s) => s.nextStep);
   const prevStep = useInitStore((s) => s.prevStep);
   const setInitCompleted = useInitStore((s) => s.setInitCompleted);
+  const { t } = useTranslation("commons", { keyPrefix: "init-page.navigation" });
   const router = useRouter();
+
+  // Lift model fetching to share between steps
+  const { sourceModelsMap, allModels, isLoading, fetchErrors, hasFetched } = useAvailableModels();
+  const hasValidConfig = allModels.length > 0;
 
   const completeWizard = useCallback(() => {
     setInitCompleted(true);
@@ -48,7 +53,8 @@ export default function InitWizard() {
   }, [setInitCompleted, router]);
 
   const handleNext = useCallback(() => {
-    if (currentStep === TOTAL_STEPS - 1) {
+    if (currentStep >= 2) {
+      // Steps 2 (Preferences) and 3 (Advanced) both finish the wizard
       completeWizard();
     } else {
       nextStep();
@@ -56,14 +62,36 @@ export default function InitWizard() {
   }, [currentStep, nextStep, completeWizard]);
 
   const handleSkip = useCallback(() => {
-    if (currentStep === TOTAL_STEPS - 1) {
-      completeWizard();
-    } else {
-      nextStep();
-    }
-  }, [currentStep, nextStep, completeWizard]);
+    // Skip only applies to step 1 (AI Config), advances to step 2
+    nextStep();
+  }, [nextStep]);
 
-  const StepComponent = STEPS[currentStep];
+  const stepContent = useMemo(() => {
+    switch (currentStep) {
+      case 0:
+        return <WelcomeStep />;
+      case 1:
+        return <AiConfigStep allModels={allModels} isLoadingModels={isLoading} fetchErrors={fetchErrors} hasFetched={hasFetched} />;
+      case 2:
+        return (
+          <PreferencesStep
+            sourceModelsMap={sourceModelsMap}
+            allModels={allModels}
+            isLoadingModels={isLoading}
+          />
+        );
+      case 3:
+        return (
+          <AdvancedStep
+            sourceModelsMap={sourceModelsMap}
+            allModels={allModels}
+            isLoadingModels={isLoading}
+          />
+        );
+      default:
+        return <WelcomeStep />;
+    }
+  }, [currentStep, sourceModelsMap, allModels, isLoading, fetchErrors, hasFetched]);
 
   return (
     <div className="flex min-h-screen items-center justify-center bg-background p-4">
@@ -81,7 +109,7 @@ export default function InitWizard() {
               exit="exit"
               transition={transition}
             >
-              <StepComponent />
+              {stepContent}
             </motion.div>
           </AnimatePresence>
         </div>
@@ -92,6 +120,11 @@ export default function InitWizard() {
           onBack={prevStep}
           onNext={handleNext}
           onSkip={handleSkip}
+          showSkip={currentStep === 1}
+          showAdvanced={currentStep === 2}
+          onAdvanced={() => nextStep()}
+          finishLabel={currentStep >= 2 ? t("finish") : undefined}
+          disableNext={currentStep === 1 && hasFetched && !hasValidConfig && !isLoading}
         />
       </div>
     </div>

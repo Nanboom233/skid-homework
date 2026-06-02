@@ -285,3 +285,6 @@ export function PlatformCaptureActions({
     </>
   );
 }
+
+export { default as PlatformInitPage } from "@/components/init/InitWizard";
+export { default as PlatformInitGuard } from "@/components/guards/RequireInit";

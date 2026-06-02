@@ -3,12 +3,18 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useTheme } from "@/components/theme-provider";
 import { useSettingsStore, type ThemePreference } from "@/store/settings-store";
-import { useAiStore } from "@/store/ai-store";
-import { useAvailableModels } from "@/hooks/use-available-models";
+import { useAiStore, type AiModelSummary } from "@/store/ai-store";
+import type { SourceModels } from "@/hooks/use-available-models";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import ModelSelector from "@/components/ui/model-selector";
 import { Monitor, Moon, Sun } from "lucide-react";
+
+export interface PreferencesStepProps {
+  sourceModelsMap: SourceModels[];
+  allModels: AiModelSummary[];
+  isLoadingModels: boolean;
+}
 
 const THEME_OPTIONS: { value: ThemePreference; icon: typeof Sun }[] = [
   { value: "system", icon: Monitor },
@@ -16,14 +22,14 @@ const THEME_OPTIONS: { value: ThemePreference; icon: typeof Sun }[] = [
   { value: "dark", icon: Moon },
 ];
 
-export default function PreferencesStep() {
+export default function PreferencesStep({ sourceModelsMap, allModels, isLoadingModels }: PreferencesStepProps) {
   const { t } = useTranslation("commons", { keyPrefix: "init-page.preferences" });
   const { theme, setTheme } = useTheme();
   const language = useSettingsStore((s) => s.language);
   const setLanguage = useSettingsStore((s) => s.setLanguage);
   const currentModel = useAiStore((s) => s.currentModel);
   const setCurrentModel = useAiStore((s) => s.setCurrentModel);
-  const { sourceModelsMap, allModels, isLoading } = useAvailableModels();
+  const isLoading = isLoadingModels;
 
   const [modelSelectorOpen, setModelSelectorOpen] = useState(false);
 

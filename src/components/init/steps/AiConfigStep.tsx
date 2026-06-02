@@ -15,7 +15,17 @@ import {
   DEFAULT_OPENAI_BASE_URL,
   useAiStore,
   type AiSource,
+  type AiModelSummary,
 } from "@/store/ai-store";
+import type { SourceFetchError } from "@/hooks/use-available-models";
+import { CheckCircle2, Loader2 } from "lucide-react";
+
+export interface AiConfigStepProps {
+  allModels: AiModelSummary[];
+  isLoadingModels: boolean;
+  fetchErrors: SourceFetchError[];
+  hasFetched: boolean;
+}
 
 function ProviderCard({ source }: { source: AiSource }) {
   const updateSource = useAiStore((s) => s.updateSource);
@@ -123,7 +133,7 @@ function ProviderCard({ source }: { source: AiSource }) {
   );
 }
 
-export default function AiConfigStep() {
+export default function AiConfigStep({ allModels, isLoadingModels, fetchErrors, hasFetched }: AiConfigStepProps) {
   const sources = useAiStore((s) => s.sources);
   const { t } = useTranslation("commons", { keyPrefix: "init-page.ai-config" });
 
@@ -139,6 +149,27 @@ export default function AiConfigStep() {
       </div>
 
       <p className="mt-4 text-xs text-muted-foreground">{t("storage-note")}</p>
+
+      {(isLoadingModels || hasFetched) && (
+        <div className="mt-3 space-y-1">
+          {isLoadingModels ? (
+            <div className="flex items-center gap-1.5 text-sm">
+              <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+              <span className="text-muted-foreground">{t("status.loading")}</span>
+            </div>
+          ) : allModels.length > 0 ? (
+            <div className="flex items-center gap-1.5 text-sm">
+              <CheckCircle2 className="h-4 w-4 text-green-600" />
+              <span className="text-green-600">{t("status.connected")}</span>
+            </div>
+          ) : null}
+          {!isLoadingModels && fetchErrors.map((err) => (
+            <p key={err.sourceId} className="text-xs text-destructive">
+              {err.sourceName}: {t(`status.errors.${err.code}` as "status.errors.auth")}
+            </p>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

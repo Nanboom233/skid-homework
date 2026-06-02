@@ -1,10 +1,10 @@
 import ChatPage from "@/components/chat/page";
-import RequireInit from "@/components/guards/RequireInit";
+import { PlatformInitGuard } from "@/platform";
 
 export default function ChatRoute() {
   return (
-    <RequireInit>
+    <PlatformInitGuard>
       <ChatPage />
-    </RequireInit>
+    </PlatformInitGuard>
   );
 }

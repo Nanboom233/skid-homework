@@ -7,3 +7,5 @@ export type PlatformCaptureActionsProps = {
   disabled: boolean;
   isCompact: boolean;
 };
+
+export type PlatformInitGuardProps = { children: React.ReactNode };
