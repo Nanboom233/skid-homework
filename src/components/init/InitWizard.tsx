@@ -8,8 +8,9 @@ import WizardNavigation from "./WizardNavigation";
 import WelcomeStep from "./steps/WelcomeStep";
 import AiConfigStep from "./steps/AiConfigStep";
 import PreferencesStep from "./steps/PreferencesStep";
+import AdvancedStep from "./steps/AdvancedStep";
 
-const TOTAL_STEPS = 3;
+const TOTAL_STEPS = 4;
 
 const variants = {
   enter: (direction: number) => ({
@@ -31,7 +32,7 @@ const transition = {
   ease: [0.25, 0.1, 0.25, 1] as const,
 };
 
-const STEPS = [WelcomeStep, AiConfigStep, PreferencesStep];
+const STEPS = [WelcomeStep, AiConfigStep, PreferencesStep, AdvancedStep];
 
 export default function InitWizard() {
   const currentStep = useInitStore((s) => s.currentStep);
@@ -47,6 +48,14 @@ export default function InitWizard() {
   }, [setInitCompleted, router]);
 
   const handleNext = useCallback(() => {
+    if (currentStep === TOTAL_STEPS - 1) {
+      completeWizard();
+    } else {
+      nextStep();
+    }
+  }, [currentStep, nextStep, completeWizard]);
+
+  const handleSkip = useCallback(() => {
     if (currentStep === TOTAL_STEPS - 1) {
       completeWizard();
     } else {
@@ -82,7 +91,7 @@ export default function InitWizard() {
           totalSteps={TOTAL_STEPS}
           onBack={prevStep}
           onNext={handleNext}
-          onSkip={completeWizard}
+          onSkip={handleSkip}
         />
       </div>
     </div>

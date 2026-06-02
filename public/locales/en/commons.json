@@ -593,6 +593,29 @@
         "no-key": "Enter an API key first to see available models."
       }
     },
+    "advanced": {
+      "title": "Advanced Settings",
+      "description": "Fine-tune your experience. These can all be changed later in Settings.",
+      "thinking-budget": {
+        "label": "Thinking Budget",
+        "tip": "Maximum tokens for AI reasoning (Gemini only).",
+        "unit": "tokens"
+      },
+      "image-enhancement": "Image Enhancement",
+      "image-enhancement-tip": "Enable post-processing to improve image quality before sending to AI.",
+      "online-search": "Online Search",
+      "online-search-tip": "Allow AI to search the web for additional context.",
+      "max-retries": {
+        "label": "Max Retries",
+        "tip": "Maximum automatic retries when API calls fail (0-10)."
+      },
+      "fallback": {
+        "label": "Fallback Model",
+        "tip": "Automatically switch to this model when the primary fails.",
+        "none": "None",
+        "no-models": "Configure an API key to see available models."
+      }
+    },
     "navigation": {
       "back": "Back",
       "next": "Next",

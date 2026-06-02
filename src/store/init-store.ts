@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 
-const TOTAL_STEPS = 3;
+const TOTAL_STEPS = 4;
 
 export interface InitStore {
   initCompleted: boolean;

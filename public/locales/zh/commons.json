@@ -593,6 +593,29 @@
         "no-key": "请先输入 API 密钥以查看可用模型。"
       }
     },
+    "advanced": {
+      "title": "高级设置",
+      "description": "微调你的体验。所有设置都可以稍后在设置中更改。",
+      "thinking-budget": {
+        "label": "思考预算",
+        "tip": "AI 推理的最大 Token 数（仅 Gemini）。",
+        "unit": "tokens"
+      },
+      "image-enhancement": "图片增强",
+      "image-enhancement-tip": "启用后处理以提高发送给 AI 之前的图片质量。",
+      "online-search": "在线搜索",
+      "online-search-tip": "允许 AI 搜索网络获取额外上下文。",
+      "max-retries": {
+        "label": "最大重试次数",
+        "tip": "API 调用失败时的最大自动重试次数（0-10）。"
+      },
+      "fallback": {
+        "label": "备用模型",
+        "tip": "主模型失败时自动切换到此模型。",
+        "none": "无",
+        "no-models": "请先配置 API 密钥以查看可用模型。"
+      }
+    },
     "navigation": {
       "back": "上一步",
       "next": "下一步",
