@@ -1,10 +1,10 @@
-import RequireAiKey from "@/components/guards/RequireAiKey";
+import RequireInit from "@/components/guards/RequireInit";
 import ScanPage from "@/components/pages/ScanPage";
 
 export default function HomePage() {
   return (
-    <RequireAiKey fallback="/init">
+    <RequireInit>
       <ScanPage />
-    </RequireAiKey>
+    </RequireInit>
   );
 }

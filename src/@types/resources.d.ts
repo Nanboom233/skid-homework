@@ -137,43 +137,58 @@ interface Resources {
       "trigger": "优化答案"
     },
     "init-page": {
-      "features": {
-        "camera": "拍下作业，立刻获得逐步讲解。",
-        "setup": "快速上手——粘贴 Gemini API Key 就能开始。",
-        "telemetry": "无遥测、无骚扰请求，只使用 Gemini API。"
+      "ai-config": {
+        "api-hint-gemini": "在 <link>Google AI Studio</link> 申请 API Key。",
+        "api-hint-openai": "在 <link>OpenAI 控制台</link> 申请 API Key。",
+        "api-key-placeholder": "{{provider}} API 密钥",
+        "base-url-helper": "留空将使用默认地址。",
+        "base-url-label": "自定义 API 基础地址",
+        "base-url-placeholder": "{{provider}} 的默认接口地址",
+        "description": "配置一个或多个 AI 提供商。你可以跳过此步，稍后在设置中配置。",
+        "enabled": "已启用",
+        "storage-note": "密钥仅存储在本地，绝不会上传到服务器。",
+        "title": "AI 服务"
       },
       "footer": {
         "notice": "基于 GPLv3 许可，由 cubewhy 创建。",
         "source": "源代码"
       },
-      "form": {
-        "advanced": {
-          "base-url-helper": "留空将使用 {{provider}} 的默认地址。",
-          "base-url-label": "API 基础地址（可选）",
-          "base-url-placeholder": "{{provider}} 的默认接口地址",
-          "title": "高级选项"
+      "navigation": {
+        "back": "上一步",
+        "finish": "开始使用",
+        "next": "下一步",
+        "skip": "跳过"
+      },
+      "preferences": {
+        "description": "自定义你的体验。所有设置都可以稍后在设置中更改。",
+        "language": {
+          "en": "English",
+          "label": "语言",
+          "zh": "中文"
         },
-        "api-hint": "在 <link>Google AI Studio</link> 申请 API Key。",
-        "api-hint-openai": "在 <link>OpenAI 控制台</link> 申请 API Key。",
-        "key-placeholder": "{{provider}} API 密钥",
-        "provider": {
-          "label": "AI 提供商"
+        "model": {
+          "label": "AI 模型",
+          "loading": "加载模型中...",
+          "no-key": "请先输入 API 密钥以查看可用模型。"
         },
-        "storage-note": "我们使用加密浏览器存储在本地保存你的密钥，绝不会上传到服务器。",
-        "submit": "帮我省时间！"
+        "theme": {
+          "dark": "深色",
+          "label": "主题",
+          "light": "浅色",
+          "system": "跟随系统"
+        },
+        "title": "偏好设置"
       },
-      "headline": {
-        "highlight": "欢迎来到 SkidHomework",
-        "subtitle": "摆脱作业内卷。"
-      },
-      "intro": "喜欢可汗学院式的自学，却常被堆积如山的作业拖住脚步？SkidHomework 本地运行，尊重你的隐私，让你把精力放在学习上，而不是重复劳动。",
-      "preview": {
-        "hints": "提示",
-        "ocr": "OCR",
-        "steps": "步骤",
-        "title": "作业相机"
-      },
-      "tagline": "本地 • 私密 • 免费"
+      "welcome": {
+        "description": "喜欢可汗学院式的自学，却常被堆积如山的作业拖住脚步？SkidHomework 本地运行，尊重你的隐私，让你把精力放在学习上。",
+        "features": {
+          "camera": "拍下作业，立刻获得逐步讲解",
+          "fast": "快速上手——配置即可开始",
+          "privacy": "无遥测、无数据收集"
+        },
+        "tagline": "本地 · 私密 · 免费",
+        "title": "欢迎来到 SkidHomework"
+      }
     },
     "inspect-dialog": {
       "answer": "答案",

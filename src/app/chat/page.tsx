@@ -1,10 +1,10 @@
 import ChatPage from "@/components/chat/page";
-import RequireAiKey from "@/components/guards/RequireAiKey";
+import RequireInit from "@/components/guards/RequireInit";
 
 export default function ChatRoute() {
   return (
-    <RequireAiKey fallback="/init">
+    <RequireInit>
       <ChatPage />
-    </RequireAiKey>
+    </RequireInit>
   );
 }

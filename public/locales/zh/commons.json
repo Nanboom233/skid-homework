@@ -551,38 +551,53 @@
     "item-label": "题目 {{index}}"
   },
   "init-page": {
-    "tagline": "本地 • 私密 • 免费",
-    "headline": {
-      "highlight": "欢迎来到 SkidHomework",
-      "subtitle": "摆脱作业内卷。"
+    "welcome": {
+      "title": "欢迎来到 SkidHomework",
+      "tagline": "本地 · 私密 · 免费",
+      "description": "喜欢可汗学院式的自学，却常被堆积如山的作业拖住脚步？SkidHomework 本地运行，尊重你的隐私，让你把精力放在学习上。",
+      "features": {
+        "privacy": "无遥测、无数据收集",
+        "camera": "拍下作业，立刻获得逐步讲解",
+        "fast": "快速上手——配置即可开始"
+      }
     },
-    "intro": "喜欢可汗学院式的自学，却常被堆积如山的作业拖住脚步？SkidHomework 本地运行，尊重你的隐私，让你把精力放在学习上，而不是重复劳动。",
-    "features": {
-      "telemetry": "无遥测、无骚扰请求，只使用 Gemini API。",
-      "camera": "拍下作业，立刻获得逐步讲解。",
-      "setup": "快速上手——粘贴 Gemini API Key 就能开始。"
+    "ai-config": {
+      "title": "AI 服务",
+      "description": "配置一个或多个 AI 提供商。你可以跳过此步，稍后在设置中配置。",
+      "api-key-placeholder": "{{provider}} API 密钥",
+      "base-url-label": "自定义 API 基础地址",
+      "base-url-placeholder": "{{provider}} 的默认接口地址",
+      "base-url-helper": "留空将使用默认地址。",
+      "api-hint-gemini": "在 <link>Google AI Studio</link> 申请 API Key。",
+      "api-hint-openai": "在 <link>OpenAI 控制台</link> 申请 API Key。",
+      "storage-note": "密钥仅存储在本地，绝不会上传到服务器。",
+      "enabled": "已启用"
     },
-    "form": {
-      "key-placeholder": "{{provider}} API 密钥",
-      "submit": "帮我省时间！",
-      "advanced": {
-        "title": "高级选项",
-        "base-url-label": "API 基础地址（可选）",
-        "base-url-placeholder": "{{provider}} 的默认接口地址",
-        "base-url-helper": "留空将使用 {{provider}} 的默认地址。"
+    "preferences": {
+      "title": "偏好设置",
+      "description": "自定义你的体验。所有设置都可以稍后在设置中更改。",
+      "theme": {
+        "label": "主题",
+        "system": "跟随系统",
+        "light": "浅色",
+        "dark": "深色"
       },
-      "api-hint": "在 <link>Google AI Studio</link> 申请 API Key。",
-      "storage-note": "我们使用加密浏览器存储在本地保存你的密钥，绝不会上传到服务器。",
-      "provider": {
-        "label": "AI 提供商"
+      "language": {
+        "label": "语言",
+        "en": "English",
+        "zh": "中文"
       },
-      "api-hint-openai": "在 <link>OpenAI 控制台</link> 申请 API Key。"
+      "model": {
+        "label": "AI 模型",
+        "loading": "加载模型中...",
+        "no-key": "请先输入 API 密钥以查看可用模型。"
+      }
     },
-    "preview": {
-      "title": "作业相机",
-      "ocr": "OCR",
-      "steps": "步骤",
-      "hints": "提示"
+    "navigation": {
+      "back": "上一步",
+      "next": "下一步",
+      "skip": "跳过",
+      "finish": "开始使用"
     },
     "footer": {
       "notice": "基于 GPLv3 许可，由 cubewhy 创建。",
