@@ -19,7 +19,7 @@ export function TauriLinkInterceptor({
   useEffect(() => {
     if (isWebTarget) return;
 
-    const handleClick = async (e: MouseEvent) => {
+    const handleClick = (e: MouseEvent) => {
       const anchor = (e.target as HTMLElement).closest("a");
       if (!anchor) return;
 
@@ -30,7 +30,9 @@ export function TauriLinkInterceptor({
       if (href.startsWith("http://") || href.startsWith("https://")) {
         e.preventDefault();
         e.stopPropagation();
-        await openExternalUrl(href);
+        void openExternalUrl(href).catch((error) => {
+          console.error("Failed to open external URL", error);
+        });
       }
     };
 

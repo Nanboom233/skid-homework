@@ -151,6 +151,12 @@ export const useSettingsStore = create<SettingsState>()(
 
         const existing = (data as { keybindings?: ShortcutMap }).keybindings;
         const legacyDevtools = (data as { devtools?: boolean }).devtools;
+        const legacyShowModelSelectorInScanner = (
+          data as { showModelSelectorInScanner?: boolean }
+        ).showModelSelectorInScanner;
+        const legacyShowOnlineSearchInScanner = (
+          data as { showOnlineSearchInScanner?: boolean }
+        ).showOnlineSearchInScanner;
 
         const migratedData = {
           ...data,
@@ -168,10 +174,14 @@ export const useSettingsStore = create<SettingsState>()(
             false,
           showModelSelectorInScanPage:
             (data as { showModelSelectorInScanPage?: boolean })
-              .showModelSelectorInScanPage ?? false,
+              .showModelSelectorInScanPage ??
+            legacyShowModelSelectorInScanner ??
+            false,
           showOnlineSearchInScanPage:
             (data as { showOnlineSearchInScanPage?: boolean })
-              .showOnlineSearchInScanPage ?? false,
+              .showOnlineSearchInScanPage ??
+            legacyShowOnlineSearchInScanner ??
+            false,
           devtoolsEnabled:
             (data as { devtoolsEnabled?: boolean }).devtoolsEnabled ??
             legacyDevtools ??
@@ -179,6 +189,10 @@ export const useSettingsStore = create<SettingsState>()(
         };
 
         delete (migratedData as Record<string, unknown>).devtools;
+        delete (migratedData as Record<string, unknown>)
+          .showModelSelectorInScanner;
+        delete (migratedData as Record<string, unknown>)
+          .showOnlineSearchInScanner;
         return migratedData;
       },
     },

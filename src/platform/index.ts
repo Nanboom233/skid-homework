@@ -19,12 +19,7 @@ export async function openExternalUrl(url: string): Promise<void> {
   window.open(url, "_blank", "noopener,noreferrer");
 }
 
-export function PlatformCaptureActions(
-  _props: PlatformCaptureActionsProps,
-): React.JSX.Element | null {
-  void _props;
-  return null;
-}
+export {WebCaptureActions as PlatformCaptureActions} from "./WebCaptureActions";
 
 export { default as PlatformInitPage } from "./WebInitPage";
 export { default as PlatformInitGuard } from "./WebInitGuard";

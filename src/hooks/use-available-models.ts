@@ -324,8 +324,8 @@ export function useAvailableModels() {
     return () => {
       cancelled = true;
     };
-    // NOTE: `sources` is intentionally excluded — it is accessed via sourcesRef
-    // to prevent re-triggering the fetch on every store update.
+    // NOTE: `sources` is intentionally excluded; cache hydration reads the
+    // latest sources from the store to avoid refetching on every store update.
 
   }, [enabledSources, getClientForSource, sourcesHashSync]);
 
