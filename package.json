@@ -18,7 +18,9 @@
     "tauri:build": "tauri build",
     "tauri:build:frontend": "cross-env NEXT_PUBLIC_APP_TARGET=tauri-desktop TAURI_BUILD=true tsc --noEmit --pretty false && cross-env NEXT_PUBLIC_APP_TARGET=tauri-desktop TAURI_BUILD=true next build",
     "tauri:android:dev:frontend": "cross-env NEXT_PUBLIC_APP_TARGET=tauri-android next dev",
-    "tauri:android:build:frontend": "cross-env NEXT_PUBLIC_APP_TARGET=tauri-android TAURI_BUILD=true tsc --noEmit --pretty false && cross-env NEXT_PUBLIC_APP_TARGET=tauri-android TAURI_BUILD=true next build"
+    "tauri:android:build:frontend": "cross-env NEXT_PUBLIC_APP_TARGET=tauri-android TAURI_BUILD=true tsc --noEmit --pretty false && cross-env NEXT_PUBLIC_APP_TARGET=tauri-android TAURI_BUILD=true next build",
+    "tauri:android:debug": "node scripts/gen-keystore-props.cjs && dotenv -- tauri android build --debug",
+    "tauri:android:release": "node scripts/gen-keystore-props.cjs && dotenv -- tauri android build"
   },
   "lint-staged": {
     "*.{js,jsx,ts,tsx}": [
@@ -49,8 +51,8 @@
     "@react-spring/web": "^10.0.3",
     "@shikijs/transformers": "^3.22.0",
     "@tailwindcss/postcss": "^4.1.18",
-    "@tauri-apps/api": "^2.10.1",
-    "@tauri-apps/plugin-opener": "^2.5.3",
+    "@tauri-apps/api": "^2.11.0",
+    "@tauri-apps/plugin-opener": "^2.5.4",
     "@use-gesture/react": "^10.3.1",
     "@yume-chan/adb": "^2.5.1",
     "@yume-chan/adb-credential-web": "^2.1.0",
@@ -101,13 +103,15 @@
     "@eslint/js": "^9.39.2",
     "@serwist/cli": "^9.5.6",
     "@serwist/next": "^9.5.6",
-    "@tauri-apps/cli": "^2.10.1",
+    "@tauri-apps/cli": "^2.11.2",
     "@types/node": "^25.2.0",
     "@types/pngjs": "^6.0.5",
     "@types/react": "^19.2.10",
     "@types/react-dom": "^19.2.3",
     "@types/w3c-web-usb": "^1.0.13",
     "cross-env": "^10.1.0",
+    "dotenv": "^17.4.2",
+    "dotenv-cli": "^11.0.0",
     "eslint": "^9.39.2",
     "eslint-config-next": "^16.1.6",
     "eslint-plugin-react-hooks": "^7.0.1",

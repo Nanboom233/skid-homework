@@ -125,11 +125,11 @@ fn resolve_adb_executable() -> PathBuf {
     ADB_EXECUTABLE.get_or_init(discover_adb_executable).clone()
 }
 
-fn configure_adb_command(command: &mut Command) {
+fn configure_adb_command(_command: &mut Command) {
     #[cfg(target_os = "windows")]
     {
         // Prevent adb.exe from flashing a console window for background desktop operations.
-        command.creation_flags(CREATE_NO_WINDOW);
+        _command.creation_flags(CREATE_NO_WINDOW);
     }
 }
 
