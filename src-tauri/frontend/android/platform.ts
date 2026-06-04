@@ -27,6 +27,6 @@ export function PlatformCaptureActions(
   return null;
 }
 
-export { default as PlatformInitPage } from "@/components/init/MobileInitFallback";
+export { default as PlatformInitPage } from "@/components/init/MobileInitWizard";
 export { default as PlatformInitGuard } from "@/components/guards/RequireInit";
 
