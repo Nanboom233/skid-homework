@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { Kbd } from "../ui/kbd";
 import { useTranslation } from "react-i18next";
+import { toast } from "sonner";
 
 export type InspectDialogProps = {
   answer: string;
@@ -31,17 +32,16 @@ export default function InspectDialog({
   explanation,
   onlineSearch,
 }: InspectDialogProps) {
-  // Helper to copy text to clipboard
+  const { t } = useTranslation("commons", { keyPrefix: "inspect-dialog" });
+
   const handleCopy = (text: string) => {
     navigator.clipboard.writeText(text);
-    // You could add a toast notification here
+    toast.success(t("copy.success", { defaultValue: "Copied" }));
   };
-
-  const { t } = useTranslation("commons", { keyPrefix: "inspect-dialog" });
 
   return (
     <Dialog open={open} onOpenChange={onChange}>
-      <DialogContent className="sm:max-w-[700px] flex flex-col max-h-[90vh] overflow-scroll">
+      <DialogContent className="sm:max-w-175 flex flex-col max-h-[90vh] overflow-scroll">
         <DialogHeader>
           <DialogTitle className="text-xl">{t("title")}</DialogTitle>
           <DialogDescription>{t("desc")}</DialogDescription>

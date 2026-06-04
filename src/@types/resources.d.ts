@@ -69,6 +69,11 @@ interface Resources {
       "subtitle": "Discuss problems with your configured models.",
       "title": "SkidHomework Chat"
     },
+    "dev": {
+      "copy": {
+        "success": "Copied"
+      }
+    },
     "import-settings-page": {
       "confirm": {
         "alert": {
@@ -174,6 +179,9 @@ interface Resources {
     "inspect-dialog": {
       "answer": "Answer",
       "close": "Close",
+      "copy": {
+        "success": "Copied"
+      },
       "desc": "Review the AI generated Markdown content.",
       "explanation": "Explanation",
       "online-search": "Online Search",

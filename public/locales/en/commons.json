@@ -682,7 +682,10 @@
     "problem": "Problem",
     "answer": "Answer",
     "explanation": "Explanation",
-    "online-search": "Online Search"
+    "online-search": "Online Search",
+    "copy": {
+      "success": "Copied"
+    }
   },
   "sources": {
     "upload": "Upload",
@@ -694,6 +697,11 @@
       "requires-responses-api-online-search": "Using online search requires Responses API to be enabled",
       "requires-responses-api-pdf": "Using PDF recognition requires Responses API to be enabled",
       "web-search-not-supported": "Model {{model}} does not support web search, continuing without it"
+    }
+  },
+  "dev": {
+    "copy": {
+      "success": "Copied"
     }
   }
 }

@@ -686,7 +686,10 @@
     "problem": "题目",
     "answer": "答案",
     "explanation": "解析",
-    "online-search": "联网搜索"
+    "online-search": "联网搜索",
+    "copy": {
+      "success": "复制成功"
+    }
   },
   "sources": {
     "upload": "本地上传",
