@@ -9,6 +9,7 @@ use ort::{
 use serde::Serialize;
 use tauri::{command, AppHandle, Manager};
 
+use crate::scanner_assets::{self, ScannerAssetsError};
 use crate::scanner_platform;
 use crate::scanner_resource;
 
@@ -115,14 +116,27 @@ pub struct ScannerOrtProbeStatus {
 }
 
 #[command]
-pub async fn tauri_scanner_probe_ort(app: AppHandle) -> Result<ScannerOrtProbeStatus, String> {
+pub async fn scanner_probe_ort(
+    app: AppHandle,
+) -> Result<ScannerOrtProbeStatus, ScannerAssetsError> {
     let resource_dir_hint = app.path().resource_dir().ok();
-    tauri::async_runtime::spawn_blocking(move || probe_scanner_ort_with_hints(resource_dir_hint))
-        .await
-        .map_err(|error| format!("Scanner ORT probe task failed: {error}"))
+    let installed_assets_current_dir_hint =
+        scanner_assets::installed_assets_current_dir_from_app(&app);
+    tauri::async_runtime::spawn_blocking(move || {
+        probe_scanner_ort_with_hints(resource_dir_hint, installed_assets_current_dir_hint)
+    })
+    .await
+    .map_err(|error| ScannerAssetsError {
+        code: "runtime.probe.taskFailed".to_string(),
+        retryable: true,
+        details: Some(format!("Scanner ORT probe task failed: {error}")),
+    })
 }
 
-pub fn probe_scanner_ort_with_hints(resource_dir_hint: Option<PathBuf>) -> ScannerOrtProbeStatus {
+pub fn probe_scanner_ort_with_hints(
+    resource_dir_hint: Option<PathBuf>,
+    installed_assets_current_dir_hint: Option<PathBuf>,
+) -> ScannerOrtProbeStatus {
     let platform = std::env::consts::OS.to_string();
     let platform_target = scanner_platform::platform_target().to_string();
     let preferred_provider = scanner_platform::default_preferred_provider().to_string();
@@ -131,8 +145,10 @@ pub fn probe_scanner_ort_with_hints(resource_dir_hint: Option<PathBuf>) -> Scann
         .map(str::to_string)
         .collect::<Vec<_>>();
     let interesting_paths = interesting_paths_for_current_platform();
-    let resource_root_candidates =
-        scanner_resource::build_resource_root_candidates(resource_dir_hint);
+    let resource_root_candidates = scanner_resource::build_resource_root_candidates(
+        resource_dir_hint,
+        installed_assets_current_dir_hint,
+    );
     let selected_resource_root =
         scanner_resource::select_resource_root(&resource_root_candidates, &interesting_paths);
     let resource_base_dir = selected_resource_root
@@ -567,10 +583,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "loads bundled ORT runtime and ONNX model sessions"]
-    fn bundled_probe_loads_approved_model_sessions() {
+    #[ignore = "loads installed/dev ORT runtime and ONNX model sessions"]
+    fn installed_or_dev_probe_loads_approved_model_sessions() {
         let resource_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources");
-        let status = probe_scanner_ort_with_hints(Some(resource_dir));
+        let status = probe_scanner_ort_with_hints(Some(resource_dir), None);
 
         assert!(status.runtime_ready, "{}", status.message);
         assert!(status.model_load_ready, "{}", status.message);

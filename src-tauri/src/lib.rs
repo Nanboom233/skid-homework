@@ -1,6 +1,8 @@
 mod adb_plugin;
 
 #[cfg(any(target_os = "windows", target_os = "linux"))]
+mod scanner_assets;
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 mod scanner_ort;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 mod scanner_platform;
@@ -9,7 +11,8 @@ mod scanner_resource;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let builder = tauri::Builder::default().plugin(tauri_plugin_opener::init());
+    let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init());
 
     #[cfg(any(target_os = "windows", target_os = "linux"))]
     let builder = builder.invoke_handler(tauri::generate_handler![
@@ -20,7 +23,10 @@ pub fn run() {
         adb_plugin::tauri_adb_forward,
         adb_plugin::tauri_adb_remove_forward,
         adb_plugin::tauri_adb_screenshot,
-        scanner_ort::tauri_scanner_probe_ort,
+        scanner_assets::scanner_assets_status,
+        scanner_assets::scanner_assets_download,
+        scanner_assets::scanner_assets_import,
+        scanner_ort::scanner_probe_ort,
     ]);
 
     #[cfg(not(any(target_os = "windows", target_os = "linux")))]
