@@ -14,8 +14,8 @@ use tauri::{command, ipc::Channel, AppHandle, Manager};
 use crate::{scanner_platform, scanner_resource};
 
 const EXPECTED_SCANNER_ASSET_TAG: &str = "v0.1.0";
-const SCANNER_ASSETS_REPO_OWNER: &str = "cubewhy";
-const SCANNER_ASSETS_REPO_NAME: &str = "skid-homework-scanner-assets";
+const SCANNER_ASSETS_REPO_OWNER: &str = "Nanboom233";
+const SCANNER_ASSETS_REPO_NAME: &str = "skid-homework-assets";
 const MANIFEST_FILE_NAME: &str = "manifest.json";
 const ASSETS_DIR_NAME: &str = "assets";
 const CURRENT_DIR_NAME: &str = "current";
@@ -510,7 +510,7 @@ fn download_archive_to_path(
 ) -> Result<(), ScannerAssetsError> {
     send_phase_progress(channel, "fetching");
     let client = reqwest::blocking::Client::builder()
-        .user_agent("skid-homework-scanner-assets/0.1")
+        .user_agent("skid-homework-assets/0.1")
         .build()
         .map_err(|error| {
             ScannerAssetsError::with_details(
