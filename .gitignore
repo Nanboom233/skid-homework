@@ -73,6 +73,7 @@ src-tauri/validation-run/
 .agents/
 .codex/
 .trellis/
+worktrees/
 agents.md
 claude.md
 
