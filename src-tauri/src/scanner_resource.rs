@@ -28,18 +28,6 @@ pub fn build_resource_root_candidates(
         push_candidate("tauri-resource-dir", resource_dir);
     }
 
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    push_candidate("cargo-manifest-resources", manifest_dir.join("resources"));
-
-    #[cfg(debug_assertions)]
-    if let Ok(current_dir) = std::env::current_dir() {
-        push_candidate("cwd-resources", current_dir.join("resources"));
-        push_candidate(
-            "cwd-src-tauri-resources",
-            current_dir.join("src-tauri").join("resources"),
-        );
-    }
-
     candidates
 }
 
