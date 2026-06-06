@@ -107,6 +107,10 @@ export const useScannerStore = create<ScannerStore>()((set, get) => ({
         if (!operationMatches(get().activeOperation, operation)) return;
         set({progress});
         if (progress.phase === "failed" && progress.error) {
+          if (isCancellationError(progress.error)) {
+            set(operationCancelledState());
+            return;
+          }
           set(operationFailureState(progress.error, operation));
         }
       });
@@ -147,6 +151,10 @@ export const useScannerStore = create<ScannerStore>()((set, get) => ({
         if (!operationMatches(get().activeOperation, operation)) return;
         set({progress});
         if (progress.phase === "failed" && progress.error) {
+          if (isCancellationError(progress.error)) {
+            set(operationCancelledState());
+            return;
+          }
           set(operationFailureState(progress.error, operation));
         }
       });
@@ -268,13 +276,19 @@ export const useScannerStore = create<ScannerStore>()((set, get) => ({
 
   cancelCurrentOperation: async () => {
     const operation = get().activeOperation;
-    if (!operation || operation.kind !== "download") return;
+    if (!operation || operation.kind !== "download" || !get().canCancelCurrentOperation) return;
 
-    set(operationCancelledState());
+    set({
+      operationError: null,
+      retryOperation: null,
+      canRetryLastOperation: false,
+      canCancelCurrentOperation: false,
+      updateCheckResult: null,
+    });
     try {
       await cancelScannerAssetsOperation(operation.operationId);
     } catch {
-      // Cancellation is best-effort and idempotent; the UI has already left the operation.
+      // Cancellation is best-effort and idempotent; the active operation will settle normally.
     }
   },
 

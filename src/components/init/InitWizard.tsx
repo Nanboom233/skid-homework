@@ -38,8 +38,8 @@ const transition = {
 export default function InitWizard() {
   const currentStep = useInitStore((s) => s.currentStep);
   const direction = useInitStore((s) => s.direction);
-  const nextStep = useInitStore((s) => s.nextStep);
   const prevStep = useInitStore((s) => s.prevStep);
+  const setCurrentStep = useInitStore((s) => s.setCurrentStep);
   const setInitCompleted = useInitStore((s) => s.setInitCompleted);
   const { t } = useTranslation("commons", { keyPrefix: "init-page.navigation" });
   const router = useRouter();
@@ -53,19 +53,23 @@ export default function InitWizard() {
     router.replace("/");
   }, [setInitCompleted, router]);
 
+  const advanceToNextStep = useCallback(() => {
+    setCurrentStep(Math.min(currentStep + 1, TOTAL_STEPS - 1));
+  }, [currentStep, setCurrentStep]);
+
   const handleNext = useCallback(() => {
     if (currentStep >= 3) {
       // Steps 3 (Preferences) and 4 (Advanced) both finish the wizard
       completeWizard();
     } else {
-      nextStep();
+      advanceToNextStep();
     }
-  }, [currentStep, nextStep, completeWizard]);
+  }, [currentStep, advanceToNextStep, completeWizard]);
 
   const handleSkip = useCallback(() => {
     // Skip applies to step 1 (AI Config) and step 2 (Scanner Setup)
-    nextStep();
-  }, [nextStep]);
+    advanceToNextStep();
+  }, [advanceToNextStep]);
 
   const stepContent = useMemo(() => {
     switch (currentStep) {
@@ -125,7 +129,7 @@ export default function InitWizard() {
           onSkip={handleSkip}
           showSkip={currentStep === 1 || currentStep === 2}
           showAdvanced={currentStep === 3}
-          onAdvanced={() => nextStep()}
+          onAdvanced={advanceToNextStep}
           finishLabel={currentStep >= 3 ? t("finish") : undefined}
           disableNext={currentStep === 1 && hasFetched && !hasValidConfig && !isLoading}
         />
