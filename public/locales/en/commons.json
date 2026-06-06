@@ -529,10 +529,6 @@
         "placeholder": "https://example.com/v1",
         "helper": "Leave blank to use the default endpoint for {{provider}}."
       },
-      "image-post-processing": {
-        "title": "Image Post-processing",
-        "enhancement": "Enable Image Enhancement"
-      },
       "ui": {
         "title": "UI",
         "clear-dialog-on-submit": "Clear dialog after submit"
@@ -611,8 +607,6 @@
         "tip": "Maximum tokens for AI reasoning (Gemini only).",
         "unit": "tokens"
       },
-      "image-enhancement": "Image Enhancement",
-      "image-enhancement-tip": "Enable post-processing to improve image quality before sending to AI.",
       "online-search": "Online Search",
       "online-search-tip": "Allow AI to search the web for additional context.",
       "max-retries": {
