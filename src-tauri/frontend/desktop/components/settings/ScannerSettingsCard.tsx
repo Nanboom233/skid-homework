@@ -1,6 +1,6 @@
 "use client";
 
-import {useEffect} from "react";
+import {useEffect, useState} from "react";
 import {useTranslation} from "react-i18next";
 import {
   CheckCircle2,
@@ -11,11 +11,15 @@ import {
   Loader2,
   Cpu,
   Zap,
+  X,
+  RefreshCw,
+  Trash2,
 } from "lucide-react";
 import {Button} from "@/components/ui/button";
 import {Card, CardContent, CardDescription, CardHeader, CardTitle} from "@/components/ui/card";
 import {Collapsible, CollapsibleContent, CollapsibleTrigger} from "@/components/ui/collapsible";
 import {Badge} from "@/components/ui/badge";
+import {scannerErrorI18nKey} from "../../lib/tauri/scanner";
 import {useScannerStore} from "../../store/scanner-store";
 
 export default function ScannerSettingsCard() {
@@ -24,17 +28,54 @@ export default function ScannerSettingsCard() {
   const probeStatus = useScannerStore((s) => s.probeStatus);
   const progress = useScannerStore((s) => s.progress);
   const isOperating = useScannerStore((s) => s.isOperating);
+  const activeOperation = useScannerStore((s) => s.activeOperation);
   const operationError = useScannerStore((s) => s.operationError);
   const canRetryLastOperation = useScannerStore((s) => s.canRetryLastOperation);
+  const canCancelCurrentOperation = useScannerStore((s) => s.canCancelCurrentOperation);
+  const updateCheckResult = useScannerStore((s) => s.updateCheckResult);
   const fetchStatus = useScannerStore((s) => s.fetchStatus);
   const fetchProbe = useScannerStore((s) => s.fetchProbe);
-  const startDownload = useScannerStore((s) => s.startDownload);
+  const startUpdateDownload = useScannerStore((s) => s.startUpdateDownload);
+  const checkForAssetUpdate = useScannerStore((s) => s.checkForAssetUpdate);
+  const clearInstalledAssets = useScannerStore((s) => s.clearInstalledAssets);
+  const cancelCurrentOperation = useScannerStore((s) => s.cancelCurrentOperation);
   const retryLastOperation = useScannerStore((s) => s.retryLastOperation);
+  const clearError = useScannerStore((s) => s.clearError);
+  const clearUpdateCheckResult = useScannerStore((s) => s.clearUpdateCheckResult);
+  const [confirmClear, setConfirmClear] = useState(false);
+  const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
 
   useEffect(() => {
     void fetchStatus();
     void fetchProbe();
   }, [fetchStatus, fetchProbe]);
+
+  useEffect(() => {
+    return () => {
+      const state = useScannerStore.getState();
+      if (state.activeOperation?.kind === "download") {
+        void state.cancelCurrentOperation({silent: true});
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (updateCheckResult?.kind !== "up-to-date") return;
+    const timeout = window.setTimeout(clearUpdateCheckResult, 2500);
+    return () => window.clearTimeout(timeout);
+  }, [clearUpdateCheckResult, updateCheckResult?.kind]);
+
+  useEffect(() => {
+    if (!confirmClear) return;
+    const timeout = window.setTimeout(() => setConfirmClear(false), 3000);
+    return () => window.clearTimeout(timeout);
+  }, [confirmClear]);
+
+  useEffect(() => {
+    if (isOperating) {
+      setConfirmClear(false);
+    }
+  }, [isOperating]);
 
   const handleImport = async () => {
     const {open} = await import("@tauri-apps/plugin-dialog");
@@ -55,7 +96,45 @@ export default function ScannerSettingsCard() {
   };
 
   const state = assetsStatus?.state ?? "missing";
-  const isReady = state === "ready";
+  const hasDownloadedAssets = state === "ready" || state === "invalid";
+  const providerStatus = state === "ready" && assetsStatus?.manifest ? probeStatus : null;
+  const canStartCheckedDownload =
+    updateCheckResult?.kind === "update-available" ||
+    updateCheckResult?.kind === "install-available";
+  const updateButtonIsGreen = canStartCheckedDownload;
+  const updateButtonDisabled =
+    isOperating || isCheckingUpdate || updateCheckResult?.kind === "up-to-date";
+  const updateButtonLabel =
+    updateCheckResult?.kind === "up-to-date"
+      ? t("actions.up-to-date")
+      : updateCheckResult?.kind === "update-available"
+        ? t("actions.update-to", {version: updateCheckResult.version})
+        : updateCheckResult?.kind === "install-available"
+          ? t("actions.install-version", {version: updateCheckResult.version})
+          : t("actions.check-update");
+
+  const handleUpdateButton = async () => {
+    if (canStartCheckedDownload) {
+      clearUpdateCheckResult();
+      await startUpdateDownload();
+      return;
+    }
+    setIsCheckingUpdate(true);
+    try {
+      await checkForAssetUpdate();
+    } finally {
+      setIsCheckingUpdate(false);
+    }
+  };
+
+  const handleClearAssets = async () => {
+    if (!confirmClear) {
+      setConfirmClear(true);
+      return;
+    }
+    setConfirmClear(false);
+    await clearInstalledAssets();
+  };
 
   return (
     <Card>
@@ -70,13 +149,10 @@ export default function ScannerSettingsCard() {
             {assetsStatus?.manifest && (
               <Badge variant="secondary">{assetsStatus.manifest.assetVersion}</Badge>
             )}
-            {assetsStatus?.platformTarget && (
-              <Badge variant="outline">{assetsStatus.platformTarget}</Badge>
-            )}
-            {probeStatus && (
-              <Badge variant={probeStatus.preferredProviderReady ? "default" : "secondary"}>
-                {probeStatus.preferredProviderReady ? (
-                  <><Zap className="mr-1 h-3 w-3" />{probeStatus.preferredProvider}</>
+            {providerStatus && (
+              <Badge variant={providerStatus.preferredProviderReady ? "default" : "secondary"}>
+                {providerStatus.preferredProviderReady ? (
+                  <><Zap className="mr-1 h-3 w-3" />{providerStatus.preferredProvider}</>
                 ) : (
                   <><Cpu className="mr-1 h-3 w-3" />{t("status.cpu-fallback")}</>
                 )}
@@ -88,11 +164,20 @@ export default function ScannerSettingsCard() {
         <div className="flex flex-wrap gap-2">
           <Button
             size="sm"
-            onClick={() => void startDownload()}
-            disabled={isOperating}
+            onClick={() => void handleUpdateButton()}
+            disabled={updateButtonDisabled}
+            className={
+              updateButtonIsGreen
+                ? "bg-green-600 text-white hover:bg-green-700"
+                : undefined
+            }
           >
-            <Download className="mr-2 h-4 w-4" />
-            {isReady ? t("actions.update") : t("actions.download")}
+            {canStartCheckedDownload ? (
+              <Download className="mr-2 h-4 w-4" />
+            ) : (
+              <RefreshCw className={`mr-2 h-4 w-4 ${isCheckingUpdate ? "animate-spin" : ""}`} />
+            )}
+            {updateButtonLabel}
           </Button>
           <Button
             size="sm"
@@ -103,15 +188,46 @@ export default function ScannerSettingsCard() {
             <FolderOpen className="mr-2 h-4 w-4" />
             {t("actions.import")}
           </Button>
+          {hasDownloadedAssets && (
+            <Button
+              size="sm"
+              variant={confirmClear ? "destructive" : "outline"}
+              onClick={() => void handleClearAssets()}
+              disabled={isOperating}
+            >
+              <Trash2 className="mr-2 h-4 w-4" />
+              {confirmClear ? t("actions.confirm-clear") : t("actions.clear")}
+            </Button>
+          )}
         </div>
 
-        {isOperating && progress && (
+        {isOperating && (progress || activeOperation) && (
           <div className="space-y-2">
-            <div className="flex items-center gap-2">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              <span className="text-sm">{t(`phases.${progress.phase}`)}</span>
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                <span className="text-sm">
+                  {progress
+                    ? t(`phases.${progress.phase}`)
+                    : activeOperation?.kind === "download"
+                      ? t("status.downloading")
+                      : activeOperation?.kind === "clear"
+                        ? t("status.clearing")
+                        : t("status.importing")}
+                </span>
+              </div>
+              {canCancelCurrentOperation && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => void cancelCurrentOperation()}
+                >
+                  <X className="mr-2 h-4 w-4" />
+                  {t("actions.cancel")}
+                </Button>
+              )}
             </div>
-            {progress.bytesTotal != null && progress.bytesTotal > 0 && (
+            {progress?.bytesTotal != null && progress.bytesTotal > 0 && (
               <div className="space-y-1">
                 <div className="h-2 w-full overflow-hidden rounded-full bg-secondary">
                   <div
@@ -136,8 +252,18 @@ export default function ScannerSettingsCard() {
                   {t("error.title")}
                 </p>
                 <p className="mt-1 text-xs text-red-600 dark:text-red-400">
-                  {operationError.details ?? operationError.code}
+                  {scannerErrorI18nKey(operationError.code)
+                    ? t(scannerErrorI18nKey(operationError.code)!)
+                    : t("error.unknown", {code: operationError.code})}
                 </p>
+                <p className="mt-1 text-xs text-red-600/80 dark:text-red-400/80">
+                  {t("error.diagnostic-code", {code: operationError.code})}
+                </p>
+                {operationError.details && (
+                  <p className="mt-1 text-xs text-red-600/80 dark:text-red-400/80">
+                    {t("error.diagnostic-details", {details: operationError.details})}
+                  </p>
+                )}
               </div>
             </div>
             <div className="flex gap-2">
@@ -151,6 +277,15 @@ export default function ScannerSettingsCard() {
                   {t("actions.retry")}
                 </Button>
               )}
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={clearError}
+                disabled={isOperating}
+              >
+                <X className="mr-2 h-4 w-4" />
+                {t("actions.cancel")}
+              </Button>
             </div>
           </div>
         )}
@@ -181,6 +316,7 @@ function StatusBadge({state}: {state: string}) {
       );
     case "downloading":
     case "importing":
+    case "clearing":
       return (
         <Badge variant="secondary">
           <Loader2 className="mr-1 h-3 w-3 animate-spin" />{t(state)}
@@ -203,10 +339,27 @@ function StatusBadge({state}: {state: string}) {
 
 function DiagnosticsSection({probeStatus}: {probeStatus: NonNullable<ReturnType<typeof useScannerStore.getState>["probeStatus"]>}) {
   const {t} = useTranslation("commons", {keyPrefix: "scanner.diagnostics"});
+  const hasExplicitRuntimePath =
+    Boolean(probeStatus.selectedRuntimeLibraryPath) ||
+    Boolean(probeStatus.loadedRuntimeLibraryPath);
 
   return (
     <div className="space-y-2 text-xs">
-      <DiagRow label={t("runtime-path")} value={probeStatus.runtimeLibraryPath} />
+      <DiagRow label={t("resource-base-dir")} value={normalizeDisplayPath(probeStatus.resourceBaseDir)} />
+      <DiagRow
+        label={t("selected-runtime-path")}
+        value={normalizeDisplayPath(probeStatus.selectedRuntimeLibraryPath)}
+      />
+      <DiagRow
+        label={t("loaded-runtime-path")}
+        value={normalizeDisplayPath(probeStatus.loadedRuntimeLibraryPath)}
+      />
+      {!hasExplicitRuntimePath && (
+        <DiagRow
+          label={t("compat-runtime-path")}
+          value={normalizeDisplayPath(probeStatus.runtimeLibraryPath)}
+        />
+      )}
       <DiagRow label={t("build-info")} value={probeStatus.ortBuildInfo} />
       <DiagRow label={t("providers")} value={probeStatus.availableProviders.join(", ")} />
       {probeStatus.runtimeError && (
@@ -259,6 +412,34 @@ function DiagRow({label, value, error}: {label: string; value?: string | null; e
       <span className={`break-all font-mono ${error ? "text-red-600 dark:text-red-400" : ""}`}>{value}</span>
     </div>
   );
+}
+
+function normalizeDisplayPath(value?: string | null) {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+
+  const isUnc = /^[\\/]{2}[^\\/]/.test(trimmed);
+  const isDrivePath = /^[A-Za-z]:[\\/]/.test(trimmed);
+  const preferredSeparator = isDrivePath || trimmed.includes("\\") ? "\\" : "/";
+  let prefix = "";
+  let rest = trimmed;
+
+  if (isUnc) {
+    prefix = preferredSeparator.repeat(2);
+    rest = trimmed.replace(/^[\\/]+/, "");
+  } else if (isDrivePath) {
+    prefix = `${trimmed.slice(0, 2)}${preferredSeparator}`;
+    rest = trimmed.slice(3);
+  } else if (/^[\\/]/.test(trimmed)) {
+    prefix = preferredSeparator;
+    rest = trimmed.replace(/^[\\/]+/, "");
+  }
+
+  rest = rest
+    .replace(/[\\/]+$/, "")
+    .replace(/[\\/]+/g, preferredSeparator);
+
+  return `${prefix}${rest}`;
 }
 
 function formatBytes(bytes: number): string {

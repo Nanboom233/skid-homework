@@ -830,13 +830,21 @@
       "invalid": "无效",
       "downloading": "下载中...",
       "importing": "导入中...",
-      "cpu-fallback": "CPU 回退"
+      "clearing": "清理中...",
+      "cpu-fallback": "CPU"
     },
     "actions": {
       "download": "下载",
       "update": "更新",
+      "check-update": "检查更新",
+      "up-to-date": "已是最新版本",
+      "update-to": "更新到 {{version}}",
+      "install-version": "安装 {{version}}",
+      "clear": "清理已下载内容",
+      "confirm-clear": "确认清除？",
       "import": "导入本地包",
-      "retry": "重试"
+      "retry": "重试",
+      "cancel": "取消"
     },
     "phases": {
       "fetching": "正在下载安装包...",
@@ -847,7 +855,63 @@
       "failed": "失败"
     },
     "error": {
-      "title": "操作失败"
+      "title": "操作失败",
+      "unknown": "扫描器操作失败（{{code}}）。",
+      "diagnostic-code": "错误码：{{code}}",
+      "diagnostic-details": "诊断信息：{{details}}",
+      "codes": {
+        "assets": {
+          "operation": {
+            "cancelled": "操作已取消。",
+            "inProgress": "已有扫描器资源操作正在进行，请稍后再试。",
+            "taskFailed": "扫描器资源任务异常结束。"
+          },
+          "clear": {
+            "removeFailed": "无法清理已安装的扫描器资源，请关闭占用中的文件后重试。"
+          },
+          "update": {
+            "checkFailed": "无法检查扫描器资源更新，请检查网络后重试。"
+          },
+          "import": {
+            "archive": {
+              "openFailed": "无法打开本地扫描器资源包。",
+              "formatMismatch": "本地资源包格式与当前平台不匹配。"
+            }
+          },
+          "install": {
+            "manifest": {
+              "missing": "资源包缺少 manifest.json。",
+              "invalid": "资源包 manifest.json 无效。",
+              "versionMismatch": "资源包版本与当前应用期望版本不一致。",
+              "platformMismatch": "资源包平台与当前设备不匹配。"
+            },
+            "verify": {
+              "unsafePath": "资源包包含不安全的文件路径。",
+              "fileMissing": "资源包缺少必需文件。",
+              "sizeMismatch": "资源包文件大小校验失败。",
+              "checksumMismatch": "资源包文件校验和不匹配。"
+            },
+            "activate": {
+              "replaceFailed": "无法激活新的扫描器资源，已保留现有资源。"
+            }
+          },
+          "download": {
+            "fetch": {
+              "networkFailed": "下载扫描器资源失败，请检查网络后重试。",
+              "httpStatus": "下载服务器返回了错误状态。",
+              "writeFailed": "无法写入下载的扫描器资源包。"
+            }
+          },
+          "status": {
+            "resolveDataDirFailed": "无法解析应用数据目录。"
+          }
+        },
+        "runtime": {
+          "probe": {
+            "taskFailed": "扫描器运行时诊断任务异常结束。"
+          }
+        }
+      }
     },
     "import": {
       "filter-label": "扫描器资源包"
@@ -858,7 +922,10 @@
     },
     "diagnostics": {
       "title": "高级诊断",
-      "runtime-path": "运行时库路径",
+      "resource-base-dir": "资源目录",
+      "selected-runtime-path": "选中的运行时库路径",
+      "loaded-runtime-path": "已加载的运行时库路径",
+      "compat-runtime-path": "运行时库路径（兼容）",
       "build-info": "ORT 构建信息",
       "providers": "可用提供者",
       "runtime-error": "运行时错误",

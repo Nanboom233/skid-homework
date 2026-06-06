@@ -2,8 +2,9 @@
 
 import {useEffect} from "react";
 import {useTranslation} from "react-i18next";
-import {CheckCircle2, Download, FolderOpen, AlertTriangle, Loader2} from "lucide-react";
+import {CheckCircle2, Download, FolderOpen, AlertTriangle, Loader2, X} from "lucide-react";
 import {Button} from "@/components/ui/button";
+import {scannerErrorI18nKey} from "../../lib/tauri/scanner";
 import {useScannerStore} from "../../store/scanner-store";
 
 export default function ScannerSetupStep() {
@@ -11,15 +12,28 @@ export default function ScannerSetupStep() {
   const assetsStatus = useScannerStore((s) => s.assetsStatus);
   const progress = useScannerStore((s) => s.progress);
   const isOperating = useScannerStore((s) => s.isOperating);
+  const activeOperation = useScannerStore((s) => s.activeOperation);
   const operationError = useScannerStore((s) => s.operationError);
   const canRetryLastOperation = useScannerStore((s) => s.canRetryLastOperation);
+  const canCancelCurrentOperation = useScannerStore((s) => s.canCancelCurrentOperation);
   const fetchStatus = useScannerStore((s) => s.fetchStatus);
   const startDownload = useScannerStore((s) => s.startDownload);
+  const cancelCurrentOperation = useScannerStore((s) => s.cancelCurrentOperation);
   const retryLastOperation = useScannerStore((s) => s.retryLastOperation);
+  const clearError = useScannerStore((s) => s.clearError);
 
   useEffect(() => {
     void fetchStatus();
   }, [fetchStatus]);
+
+  useEffect(() => {
+    return () => {
+      const state = useScannerStore.getState();
+      if (state.activeOperation?.kind === "download") {
+        void state.cancelCurrentOperation({silent: true});
+      }
+    };
+  }, []);
 
   const handleImport = async () => {
     const {open} = await import("@tauri-apps/plugin-dialog");
@@ -80,13 +94,33 @@ export default function ScannerSetupStep() {
         </div>
       )}
 
-      {isOperating && progress && (
+      {isOperating && (progress || activeOperation) && (
         <div className="space-y-3">
-          <div className="flex items-center gap-2">
-            <Loader2 className="h-4 w-4 animate-spin" />
-            <span className="text-sm font-medium">{t(`phases.${progress.phase}`)}</span>
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              <span className="text-sm font-medium">
+                {progress
+                  ? t(`phases.${progress.phase}`)
+                  : activeOperation?.kind === "download"
+                    ? t("status.downloading")
+                    : activeOperation?.kind === "clear"
+                      ? t("status.clearing")
+                      : t("status.importing")}
+              </span>
+            </div>
+            {canCancelCurrentOperation && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => void cancelCurrentOperation()}
+              >
+                <X className="mr-2 h-4 w-4" />
+                {t("actions.cancel")}
+              </Button>
+            )}
           </div>
-          {progress.bytesTotal != null && progress.bytesTotal > 0 && (
+          {progress?.bytesTotal != null && progress.bytesTotal > 0 && (
             <div className="space-y-1">
               <div className="h-2 w-full overflow-hidden rounded-full bg-secondary">
                 <div
@@ -111,8 +145,18 @@ export default function ScannerSetupStep() {
                 {t("error.title")}
               </p>
               <p className="mt-1 text-xs text-red-600 dark:text-red-400">
-                {operationError.details ?? operationError.code}
+                {scannerErrorI18nKey(operationError.code)
+                  ? t(scannerErrorI18nKey(operationError.code)!)
+                  : t("error.unknown", {code: operationError.code})}
               </p>
+              <p className="mt-1 text-xs text-red-600/80 dark:text-red-400/80">
+                {t("error.diagnostic-code", {code: operationError.code})}
+              </p>
+              {operationError.details && (
+                <p className="mt-1 text-xs text-red-600/80 dark:text-red-400/80">
+                  {t("error.diagnostic-details", {details: operationError.details})}
+                </p>
+              )}
             </div>
           </div>
           <div className="flex gap-2">
@@ -126,6 +170,15 @@ export default function ScannerSetupStep() {
                 {t("actions.retry")}
               </Button>
             )}
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={clearError}
+              disabled={isOperating}
+            >
+              <X className="mr-2 h-4 w-4" />
+              {t("actions.cancel")}
+            </Button>
           </div>
         </div>
       )}

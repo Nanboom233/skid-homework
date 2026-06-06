@@ -3,7 +3,10 @@ use std::{
     fs::{self, File},
     io::{self, BufReader, BufWriter, Read, Write},
     path::{Component, Path, PathBuf},
-    sync::{Mutex, OnceLock},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, OnceLock,
+    },
     time::Duration,
 };
 
@@ -25,6 +28,7 @@ const BACKUP_DIR_NAME: &str = "current.previous";
 const DOWNLOAD_CHUNK_SIZE: usize = 64 * 1024;
 const DOWNLOAD_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const DOWNLOAD_READ_TIMEOUT: Duration = Duration::from_secs(60);
+const ERROR_OPERATION_CANCELLED: &str = "assets.operation.cancelled";
 
 const COMMON_REQUIRED_ASSET_PATHS: &[&str] = &[
     "models/docaligner-fastvit_sa24.onnx",
@@ -78,6 +82,7 @@ impl ScannerAssetsError {
 enum OperationKind {
     Downloading,
     Importing,
+    Clearing,
 }
 
 impl OperationKind {
@@ -85,6 +90,7 @@ impl OperationKind {
         match self {
             OperationKind::Downloading => "downloading",
             OperationKind::Importing => "importing",
+            OperationKind::Clearing => "clearing",
         }
     }
 }
@@ -92,6 +98,7 @@ impl OperationKind {
 #[derive(Debug)]
 struct OperationGuard {
     kind: OperationKind,
+    operation_id: Option<String>,
 }
 
 impl Drop for OperationGuard {
@@ -99,10 +106,21 @@ impl Drop for OperationGuard {
         let mut state = operation_state()
             .lock()
             .expect("scanner asset operation mutex should not be poisoned");
-        if *state == Some(self.kind) {
+        if state
+            .as_ref()
+            .map(|active| active.kind == self.kind && active.operation_id == self.operation_id)
+            .unwrap_or(false)
+        {
             *state = None;
         }
     }
+}
+
+#[derive(Debug)]
+struct ActiveOperationState {
+    kind: OperationKind,
+    operation_id: Option<String>,
+    cancel_requested: Arc<AtomicBool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -115,6 +133,18 @@ pub struct ScannerAssetsProgress {
     pub bytes_total: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<ScannerAssetsError>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScannerAssetsDownloadRequest {
+    pub operation_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScannerAssetsCancelRequest {
+    pub operation_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -155,6 +185,16 @@ pub struct ScannerAssetsStatus {
     pub last_error: Option<ScannerAssetsError>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScannerAssetsUpdateCheck {
+    pub platform_target: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_asset_version: Option<String>,
+    pub target_asset_tag: String,
+    pub update_available: bool,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ScannerAssetManifest {
@@ -179,6 +219,27 @@ pub struct ScannerAssetPaths {
     pub current_dir: PathBuf,
     staging_dir: PathBuf,
     backup_dir: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+struct ScannerAssetsDownloadTarget {
+    asset_tag: String,
+    asset_url: String,
+    package_file_name: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct GitHubRelease {
+    tag_name: String,
+    draft: bool,
+    prerelease: bool,
+    #[serde(default)]
+    assets: Vec<GitHubReleaseAsset>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct GitHubReleaseAsset {
+    name: String,
 }
 
 #[command]
@@ -221,10 +282,11 @@ pub fn scanner_assets_status(app: AppHandle) -> Result<ScannerAssetsStatus, Scan
 #[command]
 pub async fn scanner_assets_download(
     app: AppHandle,
+    request: ScannerAssetsDownloadRequest,
     progress_channel: Channel<ScannerAssetsProgress>,
 ) -> Result<ScannerAssetsInstallResult, ScannerAssetsError> {
-    let guard = match try_acquire_operation(OperationKind::Downloading) {
-        Ok(guard) => guard,
+    let (guard, cancel_requested) = match try_acquire_download_operation(request.operation_id) {
+        Ok(operation) => operation,
         Err(error) => {
             send_failed_progress(&progress_channel, error.clone());
             return Err(error);
@@ -241,7 +303,81 @@ pub async fn scanner_assets_download(
     let _guard = guard;
     finish_progress_operation(
         &progress_channel,
-        download_and_install(paths, &progress_channel).await,
+        download_and_install(
+            paths,
+            expected_download_target(),
+            &progress_channel,
+            cancel_requested,
+        )
+        .await,
+    )
+}
+
+#[command]
+pub fn scanner_assets_cancel(
+    _app: AppHandle,
+    request: ScannerAssetsCancelRequest,
+) -> Result<(), ScannerAssetsError> {
+    request_operation_cancel(&request.operation_id);
+    Ok(())
+}
+
+#[command]
+pub async fn scanner_assets_check_update(
+    app: AppHandle,
+) -> Result<ScannerAssetsUpdateCheck, ScannerAssetsError> {
+    let paths = resolve_asset_paths(&app)?;
+    let current_asset_version = if paths.current_dir.exists() {
+        inspect_current_install(&paths.current_dir)
+            .map(|summary| summary.asset_version)
+            .ok()
+    } else {
+        None
+    };
+    let target = latest_official_release_target().await?;
+
+    Ok(ScannerAssetsUpdateCheck {
+        platform_target: scanner_platform::platform_target().to_string(),
+        update_available: is_update_available(current_asset_version.as_deref(), &target.asset_tag),
+        current_asset_version,
+        target_asset_tag: target.asset_tag,
+    })
+}
+
+#[command]
+pub async fn scanner_assets_download_update(
+    app: AppHandle,
+    request: ScannerAssetsDownloadRequest,
+    progress_channel: Channel<ScannerAssetsProgress>,
+) -> Result<ScannerAssetsInstallResult, ScannerAssetsError> {
+    let (guard, cancel_requested) = match try_acquire_download_operation(request.operation_id) {
+        Ok(operation) => operation,
+        Err(error) => {
+            send_failed_progress(&progress_channel, error.clone());
+            return Err(error);
+        }
+    };
+    let paths = match resolve_asset_paths(&app) {
+        Ok(paths) => paths,
+        Err(error) => {
+            send_failed_progress(&progress_channel, error.clone());
+            return Err(error);
+        }
+    };
+
+    let target = match latest_official_release_target().await {
+        Ok(target) => target,
+        Err(error) => {
+            set_last_error(error.clone());
+            send_failed_progress(&progress_channel, error.clone());
+            return Err(error);
+        }
+    };
+
+    let _guard = guard;
+    finish_progress_operation(
+        &progress_channel,
+        download_and_install(paths, target, &progress_channel, cancel_requested).await,
     )
 }
 
@@ -290,6 +426,24 @@ pub async fn scanner_assets_import(
     }
 }
 
+#[command]
+pub fn scanner_assets_clear(app: AppHandle) -> Result<(), ScannerAssetsError> {
+    let guard = try_acquire_operation(OperationKind::Clearing)?;
+    let paths = resolve_asset_paths(&app)?;
+    let _guard = guard;
+
+    match clear_installed_assets(&paths) {
+        Ok(()) => {
+            clear_last_error();
+            Ok(())
+        }
+        Err(error) => {
+            set_last_error(error.clone());
+            Err(error)
+        }
+    }
+}
+
 pub fn installed_assets_current_dir_from_app(app: &AppHandle) -> Option<PathBuf> {
     app.path()
         .app_data_dir()
@@ -327,33 +481,164 @@ fn platform_archive_extension() -> &'static str {
 }
 
 fn platform_package_file_name() -> String {
+    platform_package_file_name_for_tag(EXPECTED_SCANNER_ASSET_TAG)
+}
+
+fn platform_package_file_name_for_tag(tag: &str) -> String {
     format!(
         "{}-{}.{}",
         scanner_platform::platform_target(),
-        EXPECTED_SCANNER_ASSET_TAG,
+        tag,
         platform_archive_extension()
     )
 }
 
 fn default_asset_url() -> String {
+    official_release_asset_url(EXPECTED_SCANNER_ASSET_TAG, &platform_package_file_name())
+}
+
+fn official_release_asset_url(tag: &str, package_file_name: &str) -> String {
     format!(
         "https://github.com/{}/{}/releases/download/{}/{}",
-        SCANNER_ASSETS_REPO_OWNER,
-        SCANNER_ASSETS_REPO_NAME,
-        EXPECTED_SCANNER_ASSET_TAG,
-        platform_package_file_name()
+        SCANNER_ASSETS_REPO_OWNER, SCANNER_ASSETS_REPO_NAME, tag, package_file_name
     )
 }
 
-fn operation_state() -> &'static Mutex<Option<OperationKind>> {
-    static STATE: OnceLock<Mutex<Option<OperationKind>>> = OnceLock::new();
+fn expected_download_target() -> ScannerAssetsDownloadTarget {
+    let package_file_name = platform_package_file_name();
+    ScannerAssetsDownloadTarget {
+        asset_tag: EXPECTED_SCANNER_ASSET_TAG.to_string(),
+        asset_url: official_release_asset_url(EXPECTED_SCANNER_ASSET_TAG, &package_file_name),
+        package_file_name,
+    }
+}
+
+async fn latest_official_release_target() -> Result<ScannerAssetsDownloadTarget, ScannerAssetsError>
+{
+    let releases = fetch_official_releases().await?;
+    select_latest_release_target(&releases).ok_or_else(|| {
+        ScannerAssetsError::with_details(
+            "assets.update.checkFailed",
+            true,
+            format!(
+                "No stable scanner asset release with {} was found.",
+                platform_package_file_name_for_tag("<tag>")
+            ),
+        )
+    })
+}
+
+async fn fetch_official_releases() -> Result<Vec<GitHubRelease>, ScannerAssetsError> {
+    let url = format!(
+        "https://api.github.com/repos/{}/{}/releases?per_page=100",
+        SCANNER_ASSETS_REPO_OWNER, SCANNER_ASSETS_REPO_NAME
+    );
+    let client = reqwest::Client::builder()
+        .user_agent("skid-homework-assets/0.1")
+        .connect_timeout(DOWNLOAD_CONNECT_TIMEOUT)
+        .read_timeout(DOWNLOAD_READ_TIMEOUT)
+        .build()
+        .map_err(|error| {
+            ScannerAssetsError::with_details(
+                "assets.update.checkFailed",
+                true,
+                format!("Failed to build GitHub release client: {error}"),
+            )
+        })?;
+    let response = client.get(&url).send().await.map_err(|error| {
+        ScannerAssetsError::with_details(
+            "assets.update.checkFailed",
+            true,
+            format!("Failed to check scanner asset releases: {error}"),
+        )
+    })?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(ScannerAssetsError::with_details(
+            "assets.update.checkFailed",
+            true,
+            format!("Scanner asset release check returned HTTP status {status}."),
+        ));
+    }
+    let body = response.text().await.map_err(|error| {
+        ScannerAssetsError::with_details(
+            "assets.update.checkFailed",
+            true,
+            format!("Failed to read scanner asset release response: {error}"),
+        )
+    })?;
+    serde_json::from_str(&body).map_err(|error| {
+        ScannerAssetsError::with_details(
+            "assets.update.checkFailed",
+            true,
+            format!("Failed to parse scanner asset release response: {error}"),
+        )
+    })
+}
+
+fn select_latest_release_target(releases: &[GitHubRelease]) -> Option<ScannerAssetsDownloadTarget> {
+    releases
+        .iter()
+        .filter(|release| !release.draft && !release.prerelease)
+        .filter_map(|release| {
+            let version = parse_stable_semver_tag(&release.tag_name)?;
+            let package_file_name = platform_package_file_name_for_tag(&release.tag_name);
+            let _asset = release
+                .assets
+                .iter()
+                .find(|asset| asset.name == package_file_name)?;
+            Some((
+                version,
+                ScannerAssetsDownloadTarget {
+                    asset_tag: release.tag_name.clone(),
+                    asset_url: official_release_asset_url(&release.tag_name, &package_file_name),
+                    package_file_name,
+                },
+            ))
+        })
+        .max_by_key(|(version, _)| *version)
+        .map(|(_, target)| target)
+}
+
+fn parse_stable_semver_tag(tag: &str) -> Option<(u64, u64, u64)> {
+    let version = tag.strip_prefix('v').unwrap_or(tag);
+    if version.contains('-') || version.contains('+') {
+        return None;
+    }
+    let mut parts = version.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next()?.parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((major, minor, patch))
+}
+
+fn is_update_available(current_asset_version: Option<&str>, target_tag: &str) -> bool {
+    let Some(current_asset_version) = current_asset_version else {
+        return true;
+    };
+    match (
+        parse_stable_semver_tag(current_asset_version),
+        parse_stable_semver_tag(target_tag),
+    ) {
+        (Some(current), Some(target)) => current < target,
+        _ => current_asset_version != target_tag,
+    }
+}
+
+fn operation_state() -> &'static Mutex<Option<ActiveOperationState>> {
+    static STATE: OnceLock<Mutex<Option<ActiveOperationState>>> = OnceLock::new();
     STATE.get_or_init(|| Mutex::new(None))
 }
 
 fn current_operation() -> Option<OperationKind> {
-    *operation_state()
+    operation_state()
         .lock()
         .expect("scanner asset operation mutex should not be poisoned")
+        .as_ref()
+        .map(|active| active.kind)
 }
 
 fn try_acquire_operation(kind: OperationKind) -> Result<OperationGuard, ScannerAssetsError> {
@@ -368,8 +653,77 @@ fn try_acquire_operation(kind: OperationKind) -> Result<OperationGuard, ScannerA
         ));
     }
 
-    *state = Some(kind);
-    Ok(OperationGuard { kind })
+    *state = Some(ActiveOperationState {
+        kind,
+        operation_id: None,
+        cancel_requested: Arc::new(AtomicBool::new(false)),
+    });
+    Ok(OperationGuard {
+        kind,
+        operation_id: None,
+    })
+}
+
+fn try_acquire_download_operation(
+    operation_id: String,
+) -> Result<(OperationGuard, Arc<AtomicBool>), ScannerAssetsError> {
+    let mut state = operation_state()
+        .lock()
+        .expect("scanner asset operation mutex should not be poisoned");
+    if state.is_some() {
+        return Err(ScannerAssetsError::with_details(
+            "assets.operation.inProgress",
+            true,
+            "A scanner asset download or import operation is already in progress.",
+        ));
+    }
+
+    let cancel_requested = Arc::new(AtomicBool::new(false));
+    *state = Some(ActiveOperationState {
+        kind: OperationKind::Downloading,
+        operation_id: Some(operation_id.clone()),
+        cancel_requested: Arc::clone(&cancel_requested),
+    });
+    Ok((
+        OperationGuard {
+            kind: OperationKind::Downloading,
+            operation_id: Some(operation_id),
+        },
+        cancel_requested,
+    ))
+}
+
+fn request_operation_cancel(operation_id: &str) {
+    let state = operation_state()
+        .lock()
+        .expect("scanner asset operation mutex should not be poisoned");
+    if let Some(active) = state.as_ref() {
+        if active.kind == OperationKind::Downloading
+            && active.operation_id.as_deref() == Some(operation_id)
+        {
+            active.cancel_requested.store(true, Ordering::SeqCst);
+        }
+    }
+}
+
+fn cancelled_error() -> ScannerAssetsError {
+    ScannerAssetsError::with_details(
+        ERROR_OPERATION_CANCELLED,
+        false,
+        "Scanner asset operation was cancelled.",
+    )
+}
+
+fn check_cancelled(cancel_requested: &AtomicBool) -> Result<(), ScannerAssetsError> {
+    if cancel_requested.load(Ordering::SeqCst) {
+        Err(cancelled_error())
+    } else {
+        Ok(())
+    }
+}
+
+fn is_cancelled_error(error: &ScannerAssetsError) -> bool {
+    error.code == ERROR_OPERATION_CANCELLED
 }
 
 fn last_error_state() -> &'static Mutex<Option<ScannerAssetsError>> {
@@ -435,7 +789,11 @@ fn finish_progress_operation<T>(
             Ok(value)
         }
         Err(error) => {
-            set_last_error(error.clone());
+            if is_cancelled_error(&error) {
+                clear_last_error();
+            } else {
+                set_last_error(error.clone());
+            }
             send_failed_progress(channel, error.clone());
             Err(error)
         }
@@ -444,7 +802,9 @@ fn finish_progress_operation<T>(
 
 async fn download_and_install(
     paths: ScannerAssetPaths,
+    target: ScannerAssetsDownloadTarget,
     channel: &Channel<ScannerAssetsProgress>,
+    cancel_requested: Arc<AtomicBool>,
 ) -> Result<ScannerAssetsInstallResult, ScannerAssetsError> {
     fs::create_dir_all(&paths.assets_dir).map_err(|error| {
         ScannerAssetsError::with_details(
@@ -457,40 +817,50 @@ async fn download_and_install(
         )
     })?;
 
-    let url = default_asset_url();
     let archive_path = paths.assets_dir.join(format!(
         ".download-{}",
-        platform_package_file_name().replace('/', "-")
+        target.package_file_name.replace('/', "-")
     ));
 
-    let result = match download_archive_to_path(&url, &archive_path, channel).await {
-        Ok(()) => {
-            let paths_for_install = paths.clone();
-            let archive_path_for_install = archive_path.clone();
-            let channel_for_install = channel.clone();
-            tauri::async_runtime::spawn_blocking(move || {
-                install_archive(
-                    &paths_for_install,
-                    &archive_path_for_install,
-                    &channel_for_install,
-                )
-            })
-            .await
-            .map_err(|error| {
-                ScannerAssetsError::with_details(
-                    "assets.operation.taskFailed",
-                    true,
-                    format!("Scanner asset install task failed: {error}"),
-                )
-            })?
-        }
+    let result = match download_archive_to_path(
+        &target.asset_url,
+        &archive_path,
+        channel,
+        &cancel_requested,
+    )
+    .await
+    {
+        Ok(()) => match check_cancelled(&cancel_requested) {
+            Ok(()) => {
+                let paths_for_install = paths.clone();
+                let archive_path_for_install = archive_path.clone();
+                let channel_for_install = channel.clone();
+                let cancel_requested_for_install = Arc::clone(&cancel_requested);
+                let target_asset_tag = target.asset_tag.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    install_archive(
+                        &paths_for_install,
+                        &archive_path_for_install,
+                        &channel_for_install,
+                        Some(cancel_requested_for_install.as_ref()),
+                        ManifestVersionPolicy::RequireTag(target_asset_tag),
+                    )
+                })
+                .await
+                .map_err(|error| {
+                    ScannerAssetsError::with_details(
+                        "assets.operation.taskFailed",
+                        true,
+                        format!("Scanner asset install task failed: {error}"),
+                    )
+                })?
+            }
+            Err(error) => Err(error),
+        },
         Err(error) => Err(error),
     };
 
-    let _ = fs::remove_file(&archive_path);
-    if result.is_err() {
-        let _ = fs::remove_dir_all(&paths.staging_dir);
-    }
+    cleanup_failed_download(&paths, &archive_path, result.is_err());
     result
 }
 
@@ -498,7 +868,9 @@ async fn download_archive_to_path(
     url: &str,
     archive_path: &Path,
     channel: &Channel<ScannerAssetsProgress>,
+    cancel_requested: &AtomicBool,
 ) -> Result<(), ScannerAssetsError> {
+    check_cancelled(cancel_requested)?;
     send_phase_progress(channel, "fetching");
     let client = reqwest::Client::builder()
         .user_agent("skid-homework-assets/0.1")
@@ -528,6 +900,7 @@ async fn download_archive_to_path(
         ));
     }
 
+    check_cancelled(cancel_requested)?;
     let bytes_total = response.content_length();
     let file = File::create(archive_path).map_err(|error| {
         ScannerAssetsError::with_details(
@@ -542,13 +915,19 @@ async fn download_archive_to_path(
     let mut writer = BufWriter::new(file);
     let mut bytes_done = 0_u64;
 
-    while let Some(chunk) = response.chunk().await.map_err(|error| {
-        ScannerAssetsError::with_details(
-            "assets.download.fetch.networkFailed",
-            true,
-            format!("Failed while reading scanner asset package response: {error}"),
-        )
-    })? {
+    loop {
+        check_cancelled(cancel_requested)?;
+        let Some(chunk) = response.chunk().await.map_err(|error| {
+            ScannerAssetsError::with_details(
+                "assets.download.fetch.networkFailed",
+                true,
+                format!("Failed while reading scanner asset package response: {error}"),
+            )
+        })?
+        else {
+            break;
+        };
+        check_cancelled(cancel_requested)?;
         if chunk.is_empty() {
             continue;
         }
@@ -570,6 +949,7 @@ async fn download_archive_to_path(
             },
         );
     }
+    check_cancelled(cancel_requested)?;
     writer.flush().map_err(|error| {
         ScannerAssetsError::with_details(
             "assets.download.fetch.writeFailed",
@@ -579,6 +959,58 @@ async fn download_archive_to_path(
     })?;
 
     Ok(())
+}
+
+fn cleanup_failed_download(paths: &ScannerAssetPaths, archive_path: &Path, failed: bool) {
+    let _ = fs::remove_file(archive_path);
+    if failed {
+        let _ = fs::remove_dir_all(&paths.staging_dir);
+    }
+}
+
+fn clear_installed_assets(paths: &ScannerAssetPaths) -> Result<(), ScannerAssetsError> {
+    remove_path_if_exists(&paths.current_dir).map_err(|error| {
+        ScannerAssetsError::with_details(
+            "assets.clear.removeFailed",
+            true,
+            format!(
+                "Failed to remove installed scanner assets at {}: {error}",
+                scanner_resource::path_to_string(&paths.current_dir)
+            ),
+        )
+    })?;
+
+    cleanup_transient_asset_paths(paths);
+    clear_last_error();
+    Ok(())
+}
+
+fn cleanup_transient_asset_paths(paths: &ScannerAssetPaths) {
+    let _ = remove_path_if_exists(&paths.staging_dir);
+    let _ = remove_path_if_exists(&paths.backup_dir);
+
+    let Ok(entries) = fs::read_dir(&paths.assets_dir) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let file_name = entry.file_name();
+        let name = file_name.to_string_lossy();
+        if name.starts_with(".download-") || name.starts_with(&format!("{BACKUP_DIR_NAME}.")) {
+            let _ = remove_path_if_exists(&entry.path());
+        }
+    }
+}
+
+fn remove_path_if_exists(path: &Path) -> io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_dir() && !metadata.file_type().is_symlink() => {
+            fs::remove_dir_all(path)
+        }
+        Ok(_) => fs::remove_file(path),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
 }
 
 fn import_archive(
@@ -607,7 +1039,13 @@ fn import_archive(
             ));
         }
 
-        install_archive(&paths, &archive_path, channel)
+        install_archive(
+            &paths,
+            &archive_path,
+            channel,
+            None,
+            ManifestVersionPolicy::AllowAny,
+        )
     })();
 
     if result.is_err() {
@@ -643,17 +1081,28 @@ fn install_archive(
     paths: &ScannerAssetPaths,
     archive_path: &Path,
     channel: &Channel<ScannerAssetsProgress>,
+    cancel_requested: Option<&AtomicBool>,
+    version_policy: ManifestVersionPolicy,
 ) -> Result<ScannerAssetsInstallResult, ScannerAssetsError> {
     prepare_staging(paths)?;
 
     let result = (|| {
+        if let Some(cancel_requested) = cancel_requested {
+            check_cancelled(cancel_requested)?;
+        }
         send_phase_progress(channel, "unpacking");
         extract_archive_for_current_platform(archive_path, &paths.staging_dir)?;
 
+        if let Some(cancel_requested) = cancel_requested {
+            check_cancelled(cancel_requested)?;
+        }
         send_phase_progress(channel, "verifying");
-        let manifest = load_and_verify_install_root(&paths.staging_dir)?;
+        let manifest = load_and_verify_install_root(&paths.staging_dir, version_policy)?;
         let summary = manifest_summary(&manifest);
 
+        if let Some(cancel_requested) = cancel_requested {
+            check_cancelled(cancel_requested)?;
+        }
         send_phase_progress(channel, "activating");
         activate_staging(paths)?;
 
@@ -956,7 +1405,16 @@ fn extract_tar_gz_archive(
     Ok(())
 }
 
-fn load_and_verify_install_root(root: &Path) -> Result<ScannerAssetManifest, ScannerAssetsError> {
+#[derive(Debug, Clone)]
+enum ManifestVersionPolicy {
+    RequireTag(String),
+    AllowAny,
+}
+
+fn load_and_verify_install_root(
+    root: &Path,
+    version_policy: ManifestVersionPolicy,
+) -> Result<ScannerAssetManifest, ScannerAssetsError> {
     let manifest_path = root.join(MANIFEST_FILE_NAME);
     if !manifest_path.is_file() {
         return Err(ScannerAssetsError::with_details(
@@ -970,7 +1428,7 @@ fn load_and_verify_install_root(root: &Path) -> Result<ScannerAssetManifest, Sca
     }
 
     let manifest = parse_manifest_file(&manifest_path)?;
-    verify_manifest_metadata(&manifest)?;
+    verify_manifest_metadata(&manifest, version_policy)?;
     verify_declared_files(root, &manifest)?;
     verify_required_file_declarations(&manifest)?;
     Ok(manifest)
@@ -992,9 +1450,9 @@ fn inspect_current_install(
     }
 
     let manifest = parse_manifest_file(&manifest_path)?;
-    verify_manifest_metadata(&manifest)?;
+    verify_manifest_metadata(&manifest, ManifestVersionPolicy::AllowAny)?;
+    verify_declared_files(root, &manifest)?;
     verify_required_file_declarations(&manifest)?;
-    verify_required_files_exist(root, &manifest)?;
     Ok(manifest_summary(&manifest))
 }
 
@@ -1018,7 +1476,10 @@ fn parse_manifest_file(path: &Path) -> Result<ScannerAssetManifest, ScannerAsset
     })
 }
 
-fn verify_manifest_metadata(manifest: &ScannerAssetManifest) -> Result<(), ScannerAssetsError> {
+fn verify_manifest_metadata(
+    manifest: &ScannerAssetManifest,
+    version_policy: ManifestVersionPolicy,
+) -> Result<(), ScannerAssetsError> {
     if manifest.schema_version != 1 {
         return Err(ScannerAssetsError::with_details(
             "assets.install.manifest.invalid",
@@ -1029,15 +1490,17 @@ fn verify_manifest_metadata(manifest: &ScannerAssetManifest) -> Result<(), Scann
             ),
         ));
     }
-    if manifest.asset_version != EXPECTED_SCANNER_ASSET_TAG {
-        return Err(ScannerAssetsError::with_details(
-            "assets.install.manifest.versionMismatch",
-            false,
-            format!(
-                "Scanner asset package version {} does not match expected tag {}.",
-                manifest.asset_version, EXPECTED_SCANNER_ASSET_TAG
-            ),
-        ));
+    if let ManifestVersionPolicy::RequireTag(expected_tag) = version_policy {
+        if manifest.asset_version != expected_tag {
+            return Err(ScannerAssetsError::with_details(
+                "assets.install.manifest.versionMismatch",
+                false,
+                format!(
+                    "Scanner asset package version {} does not match expected tag {}.",
+                    manifest.asset_version, expected_tag
+                ),
+            ));
+        }
     }
     if manifest.platform_target != scanner_platform::platform_target() {
         return Err(ScannerAssetsError::with_details(
@@ -1165,29 +1628,6 @@ fn verify_required_file_declarations(
                 "assets.install.verify.fileMissing",
                 false,
                 format!("Required scanner asset is not declared: {required_path}."),
-            ));
-        }
-    }
-
-    Ok(())
-}
-
-fn verify_required_files_exist(
-    root: &Path,
-    manifest: &ScannerAssetManifest,
-) -> Result<(), ScannerAssetsError> {
-    for file in &manifest.files {
-        let safe_relative_path = validate_manifest_relative_path(&file.path)?;
-        let resolved_path = root.join(safe_relative_path);
-        if !resolved_path.is_file() {
-            return Err(ScannerAssetsError::with_details(
-                "assets.install.verify.fileMissing",
-                false,
-                format!(
-                    "Manifest entry {} is missing at {}.",
-                    file.path,
-                    scanner_resource::path_to_string(&resolved_path)
-                ),
             ));
         }
     }

@@ -45,6 +45,10 @@ mod scanner_assets_under_test {
         }
 
         fn write_complete_install_root(root: &Path) {
+            write_complete_install_root_with_version(root, EXPECTED_SCANNER_ASSET_TAG);
+        }
+
+        fn write_complete_install_root_with_version(root: &Path, asset_version: &str) {
             let mut files = Vec::new();
 
             for relative_path in required_asset_paths_for_current_platform() {
@@ -62,7 +66,7 @@ mod scanner_assets_under_test {
 
             let manifest = serde_json::json!({
                 "schemaVersion": 1,
-                "assetVersion": EXPECTED_SCANNER_ASSET_TAG,
+                "assetVersion": asset_version,
                 "platformTarget": scanner_platform::platform_target(),
                 "files": files,
             });
@@ -71,6 +75,23 @@ mod scanner_assets_under_test {
                 serde_json::to_vec_pretty(&manifest).unwrap(),
             )
             .unwrap();
+        }
+
+        fn github_release(
+            tag_name: &str,
+            draft: bool,
+            prerelease: bool,
+            asset_names: &[String],
+        ) -> GitHubRelease {
+            GitHubRelease {
+                tag_name: tag_name.to_string(),
+                draft,
+                prerelease,
+                assets: asset_names
+                    .iter()
+                    .map(|name| GitHubReleaseAsset { name: name.clone() })
+                    .collect(),
+            }
         }
 
         #[test]
@@ -84,6 +105,70 @@ mod scanner_assets_under_test {
             assert!(default_asset_url().ends_with(&file_name));
             assert!(default_asset_url().starts_with(&expected_release_prefix));
             assert!(!default_asset_url().contains("/latest/"));
+        }
+
+        #[test]
+        fn release_target_selection_uses_latest_stable_platform_asset() {
+            let v010 = platform_package_file_name_for_tag("v0.1.0");
+            let v020 = platform_package_file_name_for_tag("v0.2.0");
+            let v100 = platform_package_file_name_for_tag("v1.0.0");
+            let releases = vec![
+                github_release(
+                    "v0.2.0-rc.1",
+                    false,
+                    true,
+                    &[platform_package_file_name_for_tag("v0.2.0-rc.1")],
+                ),
+                github_release("v1.0.0", true, false, &[v100]),
+                github_release(
+                    "v0.10.0",
+                    false,
+                    false,
+                    &[platform_package_file_name_for_tag("other")],
+                ),
+                github_release("v0.1.0", false, false, &[v010]),
+                github_release("v0.2.0", false, false, &[v020.clone()]),
+            ];
+
+            let target = select_latest_release_target(&releases).unwrap();
+
+            assert_eq!(target.asset_tag, "v0.2.0");
+            assert_eq!(target.package_file_name, v020);
+            assert_eq!(
+                target.asset_url,
+                official_release_asset_url("v0.2.0", &target.package_file_name)
+            );
+        }
+
+        #[test]
+        fn release_target_selection_handles_semver_ordering() {
+            let releases = vec![
+                github_release(
+                    "v0.9.0",
+                    false,
+                    false,
+                    &[platform_package_file_name_for_tag("v0.9.0")],
+                ),
+                github_release(
+                    "v0.10.0",
+                    false,
+                    false,
+                    &[platform_package_file_name_for_tag("v0.10.0")],
+                ),
+            ];
+
+            let target = select_latest_release_target(&releases).unwrap();
+
+            assert_eq!(target.asset_tag, "v0.10.0");
+        }
+
+        #[test]
+        fn update_available_compares_against_official_target_without_downgrading() {
+            assert!(is_update_available(None, "v0.2.0"));
+            assert!(is_update_available(Some("v0.1.0"), "v0.2.0"));
+            assert!(!is_update_available(Some("v0.2.0"), "v0.2.0"));
+            assert!(!is_update_available(Some("v9.9.9"), "v0.2.0"));
+            assert!(is_update_available(Some("custom-build"), "v0.2.0"));
         }
 
         #[test]
@@ -115,7 +200,8 @@ mod scanner_assets_under_test {
                 files: vec![manifest_file("models/uvdoc-best-model.onnx", b"model")],
             };
 
-            let error = verify_manifest_metadata(&manifest).expect_err("schema version must fail");
+            let error = verify_manifest_metadata(&manifest, ManifestVersionPolicy::AllowAny)
+                .expect_err("schema version must fail");
             assert_eq!(error.code, "assets.install.manifest.invalid");
         }
 
@@ -150,9 +236,40 @@ mod scanner_assets_under_test {
                 files: vec![manifest_file("models/uvdoc-best-model.onnx", b"model")],
             };
 
-            let error =
-                verify_manifest_metadata(&manifest).expect_err("platform mismatch must fail");
+            let error = verify_manifest_metadata(&manifest, ManifestVersionPolicy::AllowAny)
+                .expect_err("platform mismatch must fail");
             assert_eq!(error.code, "assets.install.manifest.platformMismatch");
+        }
+
+        #[test]
+        fn strict_manifest_metadata_rejects_version_mismatch() {
+            let manifest = ScannerAssetManifest {
+                schema_version: 1,
+                asset_version: "v9.9.9".to_string(),
+                platform_target: scanner_platform::platform_target().to_string(),
+                files: vec![manifest_file("models/uvdoc-best-model.onnx", b"model")],
+            };
+
+            let error = verify_manifest_metadata(
+                &manifest,
+                ManifestVersionPolicy::RequireTag(EXPECTED_SCANNER_ASSET_TAG.to_string()),
+            )
+            .expect_err("strict download validation must reject mismatched versions");
+
+            assert_eq!(error.code, "assets.install.manifest.versionMismatch");
+        }
+
+        #[test]
+        fn relaxed_manifest_metadata_accepts_version_mismatch() {
+            let manifest = ScannerAssetManifest {
+                schema_version: 1,
+                asset_version: "v9.9.9".to_string(),
+                platform_target: scanner_platform::platform_target().to_string(),
+                files: vec![manifest_file("models/uvdoc-best-model.onnx", b"model")],
+            };
+
+            verify_manifest_metadata(&manifest, ManifestVersionPolicy::AllowAny)
+                .expect("local import and status validation should allow a different assetVersion");
         }
 
         #[test]
@@ -208,32 +325,122 @@ mod scanner_assets_under_test {
         }
 
         #[test]
-        fn operation_mutex_rejects_concurrent_operations() {
+        fn operation_mutex_rejects_concurrent_operations_and_cancel_targets_download() {
             let guard = try_acquire_operation(OperationKind::Importing).unwrap();
-            let error = try_acquire_operation(OperationKind::Downloading)
+            let error = try_acquire_operation(OperationKind::Clearing)
                 .expect_err("second operation must fail");
             assert_eq!(error.code, "assets.operation.inProgress");
             drop(guard);
 
-            let guard = try_acquire_operation(OperationKind::Downloading).unwrap();
+            let (guard, cancel_requested) =
+                try_acquire_download_operation("download-op".to_string()).unwrap();
+            request_operation_cancel("stale-op");
+            assert!(!cancel_requested.load(Ordering::SeqCst));
+            request_operation_cancel("download-op");
+            assert!(cancel_requested.load(Ordering::SeqCst));
             drop(guard);
         }
 
         #[test]
-        fn cleanup_staging_preserves_current_directory() {
+        fn cancellation_error_is_not_retryable() {
+            let cancel_requested = AtomicBool::new(true);
+            let error = check_cancelled(&cancel_requested).expect_err("cancelled must fail");
+
+            assert_eq!(error.code, ERROR_OPERATION_CANCELLED);
+            assert!(!error.retryable);
+        }
+
+        #[test]
+        fn failed_download_cleanup_preserves_current_directory() {
             let temp_dir = tempfile::tempdir().unwrap();
             let paths = asset_paths_from_app_data_dir(temp_dir.path().to_path_buf());
             fs::create_dir_all(&paths.current_dir).unwrap();
             fs::write(paths.current_dir.join("marker"), b"current").unwrap();
             fs::create_dir_all(&paths.staging_dir).unwrap();
             fs::write(paths.staging_dir.join("marker"), b"staging").unwrap();
+            let archive_path = paths.assets_dir.join(".download-test");
+            fs::write(&archive_path, b"download").unwrap();
 
-            fs::remove_dir_all(&paths.staging_dir).unwrap();
+            cleanup_failed_download(&paths, &archive_path, true);
 
             assert_eq!(
                 fs::read(paths.current_dir.join("marker")).unwrap(),
                 b"current"
             );
+            assert!(!paths.staging_dir.exists());
+            assert!(!archive_path.exists());
+        }
+
+        #[test]
+        fn clear_installed_assets_removes_current_and_transient_residue() {
+            let temp_dir = tempfile::tempdir().unwrap();
+            let paths = asset_paths_from_app_data_dir(temp_dir.path().to_path_buf());
+            fs::create_dir_all(&paths.current_dir).unwrap();
+            fs::write(paths.current_dir.join("marker"), b"current").unwrap();
+            fs::create_dir_all(&paths.staging_dir).unwrap();
+            fs::write(paths.staging_dir.join("marker"), b"staging").unwrap();
+            fs::create_dir_all(&paths.backup_dir).unwrap();
+            fs::write(paths.backup_dir.join("marker"), b"backup").unwrap();
+            let numbered_backup = paths.assets_dir.join("current.previous.1");
+            fs::create_dir_all(&numbered_backup).unwrap();
+            fs::write(numbered_backup.join("marker"), b"backup").unwrap();
+            let archive_path = paths.assets_dir.join(".download-test");
+            fs::write(&archive_path, b"download").unwrap();
+            set_last_error(ScannerAssetsError::with_details(
+                "assets.install.verify.fileMissing",
+                true,
+                "stale error",
+            ));
+
+            clear_installed_assets(&paths).unwrap();
+
+            assert!(paths.assets_dir.exists());
+            assert!(!paths.current_dir.exists());
+            assert!(!paths.staging_dir.exists());
+            assert!(!paths.backup_dir.exists());
+            assert!(!numbered_backup.exists());
+            assert!(!archive_path.exists());
+            assert!(last_error().is_none());
+        }
+
+        #[test]
+        fn strict_install_root_rejects_different_asset_version() {
+            let temp_dir = tempfile::tempdir().unwrap();
+            write_complete_install_root_with_version(temp_dir.path(), "v9.9.9");
+
+            let error = load_and_verify_install_root(
+                temp_dir.path(),
+                ManifestVersionPolicy::RequireTag(EXPECTED_SCANNER_ASSET_TAG.to_string()),
+            )
+            .expect_err("download install validation must reject mismatched versions");
+
+            assert_eq!(error.code, "assets.install.manifest.versionMismatch");
+        }
+
+        #[test]
+        fn relaxed_install_root_accepts_different_asset_version() {
+            let temp_dir = tempfile::tempdir().unwrap();
+            write_complete_install_root_with_version(temp_dir.path(), "v9.9.9");
+
+            let manifest =
+                load_and_verify_install_root(temp_dir.path(), ManifestVersionPolicy::AllowAny)
+                    .expect("local import validation should accept a different assetVersion");
+
+            assert_eq!(manifest.asset_version, "v9.9.9");
+        }
+
+        #[test]
+        fn inspect_current_install_reports_different_asset_version_as_ready() {
+            let temp_dir = tempfile::tempdir().unwrap();
+            let paths = asset_paths_from_app_data_dir(temp_dir.path().to_path_buf());
+            fs::create_dir_all(&paths.current_dir).unwrap();
+            write_complete_install_root_with_version(&paths.current_dir, "v9.9.9");
+
+            let summary = inspect_current_install(&paths.current_dir).unwrap();
+
+            assert_eq!(summary.schema_version, 1);
+            assert_eq!(summary.asset_version, "v9.9.9");
+            assert_eq!(summary.platform_target, scanner_platform::platform_target());
         }
 
         #[test]

@@ -826,13 +826,21 @@
       "invalid": "Invalid",
       "downloading": "Downloading...",
       "importing": "Importing...",
-      "cpu-fallback": "CPU Fallback"
+      "clearing": "Clearing...",
+      "cpu-fallback": "CPU"
     },
     "actions": {
       "download": "Download",
       "update": "Update",
+      "check-update": "Check for Updates",
+      "up-to-date": "Already up to date",
+      "update-to": "Update to {{version}}",
+      "install-version": "Install {{version}}",
+      "clear": "Clear downloaded assets",
+      "confirm-clear": "Confirm clear?",
       "import": "Import Local Package",
-      "retry": "Retry"
+      "retry": "Retry",
+      "cancel": "Cancel"
     },
     "phases": {
       "fetching": "Downloading package...",
@@ -843,7 +851,63 @@
       "failed": "Failed"
     },
     "error": {
-      "title": "Operation Failed"
+      "title": "Operation Failed",
+      "unknown": "Scanner operation failed ({{code}}).",
+      "diagnostic-code": "Code: {{code}}",
+      "diagnostic-details": "Diagnostic: {{details}}",
+      "codes": {
+        "assets": {
+          "operation": {
+            "cancelled": "Operation cancelled.",
+            "inProgress": "A scanner asset operation is already in progress. Try again later.",
+            "taskFailed": "The scanner asset task stopped unexpectedly."
+          },
+          "clear": {
+            "removeFailed": "Could not clear installed scanner assets. Close files that may be using them and retry."
+          },
+          "update": {
+            "checkFailed": "Could not check for scanner asset updates. Check your network and retry."
+          },
+          "import": {
+            "archive": {
+              "openFailed": "Could not open the local scanner asset package.",
+              "formatMismatch": "The local asset package format does not match this platform."
+            }
+          },
+          "install": {
+            "manifest": {
+              "missing": "The asset package is missing manifest.json.",
+              "invalid": "The asset package manifest.json is invalid.",
+              "versionMismatch": "The asset package version does not match this app.",
+              "platformMismatch": "The asset package platform does not match this device."
+            },
+            "verify": {
+              "unsafePath": "The asset package contains an unsafe file path.",
+              "fileMissing": "The asset package is missing a required file.",
+              "sizeMismatch": "The asset package file size check failed.",
+              "checksumMismatch": "The asset package checksum does not match."
+            },
+            "activate": {
+              "replaceFailed": "Could not activate the new scanner assets. Existing assets were preserved."
+            }
+          },
+          "download": {
+            "fetch": {
+              "networkFailed": "Could not download scanner assets. Check your network and retry.",
+              "httpStatus": "The download server returned an error status.",
+              "writeFailed": "Could not write the downloaded scanner asset package."
+            }
+          },
+          "status": {
+            "resolveDataDirFailed": "Could not resolve the app data directory."
+          }
+        },
+        "runtime": {
+          "probe": {
+            "taskFailed": "The scanner runtime diagnostics task stopped unexpectedly."
+          }
+        }
+      }
     },
     "import": {
       "filter-label": "Scanner Asset Package"
@@ -854,7 +918,10 @@
     },
     "diagnostics": {
       "title": "Advanced Diagnostics",
-      "runtime-path": "Runtime Library Path",
+      "resource-base-dir": "Resource Directory",
+      "selected-runtime-path": "Selected Runtime Library Path",
+      "loaded-runtime-path": "Loaded Runtime Library Path",
+      "compat-runtime-path": "Runtime Library Path (Compatibility)",
       "build-info": "ORT Build Info",
       "providers": "Available Providers",
       "runtime-error": "Runtime Error",

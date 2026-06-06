@@ -26,7 +26,11 @@ pub fn run() {
         adb_plugin::tauri_adb_screenshot,
         scanner_assets::scanner_assets_status,
         scanner_assets::scanner_assets_download,
+        scanner_assets::scanner_assets_download_update,
+        scanner_assets::scanner_assets_cancel,
         scanner_assets::scanner_assets_import,
+        scanner_assets::scanner_assets_clear,
+        scanner_assets::scanner_assets_check_update,
         scanner_ort::scanner_probe_ort,
     ]);
 
