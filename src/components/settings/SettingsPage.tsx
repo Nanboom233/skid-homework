@@ -16,6 +16,7 @@ import { useHotkeys } from "react-hotkeys-hook";
 import { useTranslation } from "react-i18next";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { useAvailableModels } from "@/hooks/use-available-models";
+import { PlatformScannerSettingsCard } from "@/platform";
 import ShortcutRecorder from "./ShortcutRecorder";
 import { useTheme } from "../theme-provider";
 import { Button } from "../ui/button";
@@ -700,6 +701,8 @@ export default function SettingsPage() {
             </div>
           </CardContent>
         </Card>
+
+        <PlatformScannerSettingsCard />
 
         <Card>
           <CardHeader>

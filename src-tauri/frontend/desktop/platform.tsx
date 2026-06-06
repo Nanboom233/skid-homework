@@ -288,3 +288,5 @@ export function PlatformCaptureActions({
 
 export { default as PlatformInitPage } from "@/components/init/InitWizard";
 export { default as PlatformInitGuard } from "@/components/guards/RequireInit";
+export { default as PlatformScannerSetupStep } from "./components/init/ScannerSetupStep";
+export { default as PlatformScannerSettingsCard } from "./components/settings/ScannerSettingsCard";

@@ -30,3 +30,6 @@ export function PlatformCaptureActions(
 export { default as PlatformInitPage } from "@/components/init/MobileInitWizard";
 export { default as PlatformInitGuard } from "@/components/guards/RequireInit";
 
+export function PlatformScannerSetupStep() { return null; }
+export function PlatformScannerSettingsCard() { return null; }
+

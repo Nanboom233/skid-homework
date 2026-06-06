@@ -23,3 +23,6 @@ export {WebCaptureActions as PlatformCaptureActions} from "./WebCaptureActions";
 
 export { default as PlatformInitPage } from "./WebInitPage";
 export { default as PlatformInitGuard } from "./WebInitGuard";
+
+export function PlatformScannerSetupStep() { return null; }
+export function PlatformScannerSettingsCard() { return null; }
