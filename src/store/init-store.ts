@@ -1,8 +1,6 @@
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 
-const TOTAL_STEPS = 4;
-
 export interface InitStore {
   initCompleted: boolean;
   setInitCompleted: (completed: boolean) => void;
@@ -29,7 +27,7 @@ export const useInitStore = create<InitStore>()(
         })),
       nextStep: () =>
         set((state) => ({
-          currentStep: Math.min(state.currentStep + 1, TOTAL_STEPS - 1),
+          currentStep: state.currentStep + 1,
           direction: 1,
         })),
       prevStep: () =>

@@ -1,0 +1,134 @@
+import {isTauri} from "./platform";
+
+export interface ScannerAssetsError {
+  code: string;
+  retryable: boolean;
+  details?: string;
+}
+
+export interface ScannerAssetsManifestSummary {
+  schemaVersion: number;
+  assetVersion: string;
+  platformTarget: string;
+}
+
+export interface ScannerAssetsStatus {
+  state: string;
+  platformTarget: string;
+  expectedAssetTag: string;
+  defaultAssetUrl: string;
+  currentDir?: string;
+  manifest?: ScannerAssetsManifestSummary;
+  lastError?: ScannerAssetsError;
+}
+
+export interface ScannerAssetsProgress {
+  phase: "fetching" | "unpacking" | "verifying" | "activating" | "completed" | "failed";
+  bytesDone?: number;
+  bytesTotal?: number;
+  error?: ScannerAssetsError;
+}
+
+export interface ScannerAssetsInstallResult {
+  installed: boolean;
+  assetVersion: string;
+  platformTarget: string;
+  currentDir: string;
+}
+
+export interface ScannerOrtOutletStatus {
+  name: string;
+  dtype: string;
+  shape?: string;
+}
+
+export interface ScannerOrtModelStatus {
+  id: string;
+  role: string;
+  relativePath: string;
+  resolvedPath?: string;
+  fileExists: boolean;
+  sessionReady: boolean;
+  sessionError?: string;
+  inputs: ScannerOrtOutletStatus[];
+  outputs: ScannerOrtOutletStatus[];
+}
+
+export interface ScannerOrtResourceStatus {
+  relativePath: string;
+  resolvedPath?: string;
+  exists: boolean;
+  required: boolean;
+}
+
+export interface ScannerOrtProbeStatus {
+  stage: string;
+  platform: string;
+  platformTarget: string;
+  resourceResolutionSource: string;
+  resourceBaseDir?: string;
+  selectedRuntimeLibraryPath?: string;
+  loadedRuntimeLibraryPath?: string;
+  runtimeLibraryPath?: string;
+  runtimePathMismatch: boolean;
+  runtimeReady: boolean;
+  modelLoadReady: boolean;
+  preferredProvider: string;
+  preferredProviderReady: boolean;
+  providerCandidates: string[];
+  availableProviders: string[];
+  ortBuildInfo?: string;
+  runtimeError?: string;
+  resources: ScannerOrtResourceStatus[];
+  models: ScannerOrtModelStatus[];
+  message: string;
+}
+
+const invokeTauriCommand = async <T>(
+  command: string,
+  payload?: Record<string, unknown>,
+): Promise<T> => {
+  if (!isTauri()) {
+    throw new Error("Scanner commands are only available in Tauri desktop builds.");
+  }
+  const {invoke} = await import("@tauri-apps/api/core");
+  return await invoke<T>(command, payload);
+};
+
+export async function fetchScannerAssetsStatus(): Promise<ScannerAssetsStatus> {
+  return invokeTauriCommand<ScannerAssetsStatus>("scanner_assets_status");
+}
+
+export async function fetchScannerOrtProbe(): Promise<ScannerOrtProbeStatus> {
+  return invokeTauriCommand<ScannerOrtProbeStatus>("scanner_probe_ort");
+}
+
+export async function startScannerAssetsDownload(
+  onProgress: (progress: ScannerAssetsProgress) => void,
+): Promise<ScannerAssetsInstallResult> {
+  if (!isTauri()) {
+    throw new Error("Scanner commands are only available in Tauri desktop builds.");
+  }
+  const {invoke, Channel} = await import("@tauri-apps/api/core");
+  const channel = new Channel<ScannerAssetsProgress>();
+  channel.onmessage = onProgress;
+  return await invoke<ScannerAssetsInstallResult>("scanner_assets_download", {
+    progressChannel: channel,
+  });
+}
+
+export async function startScannerAssetsImport(
+  archivePath: string,
+  onProgress: (progress: ScannerAssetsProgress) => void,
+): Promise<ScannerAssetsInstallResult> {
+  if (!isTauri()) {
+    throw new Error("Scanner commands are only available in Tauri desktop builds.");
+  }
+  const {invoke, Channel} = await import("@tauri-apps/api/core");
+  const channel = new Channel<ScannerAssetsProgress>();
+  channel.onmessage = onProgress;
+  return await invoke<ScannerAssetsInstallResult>("scanner_assets_import", {
+    request: {archivePath},
+    progressChannel: channel,
+  });
+}
