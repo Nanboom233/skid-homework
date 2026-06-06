@@ -12,6 +12,7 @@ mod scanner_resource;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init());
 
     #[cfg(any(target_os = "windows", target_os = "linux"))]
