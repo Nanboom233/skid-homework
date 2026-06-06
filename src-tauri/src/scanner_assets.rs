@@ -4,6 +4,7 @@ use std::{
     io::{self, BufReader, BufWriter, Read, Write},
     path::{Component, Path, PathBuf},
     sync::{Mutex, OnceLock},
+    time::Duration,
 };
 
 use flate2::read::GzDecoder;
@@ -22,6 +23,8 @@ const CURRENT_DIR_NAME: &str = "current";
 const STAGING_DIR_NAME: &str = "staging";
 const BACKUP_DIR_NAME: &str = "current.previous";
 const DOWNLOAD_CHUNK_SIZE: usize = 64 * 1024;
+const DOWNLOAD_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+const DOWNLOAD_READ_TIMEOUT: Duration = Duration::from_secs(60);
 
 const COMMON_REQUIRED_ASSET_PATHS: &[&str] = &[
     "models/docaligner-fastvit_sa24.onnx",
@@ -112,12 +115,6 @@ pub struct ScannerAssetsProgress {
     pub bytes_total: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<ScannerAssetsError>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ScannerAssetsDownloadRequest {
-    pub asset_url_override: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -224,7 +221,6 @@ pub fn scanner_assets_status(app: AppHandle) -> Result<ScannerAssetsStatus, Scan
 #[command]
 pub async fn scanner_assets_download(
     app: AppHandle,
-    request: ScannerAssetsDownloadRequest,
     progress_channel: Channel<ScannerAssetsProgress>,
 ) -> Result<ScannerAssetsInstallResult, ScannerAssetsError> {
     let guard = match try_acquire_operation(OperationKind::Downloading) {
@@ -241,29 +237,12 @@ pub async fn scanner_assets_download(
             return Err(error);
         }
     };
-    let progress_channel_for_task = progress_channel.clone();
 
-    match tauri::async_runtime::spawn_blocking(move || {
-        let _guard = guard;
-        finish_progress_operation(
-            &progress_channel_for_task,
-            download_and_install(paths, request, &progress_channel_for_task),
-        )
-    })
-    .await
-    {
-        Ok(result) => result,
-        Err(error) => {
-            let error = ScannerAssetsError::with_details(
-                "assets.operation.taskFailed",
-                true,
-                format!("Scanner asset download task failed: {error}"),
-            );
-            set_last_error(error.clone());
-            send_failed_progress(&progress_channel, error.clone());
-            Err(error)
-        }
-    }
+    let _guard = guard;
+    finish_progress_operation(
+        &progress_channel,
+        download_and_install(paths, &progress_channel).await,
+    )
 }
 
 #[command]
@@ -463,9 +442,8 @@ fn finish_progress_operation<T>(
     }
 }
 
-fn download_and_install(
+async fn download_and_install(
     paths: ScannerAssetPaths,
-    request: ScannerAssetsDownloadRequest,
     channel: &Channel<ScannerAssetsProgress>,
 ) -> Result<ScannerAssetsInstallResult, ScannerAssetsError> {
     fs::create_dir_all(&paths.assets_dir).map_err(|error| {
@@ -479,22 +457,35 @@ fn download_and_install(
         )
     })?;
 
-    let url = request
-        .asset_url_override
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(default_asset_url);
+    let url = default_asset_url();
     let archive_path = paths.assets_dir.join(format!(
         ".download-{}",
         platform_package_file_name().replace('/', "-")
     ));
 
-    let result = (|| {
-        download_archive_to_path(&url, &archive_path, channel)?;
-        install_archive(&paths, &archive_path, channel)
-    })();
+    let result = match download_archive_to_path(&url, &archive_path, channel).await {
+        Ok(()) => {
+            let paths_for_install = paths.clone();
+            let archive_path_for_install = archive_path.clone();
+            let channel_for_install = channel.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                install_archive(
+                    &paths_for_install,
+                    &archive_path_for_install,
+                    &channel_for_install,
+                )
+            })
+            .await
+            .map_err(|error| {
+                ScannerAssetsError::with_details(
+                    "assets.operation.taskFailed",
+                    true,
+                    format!("Scanner asset install task failed: {error}"),
+                )
+            })?
+        }
+        Err(error) => Err(error),
+    };
 
     let _ = fs::remove_file(&archive_path);
     if result.is_err() {
@@ -503,14 +494,16 @@ fn download_and_install(
     result
 }
 
-fn download_archive_to_path(
+async fn download_archive_to_path(
     url: &str,
     archive_path: &Path,
     channel: &Channel<ScannerAssetsProgress>,
 ) -> Result<(), ScannerAssetsError> {
     send_phase_progress(channel, "fetching");
-    let client = reqwest::blocking::Client::builder()
+    let client = reqwest::Client::builder()
         .user_agent("skid-homework-assets/0.1")
+        .connect_timeout(DOWNLOAD_CONNECT_TIMEOUT)
+        .read_timeout(DOWNLOAD_READ_TIMEOUT)
         .build()
         .map_err(|error| {
             ScannerAssetsError::with_details(
@@ -519,7 +512,7 @@ fn download_archive_to_path(
                 format!("Failed to build HTTP client: {error}"),
             )
         })?;
-    let mut response = client.get(url).send().map_err(|error| {
+    let mut response = client.get(url).send().await.map_err(|error| {
         ScannerAssetsError::with_details(
             "assets.download.fetch.networkFailed",
             true,
@@ -547,28 +540,26 @@ fn download_archive_to_path(
         )
     })?;
     let mut writer = BufWriter::new(file);
-    let mut buffer = vec![0_u8; DOWNLOAD_CHUNK_SIZE];
     let mut bytes_done = 0_u64;
 
-    loop {
-        let read = response.read(&mut buffer).map_err(|error| {
-            ScannerAssetsError::with_details(
-                "assets.download.fetch.networkFailed",
-                true,
-                format!("Failed while reading scanner asset package response: {error}"),
-            )
-        })?;
-        if read == 0 {
-            break;
+    while let Some(chunk) = response.chunk().await.map_err(|error| {
+        ScannerAssetsError::with_details(
+            "assets.download.fetch.networkFailed",
+            true,
+            format!("Failed while reading scanner asset package response: {error}"),
+        )
+    })? {
+        if chunk.is_empty() {
+            continue;
         }
-        writer.write_all(&buffer[..read]).map_err(|error| {
+        writer.write_all(&chunk).map_err(|error| {
             ScannerAssetsError::with_details(
                 "assets.download.fetch.writeFailed",
                 true,
                 format!("Failed while writing scanner asset package: {error}"),
             )
         })?;
-        bytes_done += read as u64;
+        bytes_done += chunk.len() as u64;
         send_progress(
             channel,
             ScannerAssetsProgress {
@@ -1400,11 +1391,20 @@ mod tests {
     #[test]
     fn package_file_name_and_default_url_use_expected_tag_without_prefix() {
         let file_name = platform_package_file_name();
+        let expected_release_prefix = format!(
+            "https://github.com/{SCANNER_ASSETS_REPO_OWNER}/{SCANNER_ASSETS_REPO_NAME}/releases/download/{EXPECTED_SCANNER_ASSET_TAG}/"
+        );
         assert!(file_name.contains(EXPECTED_SCANNER_ASSET_TAG));
         assert!(!file_name.starts_with("scanner-assets-"));
         assert!(default_asset_url().ends_with(&file_name));
-        assert!(default_asset_url()
-            .contains(&format!("/releases/download/{EXPECTED_SCANNER_ASSET_TAG}/")));
+        assert!(default_asset_url().starts_with(&expected_release_prefix));
+        assert!(!default_asset_url().contains("/latest/"));
+    }
+
+    #[test]
+    fn download_timeouts_are_configured() {
+        assert_eq!(DOWNLOAD_CONNECT_TIMEOUT, Duration::from_secs(15));
+        assert_eq!(DOWNLOAD_READ_TIMEOUT, Duration::from_secs(60));
     }
 
     #[test]

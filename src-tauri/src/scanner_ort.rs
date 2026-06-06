@@ -60,6 +60,9 @@ struct OrtRuntimeSnapshot {
     runtime_error: Option<String>,
     ort_build_info: Option<String>,
     available_providers: Vec<String>,
+    selected_runtime_library_path: Option<PathBuf>,
+    loaded_runtime_library_path: Option<PathBuf>,
+    runtime_path_mismatch: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -101,7 +104,10 @@ pub struct ScannerOrtProbeStatus {
     pub platform_target: String,
     pub resource_resolution_source: String,
     pub resource_base_dir: Option<String>,
+    pub selected_runtime_library_path: Option<String>,
+    pub loaded_runtime_library_path: Option<String>,
     pub runtime_library_path: Option<String>,
+    pub runtime_path_mismatch: bool,
     pub runtime_ready: bool,
     pub model_load_ready: bool,
     pub preferred_provider: String,
@@ -155,9 +161,6 @@ pub fn probe_scanner_ort_with_hints(
         .as_ref()
         .map(|candidate| candidate.path.clone());
     let resources = build_resource_statuses(resource_base_dir.as_deref(), &interesting_paths);
-    let runtime_library_path = resource_base_dir
-        .as_deref()
-        .and_then(runtime_library_path_for_current_platform);
     let runtime_snapshot = probe_ort_runtime(resource_base_dir.as_deref());
     let preferred_provider_ready = scanner_platform::is_provider_available(
         &preferred_provider,
@@ -177,6 +180,8 @@ pub fn probe_scanner_ort_with_hints(
         .collect::<Vec<_>>();
     let model_load_ready = runtime_snapshot.ready && models.iter().all(|model| model.session_ready);
     let message = build_probe_message(&runtime_snapshot, &models, model_load_ready);
+    let (selected_runtime_library_path, loaded_runtime_library_path, runtime_library_path) =
+        runtime_library_path_status_texts(&runtime_snapshot);
 
     ScannerOrtProbeStatus {
         stage: STAGE,
@@ -189,9 +194,10 @@ pub fn probe_scanner_ort_with_hints(
         resource_base_dir: resource_base_dir
             .as_deref()
             .map(scanner_resource::path_to_string),
-        runtime_library_path: runtime_library_path
-            .as_deref()
-            .map(scanner_resource::path_to_string),
+        selected_runtime_library_path,
+        loaded_runtime_library_path,
+        runtime_library_path,
+        runtime_path_mismatch: runtime_snapshot.runtime_path_mismatch,
         runtime_ready: runtime_snapshot.ready,
         model_load_ready,
         preferred_provider,
@@ -206,6 +212,26 @@ pub fn probe_scanner_ort_with_hints(
     }
 }
 
+fn runtime_library_path_status_texts(
+    runtime_snapshot: &OrtRuntimeSnapshot,
+) -> (Option<String>, Option<String>, Option<String>) {
+    let selected_runtime_library_path = runtime_snapshot
+        .selected_runtime_library_path
+        .as_deref()
+        .map(scanner_resource::path_to_string);
+    let loaded_runtime_library_path = runtime_snapshot
+        .loaded_runtime_library_path
+        .as_deref()
+        .map(scanner_resource::path_to_string);
+    let runtime_library_path = loaded_runtime_library_path.clone();
+
+    (
+        selected_runtime_library_path,
+        loaded_runtime_library_path,
+        runtime_library_path,
+    )
+}
+
 fn build_probe_message(
     runtime_snapshot: &OrtRuntimeSnapshot,
     models: &[ScannerOrtModelStatus],
@@ -216,6 +242,12 @@ fn build_probe_message(
             .runtime_error
             .clone()
             .unwrap_or_else(|| "Scanner ORT runtime is not ready.".to_string());
+    }
+
+    if runtime_snapshot.runtime_path_mismatch {
+        return runtime_snapshot.runtime_error.clone().unwrap_or_else(|| {
+            "Scanner ORT runtime is already initialized from a different library path.".to_string()
+        });
     }
 
     if let Some(model) = models.iter().find(|model| !model.session_ready) {
@@ -315,6 +347,9 @@ fn probe_ort_runtime(resource_base_dir: Option<&Path>) -> OrtRuntimeSnapshot {
             runtime_error: Some("Could not resolve the scanner resource directory.".to_string()),
             ort_build_info: None,
             available_providers: Vec::new(),
+            selected_runtime_library_path: None,
+            loaded_runtime_library_path: current_loaded_runtime_library_path(),
+            runtime_path_mismatch: false,
         };
     };
 
@@ -327,6 +362,9 @@ fn probe_ort_runtime(resource_base_dir: Option<&Path>) -> OrtRuntimeSnapshot {
             ),
             ort_build_info: None,
             available_providers: vec!["CPU".to_string()],
+            selected_runtime_library_path: None,
+            loaded_runtime_library_path: current_loaded_runtime_library_path(),
+            runtime_path_mismatch: false,
         };
     };
 
@@ -339,6 +377,9 @@ fn probe_ort_runtime(resource_base_dir: Option<&Path>) -> OrtRuntimeSnapshot {
             )),
             ort_build_info: None,
             available_providers: Vec::new(),
+            selected_runtime_library_path: Some(runtime_library_path),
+            loaded_runtime_library_path: current_loaded_runtime_library_path(),
+            runtime_path_mismatch: false,
         };
     }
 
@@ -347,7 +388,6 @@ fn probe_ort_runtime(resource_base_dir: Option<&Path>) -> OrtRuntimeSnapshot {
         .expect("ORT runtime state mutex should not be poisoned");
 
     if !state.environment_ready {
-        state.runtime_library_path = Some(runtime_library_path.clone());
         let init_result = ort::init_from(&runtime_library_path)
             .map(|builder| {
                 builder
@@ -365,24 +405,58 @@ fn probe_ort_runtime(resource_base_dir: Option<&Path>) -> OrtRuntimeSnapshot {
         match init_result {
             Ok(_) => {
                 state.environment_ready = true;
+                state.runtime_library_path = Some(runtime_library_path.clone());
                 state.runtime_error = None;
                 state.ort_build_info = Some(ort::info().to_string());
                 state.available_providers = available_providers_for_current_platform();
             }
             Err(error) => {
                 state.environment_ready = false;
+                state.runtime_library_path = None;
                 state.runtime_error = Some(error);
                 state.available_providers.clear();
             }
         }
     }
 
+    let loaded_runtime_library_path = state.runtime_library_path.clone();
+    let mismatch_error = runtime_path_mismatch_error(
+        Some(runtime_library_path.as_path()),
+        loaded_runtime_library_path.as_deref(),
+    );
+    let runtime_path_mismatch = mismatch_error.is_some();
+
     OrtRuntimeSnapshot {
         ready: state.environment_ready,
-        runtime_error: state.runtime_error.clone(),
+        runtime_error: mismatch_error.or_else(|| state.runtime_error.clone()),
         ort_build_info: state.ort_build_info.clone(),
         available_providers: state.available_providers.clone(),
+        selected_runtime_library_path: Some(runtime_library_path),
+        loaded_runtime_library_path,
+        runtime_path_mismatch,
     }
+}
+
+fn current_loaded_runtime_library_path() -> Option<PathBuf> {
+    runtime_state()
+        .lock()
+        .expect("ORT runtime state mutex should not be poisoned")
+        .runtime_library_path
+        .clone()
+}
+
+fn runtime_path_mismatch_error(selected: Option<&Path>, loaded: Option<&Path>) -> Option<String> {
+    let selected = selected?;
+    let loaded = loaded?;
+    if selected == loaded {
+        return None;
+    }
+
+    Some(format!(
+        "ONNX Runtime is already initialized from {}, but the selected scanner asset runtime is {}. Restart the app to switch runtime libraries.",
+        scanner_resource::path_to_string(loaded),
+        scanner_resource::path_to_string(selected)
+    ))
 }
 
 fn create_model_session(
@@ -580,6 +654,72 @@ mod tests {
         let paths = interesting_paths_for_current_platform();
         assert!(paths.contains(&"models/docaligner-fastvit_sa24.onnx"));
         assert!(paths.contains(&"models/uvdoc-best-model.onnx"));
+    }
+
+    #[test]
+    fn runtime_path_mismatch_error_is_absent_for_same_path() {
+        let path = PathBuf::from("assets/current/onnxruntime/runtime.dll");
+
+        assert!(runtime_path_mismatch_error(Some(&path), Some(&path)).is_none());
+    }
+
+    #[test]
+    fn runtime_path_mismatch_error_reports_loaded_and_selected_paths() {
+        let selected = PathBuf::from("assets/current/onnxruntime/runtime.dll");
+        let loaded = PathBuf::from("assets/old-current/onnxruntime/runtime.dll");
+
+        let error = runtime_path_mismatch_error(Some(&selected), Some(&loaded))
+            .expect("different runtime paths must report a mismatch");
+
+        assert!(error.contains("already initialized"));
+        assert!(error.contains(&scanner_resource::path_to_string(&loaded)));
+        assert!(error.contains(&scanner_resource::path_to_string(&selected)));
+    }
+
+    #[test]
+    fn probe_message_prioritizes_runtime_path_mismatch() {
+        let selected = PathBuf::from("assets/current/onnxruntime/runtime.dll");
+        let loaded = PathBuf::from("assets/old-current/onnxruntime/runtime.dll");
+        let runtime_error = runtime_path_mismatch_error(Some(&selected), Some(&loaded));
+        let snapshot = OrtRuntimeSnapshot {
+            ready: true,
+            runtime_error: runtime_error.clone(),
+            ort_build_info: Some("ort-test".to_string()),
+            available_providers: vec!["CPU".to_string()],
+            selected_runtime_library_path: Some(selected),
+            loaded_runtime_library_path: Some(loaded),
+            runtime_path_mismatch: true,
+        };
+
+        assert_eq!(
+            build_probe_message(&snapshot, &[], true),
+            runtime_error.unwrap()
+        );
+    }
+
+    #[test]
+    fn runtime_library_path_status_texts_keep_loaded_path_as_compat_field() {
+        let selected = PathBuf::from("assets/current/onnxruntime/runtime.dll");
+        let loaded = PathBuf::from("assets/old-current/onnxruntime/runtime.dll");
+        let snapshot = OrtRuntimeSnapshot {
+            ready: true,
+            runtime_error: None,
+            ort_build_info: Some("ort-test".to_string()),
+            available_providers: vec!["CPU".to_string()],
+            selected_runtime_library_path: Some(selected.clone()),
+            loaded_runtime_library_path: Some(loaded.clone()),
+            runtime_path_mismatch: true,
+        };
+
+        let (selected_text, loaded_text, compat_text) =
+            runtime_library_path_status_texts(&snapshot);
+
+        assert_eq!(
+            selected_text,
+            Some(scanner_resource::path_to_string(&selected))
+        );
+        assert_eq!(loaded_text, Some(scanner_resource::path_to_string(&loaded)));
+        assert_eq!(compat_text, Some(scanner_resource::path_to_string(&loaded)));
     }
 
     #[test]
