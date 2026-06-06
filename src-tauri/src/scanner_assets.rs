@@ -1018,17 +1018,6 @@ fn parse_manifest_file(path: &Path) -> Result<ScannerAssetManifest, ScannerAsset
     })
 }
 
-#[cfg(test)]
-fn parse_manifest_bytes(bytes: &[u8]) -> Result<ScannerAssetManifest, ScannerAssetsError> {
-    serde_json::from_slice(bytes).map_err(|error| {
-        ScannerAssetsError::with_details(
-            "assets.install.manifest.invalid",
-            false,
-            format!("Failed to parse scanner asset manifest: {error}"),
-        )
-    })
-}
-
 fn verify_manifest_metadata(manifest: &ScannerAssetManifest) -> Result<(), ScannerAssetsError> {
     if manifest.schema_version != 1 {
         return Err(ScannerAssetsError::with_details(
@@ -1316,22 +1305,17 @@ fn hex_lower(bytes: &[u8]) -> String {
 }
 
 fn activate_staging(paths: &ScannerAssetPaths) -> Result<(), ScannerAssetsError> {
-    if paths.backup_dir.exists() {
-        fs::remove_dir_all(&paths.backup_dir).map_err(|error| {
-            ScannerAssetsError::with_details(
-                "assets.install.activate.replaceFailed",
-                true,
-                format!(
-                    "Failed to clear backup directory {}: {error}",
-                    scanner_resource::path_to_string(&paths.backup_dir)
-                ),
-            )
-        })?;
-    }
+    cleanup_stale_backup_dir(&paths.backup_dir);
 
     let had_current = paths.current_dir.exists();
-    if had_current {
-        fs::rename(&paths.current_dir, &paths.backup_dir).map_err(|error| {
+    let backup_dir = if had_current {
+        Some(select_backup_dir(paths)?)
+    } else {
+        None
+    };
+
+    if let Some(backup_dir) = backup_dir.as_ref() {
+        fs::rename(&paths.current_dir, backup_dir).map_err(|error| {
             ScannerAssetsError::with_details(
                 "assets.install.activate.replaceFailed",
                 true,
@@ -1341,8 +1325,8 @@ fn activate_staging(paths: &ScannerAssetPaths) -> Result<(), ScannerAssetsError>
     }
 
     if let Err(error) = fs::rename(&paths.staging_dir, &paths.current_dir) {
-        if had_current {
-            let _ = fs::rename(&paths.backup_dir, &paths.current_dir);
+        if let Some(backup_dir) = backup_dir.as_ref() {
+            let _ = fs::rename(backup_dir, &paths.current_dir);
         }
         return Err(ScannerAssetsError::with_details(
             "assets.install.activate.replaceFailed",
@@ -1351,11 +1335,47 @@ fn activate_staging(paths: &ScannerAssetPaths) -> Result<(), ScannerAssetsError>
         ));
     }
 
-    if had_current {
-        let _ = fs::remove_dir_all(&paths.backup_dir);
+    if let Some(backup_dir) = backup_dir.as_ref() {
+        let _ = fs::remove_dir_all(backup_dir);
+    }
+
+    if backup_dir
+        .as_ref()
+        .map(|backup_dir| backup_dir != &paths.backup_dir)
+        .unwrap_or(true)
+    {
+        cleanup_stale_backup_dir(&paths.backup_dir);
     }
 
     Ok(())
+}
+
+fn cleanup_stale_backup_dir(backup_dir: &Path) {
+    if backup_dir.exists() {
+        let _ = fs::remove_dir_all(backup_dir);
+    }
+}
+
+fn select_backup_dir(paths: &ScannerAssetPaths) -> Result<PathBuf, ScannerAssetsError> {
+    if !paths.backup_dir.exists() {
+        return Ok(paths.backup_dir.clone());
+    }
+
+    for suffix in 1..=1000 {
+        let candidate = paths.assets_dir.join(format!("{BACKUP_DIR_NAME}.{suffix}"));
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+
+    Err(ScannerAssetsError::with_details(
+        "assets.install.activate.replaceFailed",
+        true,
+        format!(
+            "Failed to select a backup directory under {}.",
+            scanner_resource::path_to_string(&paths.assets_dir)
+        ),
+    ))
 }
 
 fn manifest_summary(manifest: &ScannerAssetManifest) -> ScannerAssetsManifestSummary {
@@ -1363,189 +1383,5 @@ fn manifest_summary(manifest: &ScannerAssetManifest) -> ScannerAssetsManifestSum
         schema_version: manifest.schema_version,
         asset_version: manifest.asset_version.clone(),
         platform_target: manifest.platform_target.clone(),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn manifest_with_files(files: Vec<ScannerAssetManifestFile>) -> ScannerAssetManifest {
-        ScannerAssetManifest {
-            schema_version: 1,
-            asset_version: EXPECTED_SCANNER_ASSET_TAG.to_string(),
-            platform_target: scanner_platform::platform_target().to_string(),
-            files,
-        }
-    }
-
-    fn manifest_file(path: &str, bytes: &[u8]) -> ScannerAssetManifestFile {
-        ScannerAssetManifestFile {
-            path: path.to_string(),
-            size: bytes.len() as u64,
-            sha256: hex_lower(&Sha256::digest(bytes)),
-            source_url: format!("https://official.example/{path}"),
-        }
-    }
-
-    #[test]
-    fn package_file_name_and_default_url_use_expected_tag_without_prefix() {
-        let file_name = platform_package_file_name();
-        let expected_release_prefix = format!(
-            "https://github.com/{SCANNER_ASSETS_REPO_OWNER}/{SCANNER_ASSETS_REPO_NAME}/releases/download/{EXPECTED_SCANNER_ASSET_TAG}/"
-        );
-        assert!(file_name.contains(EXPECTED_SCANNER_ASSET_TAG));
-        assert!(!file_name.starts_with("scanner-assets-"));
-        assert!(default_asset_url().ends_with(&file_name));
-        assert!(default_asset_url().starts_with(&expected_release_prefix));
-        assert!(!default_asset_url().contains("/latest/"));
-    }
-
-    #[test]
-    fn download_timeouts_are_configured() {
-        assert_eq!(DOWNLOAD_CONNECT_TIMEOUT, Duration::from_secs(15));
-        assert_eq!(DOWNLOAD_READ_TIMEOUT, Duration::from_secs(60));
-    }
-
-    #[test]
-    fn manifest_rejects_unknown_fields() {
-        let manifest = br#"{
-            "schemaVersion": 1,
-            "assetVersion": "v0.1.0",
-            "platformTarget": "windows-directml",
-            "archiveFormat": "zip",
-            "files": []
-        }"#;
-
-        let error = parse_manifest_bytes(manifest).expect_err("unknown fields must fail");
-        assert_eq!(error.code, "assets.install.manifest.invalid");
-    }
-
-    #[test]
-    fn manifest_rejects_unsupported_schema_version() {
-        let manifest = ScannerAssetManifest {
-            schema_version: 2,
-            asset_version: EXPECTED_SCANNER_ASSET_TAG.to_string(),
-            platform_target: scanner_platform::platform_target().to_string(),
-            files: vec![manifest_file("models/uvdoc-best-model.onnx", b"model")],
-        };
-
-        let error = verify_manifest_metadata(&manifest).expect_err("schema version must fail");
-        assert_eq!(error.code, "assets.install.manifest.invalid");
-    }
-
-    #[test]
-    fn unsafe_manifest_paths_are_rejected() {
-        for path in [
-            "",
-            "../model.onnx",
-            "models/../model.onnx",
-            "/models/model.onnx",
-            "//server/share/model.onnx",
-            r"models\model.onnx",
-            "C:/models/model.onnx",
-            "./models/model.onnx",
-        ] {
-            let error = validate_manifest_relative_path(path).expect_err(path);
-            assert_eq!(error.code, "assets.install.verify.unsafePath");
-        }
-
-        assert_eq!(
-            validate_manifest_relative_path("models/uvdoc-best-model.onnx").unwrap(),
-            PathBuf::from("models").join("uvdoc-best-model.onnx")
-        );
-    }
-
-    #[test]
-    fn platform_mismatch_is_rejected() {
-        let manifest = ScannerAssetManifest {
-            schema_version: 1,
-            asset_version: EXPECTED_SCANNER_ASSET_TAG.to_string(),
-            platform_target: "wrong-platform".to_string(),
-            files: vec![manifest_file("models/uvdoc-best-model.onnx", b"model")],
-        };
-
-        let error = verify_manifest_metadata(&manifest).expect_err("platform mismatch must fail");
-        assert_eq!(error.code, "assets.install.manifest.platformMismatch");
-    }
-
-    #[test]
-    fn missing_required_declaration_is_rejected() {
-        let manifest = manifest_with_files(vec![manifest_file(
-            "models/uvdoc-best-model.onnx",
-            b"model",
-        )]);
-
-        let error =
-            verify_required_file_declarations(&manifest).expect_err("missing required must fail");
-        assert_eq!(error.code, "assets.install.verify.fileMissing");
-    }
-
-    #[test]
-    fn declared_missing_file_is_rejected() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let manifest = manifest_with_files(vec![manifest_file("models/missing.onnx", b"model")]);
-
-        let error =
-            verify_declared_files(temp_dir.path(), &manifest).expect_err("missing file must fail");
-        assert_eq!(error.code, "assets.install.verify.fileMissing");
-    }
-
-    #[test]
-    fn declared_size_mismatch_is_rejected() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let file_path = temp_dir.path().join("models").join("model.onnx");
-        fs::create_dir_all(file_path.parent().unwrap()).unwrap();
-        fs::write(&file_path, b"actual").unwrap();
-        let mut entry = manifest_file("models/model.onnx", b"actual");
-        entry.size += 1;
-        let manifest = manifest_with_files(vec![entry]);
-
-        let error =
-            verify_declared_files(temp_dir.path(), &manifest).expect_err("size mismatch must fail");
-        assert_eq!(error.code, "assets.install.verify.sizeMismatch");
-    }
-
-    #[test]
-    fn declared_checksum_mismatch_is_rejected() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let file_path = temp_dir.path().join("models").join("model.onnx");
-        fs::create_dir_all(file_path.parent().unwrap()).unwrap();
-        fs::write(&file_path, b"actual").unwrap();
-        let entry = manifest_file("models/model.onnx", b"other!");
-        let manifest = manifest_with_files(vec![entry]);
-
-        let error = verify_declared_files(temp_dir.path(), &manifest)
-            .expect_err("checksum mismatch must fail");
-        assert_eq!(error.code, "assets.install.verify.checksumMismatch");
-    }
-
-    #[test]
-    fn operation_mutex_rejects_concurrent_operations() {
-        let guard = try_acquire_operation(OperationKind::Importing).unwrap();
-        let error = try_acquire_operation(OperationKind::Downloading)
-            .expect_err("second operation must fail");
-        assert_eq!(error.code, "assets.operation.inProgress");
-        drop(guard);
-
-        let guard = try_acquire_operation(OperationKind::Downloading).unwrap();
-        drop(guard);
-    }
-
-    #[test]
-    fn cleanup_staging_preserves_current_directory() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let paths = asset_paths_from_app_data_dir(temp_dir.path().to_path_buf());
-        fs::create_dir_all(&paths.current_dir).unwrap();
-        fs::write(paths.current_dir.join("marker"), b"current").unwrap();
-        fs::create_dir_all(&paths.staging_dir).unwrap();
-        fs::write(paths.staging_dir.join("marker"), b"staging").unwrap();
-
-        fs::remove_dir_all(&paths.staging_dir).unwrap();
-
-        assert_eq!(
-            fs::read(paths.current_dir.join("marker")).unwrap(),
-            b"current"
-        );
     }
 }

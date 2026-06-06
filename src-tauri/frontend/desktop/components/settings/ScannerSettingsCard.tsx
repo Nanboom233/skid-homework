@@ -25,10 +25,11 @@ export default function ScannerSettingsCard() {
   const progress = useScannerStore((s) => s.progress);
   const isOperating = useScannerStore((s) => s.isOperating);
   const operationError = useScannerStore((s) => s.operationError);
+  const canRetryLastOperation = useScannerStore((s) => s.canRetryLastOperation);
   const fetchStatus = useScannerStore((s) => s.fetchStatus);
   const fetchProbe = useScannerStore((s) => s.fetchProbe);
   const startDownload = useScannerStore((s) => s.startDownload);
-  const clearError = useScannerStore((s) => s.clearError);
+  const retryLastOperation = useScannerStore((s) => s.retryLastOperation);
 
   useEffect(() => {
     void fetchStatus();
@@ -140,22 +141,16 @@ export default function ScannerSettingsCard() {
               </div>
             </div>
             <div className="flex gap-2">
-              {operationError.retryable && (
+              {operationError.retryable && canRetryLastOperation && (
                 <Button
                   size="sm"
                   variant="outline"
-                  onClick={() => {
-                    clearError();
-                    void startDownload();
-                  }}
+                  onClick={() => void retryLastOperation()}
+                  disabled={isOperating}
                 >
                   {t("actions.retry")}
                 </Button>
               )}
-              <Button size="sm" variant="outline" onClick={() => void handleImport()}>
-                <FolderOpen className="mr-1 h-3 w-3" />
-                {t("actions.import")}
-              </Button>
             </div>
           </div>
         )}
