@@ -816,5 +816,54 @@
       "notice": "基于 GPLv3 许可，由 cubewhy 创建。",
       "source": "源代码"
     }
+  },
+  "scanner": {
+    "init": {
+      "title": "扫描器配置",
+      "description": "SkidHomework 使用本地 ONNX 模型进行文档扫描。请下载或导入扫描器资源以启用此功能。",
+      "missing-description": "扫描器资源尚未安装。立即下载或导入本地包。你也可以跳过此步骤，稍后在设置中配置。"
+    },
+    "status": {
+      "ready": "扫描器就绪",
+      "version": "版本 {{version}}",
+      "missing": "未安装",
+      "invalid": "无效",
+      "downloading": "下载中...",
+      "importing": "导入中...",
+      "cpu-fallback": "CPU 回退"
+    },
+    "actions": {
+      "download": "下载",
+      "update": "更新",
+      "import": "导入本地包",
+      "retry": "重试"
+    },
+    "phases": {
+      "fetching": "正在下载安装包...",
+      "unpacking": "正在解压文件...",
+      "verifying": "正在校验完整性...",
+      "activating": "正在激活资源...",
+      "completed": "已完成",
+      "failed": "失败"
+    },
+    "error": {
+      "title": "操作失败"
+    },
+    "import": {
+      "filter-label": "扫描器资源包"
+    },
+    "settings": {
+      "title": "扫描器",
+      "description": "管理 ONNX Runtime 和扫描器模型资源。"
+    },
+    "diagnostics": {
+      "title": "高级诊断",
+      "runtime-path": "运行时库路径",
+      "build-info": "ORT 构建信息",
+      "providers": "可用提供者",
+      "runtime-error": "运行时错误",
+      "models": "模型",
+      "resources": "资源"
+    }
   }
 }

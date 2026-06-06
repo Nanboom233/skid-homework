@@ -353,6 +353,55 @@ export default interface Resources {
         }
       }
     },
+    "scanner": {
+      "actions": {
+        "download": "下载",
+        "import": "导入本地包",
+        "retry": "重试",
+        "update": "更新"
+      },
+      "diagnostics": {
+        "build-info": "ORT 构建信息",
+        "models": "模型",
+        "providers": "可用提供者",
+        "resources": "资源",
+        "runtime-error": "运行时错误",
+        "runtime-path": "运行时库路径",
+        "title": "高级诊断"
+      },
+      "error": {
+        "title": "操作失败"
+      },
+      "import": {
+        "filter-label": "扫描器资源包"
+      },
+      "init": {
+        "description": "SkidHomework 使用本地 ONNX 模型进行文档扫描。请下载或导入扫描器资源以启用此功能。",
+        "missing-description": "扫描器资源尚未安装。立即下载或导入本地包。你也可以跳过此步骤，稍后在设置中配置。",
+        "title": "扫描器配置"
+      },
+      "phases": {
+        "activating": "正在激活资源...",
+        "completed": "已完成",
+        "failed": "失败",
+        "fetching": "正在下载安装包...",
+        "unpacking": "正在解压文件...",
+        "verifying": "正在校验完整性..."
+      },
+      "settings": {
+        "description": "管理 ONNX Runtime 和扫描器模型资源。",
+        "title": "扫描器"
+      },
+      "status": {
+        "cpu-fallback": "CPU 回退",
+        "downloading": "下载中...",
+        "importing": "导入中...",
+        "invalid": "无效",
+        "missing": "未安装",
+        "ready": "扫描器就绪",
+        "version": "版本 {{version}}"
+      }
+    },
     "settings-page": {
       "advanced": {
         "custom-base-url": {
