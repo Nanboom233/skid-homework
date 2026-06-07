@@ -6,7 +6,7 @@ use std::{
     io::ErrorKind,
     path::{Path, PathBuf},
     process::{Command, Output},
-    sync::OnceLock,
+    sync::{Mutex as StdMutex, OnceLock},
     thread,
     time::{Duration, Instant},
 };
@@ -217,6 +217,30 @@ fn validate_pairing_code(value: &str) -> Result<String, String> {
         return Err("Pairing code must be exactly 6 digits.".to_string());
     }
     Ok(pairing_code)
+}
+
+pub(crate) fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+pub(crate) fn build_app_process_shell_command(
+    classpath: &str,
+    main_class: &str,
+    main_args: &[String],
+) -> String {
+    let mut command_parts = vec![
+        format!("CLASSPATH={}", shell_single_quote(classpath)),
+        "app_process".to_string(),
+        "/".to_string(),
+        shell_single_quote(main_class),
+    ];
+    command_parts.extend(main_args.iter().map(|value| shell_single_quote(value)));
+
+    command_parts.join(" ")
+}
+
+pub(crate) fn wrap_shell_c_script(script: &str) -> String {
+    shell_single_quote(script)
 }
 
 pub(crate) fn run_adb_command(args: &[String]) -> Result<Output, String> {
@@ -598,6 +622,278 @@ pub async fn tauri_adb_remove_forward(serial: String, local_port: u16) -> Result
     })
     .await
     .map_err(|error| format!("ADB remove-forward task failed: {error}"))?
+}
+
+// ---------------------------------------------------------------------------
+// Scanner camera-server lifecycle
+// ---------------------------------------------------------------------------
+
+const SCANNER_SERVER_MAIN_CLASS: &str = "com.skidhomework.server.Server";
+const SCANNER_SERVER_PID_PATH: &str = "/data/local/tmp/skid-scanner-server.pid";
+const SCANNER_SERVER_LOG_PATH: &str = "/data/local/tmp/skid-scanner-server.log";
+const SCANNER_SERVER_READY_SENTINEL: &str = "SCANNER_SERVER_READY";
+
+fn build_scanner_server_kill_script(main_class: &str) -> String {
+    format!(
+        "killed=0; \
+for pid in $(ps -A -o PID,ARGS 2>/dev/null | grep {main_class} | grep -v grep | awk '{{print $1}}'); do \
+  kill \"$pid\" >/dev/null 2>&1 && killed=1; \
+done; \
+sleep 1; \
+for pid in $(ps -A -o PID,ARGS 2>/dev/null | grep {main_class} | grep -v grep | awk '{{print $1}}'); do \
+  kill -9 \"$pid\" >/dev/null 2>&1 && killed=1; \
+done; \
+if [ \"$killed\" -eq 1 ]; then \
+  sleep 1; \
+fi",
+        main_class = shell_single_quote(main_class),
+    )
+}
+
+fn build_scanner_server_start_script(
+    classpath: &str,
+    main_class: &str,
+    server_args: &[String],
+) -> String {
+    let kill_command = build_scanner_server_kill_script(main_class);
+    let app_process_command = build_app_process_shell_command(classpath, main_class, server_args);
+
+    format!(
+        "{kill_command}; \
+rm -f {pidfile}; \
+: >{logfile}; \
+{app_process_command} </dev/null >>{logfile} 2>&1 & echo $! > {pidfile}",
+        pidfile = shell_single_quote(SCANNER_SERVER_PID_PATH),
+        logfile = shell_single_quote(SCANNER_SERVER_LOG_PATH),
+    )
+}
+
+fn build_scanner_server_stop_script(main_class: &str) -> String {
+    let kill_command = build_scanner_server_kill_script(main_class);
+
+    format!(
+        "pidfile={pidfile}; \
+stopped=0; \
+if [ -f \"$pidfile\" ]; then \
+  pid=$(cat \"$pidfile\"); \
+  if [ -n \"$pid\" ]; then \
+    kill \"$pid\" >/dev/null 2>&1 && stopped=1; \
+  fi; \
+  rm -f \"$pidfile\"; \
+fi; \
+{kill_command}; \
+if [ \"$stopped\" -eq 1 ]; then \
+  echo \"Camera server stopped.\"; \
+fi",
+        pidfile = shell_single_quote(SCANNER_SERVER_PID_PATH),
+    )
+}
+
+/// Start the Android camera server on the selected device.
+#[command]
+pub async fn tauri_adb_start_server(
+    serial: String,
+    classpath: String,
+    main_class: String,
+    server_args: Vec<String>,
+) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let serial = ensure_non_empty(&serial, "ADB serial")?;
+        let classpath = ensure_non_empty(&classpath, "Server classpath")?;
+        let main_class = ensure_non_empty(&main_class, "Server main class")?;
+        let shell_command =
+            build_scanner_server_start_script(&classpath, &main_class, &server_args);
+        let args = vec![
+            "-s".to_string(),
+            serial.clone(),
+            "shell".to_string(),
+            "sh".to_string(),
+            "-c".to_string(),
+            wrap_shell_c_script(&shell_command),
+        ];
+        let output = run_adb_checked(
+            &args,
+            &format!("adb -s {serial} shell sh -c <start scanner camera server>"),
+        )?;
+        let message = combine_command_output(&output);
+
+        if message.is_empty() {
+            Ok(format!("Camera server started on {serial}."))
+        } else {
+            Ok(message)
+        }
+    })
+    .await
+    .map_err(|error| format!("ADB start-server task failed: {error}"))?
+}
+
+/// Stop the Android camera server on the selected device.
+#[command]
+pub async fn tauri_adb_stop_server(serial: String, classpath: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let serial = ensure_non_empty(&serial, "ADB serial")?;
+        let _classpath = ensure_non_empty(&classpath, "Server classpath")?;
+        let shell_command = build_scanner_server_stop_script(SCANNER_SERVER_MAIN_CLASS);
+        let args = vec![
+            "-s".to_string(),
+            serial.clone(),
+            "shell".to_string(),
+            "sh".to_string(),
+            "-c".to_string(),
+            wrap_shell_c_script(&shell_command),
+        ];
+        let output = run_adb_checked(
+            &args,
+            &format!("adb -s {serial} shell sh -c <stop scanner camera server>"),
+        )?;
+        let message = combine_command_output(&output);
+
+        if message.is_empty() {
+            Ok(format!("Camera server stopped on {serial}."))
+        } else {
+            Ok(message)
+        }
+    })
+    .await
+    .map_err(|error| format!("ADB stop-server task failed: {error}"))?
+}
+
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+static LOG_TAILER_HANDLE: OnceLock<StdMutex<Option<tauri::async_runtime::JoinHandle<()>>>> =
+    OnceLock::new();
+
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn log_tailer_handle() -> &'static StdMutex<Option<tauri::async_runtime::JoinHandle<()>>> {
+    LOG_TAILER_HANDLE.get_or_init(|| StdMutex::new(None))
+}
+
+/// Start tailing the Android camera-server log file into the Tauri log stream.
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[command]
+pub async fn tauri_adb_start_log_tailer(serial: String) -> Result<(), String> {
+    let serial = ensure_non_empty(&serial, "ADB serial")?;
+    let mut handle_guard = log_tailer_handle()
+        .lock()
+        .map_err(|_| "Log tailer handle lock was poisoned.".to_string())?;
+
+    if handle_guard.is_some() {
+        return Ok(());
+    }
+
+    let handle = tauri::async_runtime::spawn(async move {
+        if let Err(error) = run_log_tailer(&serial).await {
+            log::warn!("[ScannerLogTailer] Exited: {error}");
+        }
+        if let Ok(mut handle_guard) = log_tailer_handle().lock() {
+            handle_guard.take();
+        }
+    });
+
+    *handle_guard = Some(handle);
+    Ok(())
+}
+
+/// Stop the running Android camera-server log tailer.
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[command]
+pub async fn tauri_adb_stop_log_tailer() -> Result<(), String> {
+    let handle = log_tailer_handle()
+        .lock()
+        .map_err(|_| "Log tailer handle lock was poisoned.".to_string())?
+        .take();
+
+    if let Some(handle) = handle {
+        handle.abort();
+        let _ = tokio::time::timeout(Duration::from_secs(3), handle).await;
+    }
+
+    Ok(())
+}
+
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+async fn run_log_tailer(serial: &str) -> Result<(), String> {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
+    let executable = resolve_adb_executable();
+    let mut command = tokio::process::Command::new(&executable);
+    command
+        .args(["-s", serial, "shell", "tail", "-f", SCANNER_SERVER_LOG_PATH])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+
+    #[cfg(target_os = "windows")]
+    command.creation_flags(CREATE_NO_WINDOW);
+
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("Failed to start scanner server log tailer: {error}"))?;
+
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "Failed to capture scanner server log tailer stdout.".to_string())?;
+    let reader = BufReader::new(stdout);
+    let mut lines = reader.lines();
+
+    loop {
+        match lines.next_line().await {
+            Ok(Some(line)) => log::info!("[AndroidCameraServer] {line}"),
+            Ok(None) => break,
+            Err(error) => {
+                log::warn!("[ScannerLogTailer] Read error: {error}");
+                break;
+            }
+        }
+    }
+
+    let _ = child.kill().await;
+    Ok(())
+}
+
+/// Wait for the server readiness sentinel in the device log file.
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[command]
+pub async fn tauri_adb_await_server_ready(serial: String, timeout_ms: u64) -> Result<(), String> {
+    let serial = ensure_non_empty(&serial, "ADB serial")?;
+    let poll_interval = tokio::time::Duration::from_millis(200);
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_millis(timeout_ms);
+
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            return Err(format!(
+                "Server did not become ready within {timeout_ms}ms; sentinel `{}` was not found in {}.",
+                SCANNER_SERVER_READY_SENTINEL,
+                SCANNER_SERVER_LOG_PATH
+            ));
+        }
+
+        let check_result = tauri::async_runtime::spawn_blocking({
+            let serial = serial.clone();
+            move || {
+                let shell_command = format!(
+                    "grep -Fq {} {}",
+                    shell_single_quote(SCANNER_SERVER_READY_SENTINEL),
+                    shell_single_quote(SCANNER_SERVER_LOG_PATH)
+                );
+                let args = vec!["-s".to_string(), serial, "shell".to_string(), shell_command];
+                run_adb_command(&args)
+            }
+        })
+        .await
+        .map_err(|error| format!("Server ready check task failed: {error}"))?;
+
+        if matches!(check_result, Ok(output) if output.status.success()) {
+            log::info!(
+                "[ScannerServerReady] Sentinel `{}` found in {}.",
+                SCANNER_SERVER_READY_SENTINEL,
+                SCANNER_SERVER_LOG_PATH
+            );
+            return Ok(());
+        }
+
+        tokio::time::sleep(poll_interval).await;
+    }
 }
 
 // ---------------------------------------------------------------------------

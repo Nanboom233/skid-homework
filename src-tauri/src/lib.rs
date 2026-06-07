@@ -3,11 +3,19 @@ mod adb_plugin;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 mod scanner_assets;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
+mod scanner_camera_resource;
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+mod scanner_frame_protocol;
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 mod scanner_ort;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 mod scanner_platform;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 mod scanner_resource;
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+mod scanner_transport;
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+mod stream_decoder;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -24,6 +32,11 @@ pub fn run() {
         adb_plugin::tauri_adb_forward,
         adb_plugin::tauri_adb_remove_forward,
         adb_plugin::tauri_adb_screenshot,
+        adb_plugin::tauri_adb_start_server,
+        adb_plugin::tauri_adb_stop_server,
+        adb_plugin::tauri_adb_start_log_tailer,
+        adb_plugin::tauri_adb_stop_log_tailer,
+        adb_plugin::tauri_adb_await_server_ready,
         scanner_assets::scanner_assets_status,
         scanner_assets::scanner_assets_download,
         scanner_assets::scanner_assets_download_update,
@@ -31,7 +44,12 @@ pub fn run() {
         scanner_assets::scanner_assets_import,
         scanner_assets::scanner_assets_clear,
         scanner_assets::scanner_assets_check_update,
+        scanner_camera_resource::scanner_camera_server_artifact,
         scanner_ort::scanner_probe_ort,
+        scanner_transport::tauri_adb_capture_still,
+        scanner_transport::tauri_adb_capture_still_stream,
+        stream_decoder::tauri_scanner_start_stream,
+        stream_decoder::tauri_scanner_stop_stream,
     ]);
 
     #[cfg(not(any(target_os = "windows", target_os = "linux")))]
