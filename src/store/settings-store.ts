@@ -16,6 +16,7 @@ export type ShortcutAction =
 export type ShortcutMap = Record<ShortcutAction, string>;
 
 export type ExplanationMode = "explanation" | "steps";
+export type ScannerDetectionBackend = "opencv" | "native-ort";
 
 const DEFAULT_SHORTCUTS: ShortcutMap = {
   upload: "ctrl+1",
@@ -62,6 +63,26 @@ export interface SettingsState {
 
   showOnlineSearchInScanPage: boolean;
   setShowOnlineSearchInScanPage: (state: boolean) => void;
+
+  scannerDetectionBackend: ScannerDetectionBackend;
+  setScannerDetectionBackend: (backend: ScannerDetectionBackend) => void;
+
+  scannerNativeOrtStrictMode: boolean;
+  setScannerNativeOrtStrictMode: (state: boolean) => void;
+
+  scannerPipelineDebug: boolean;
+  setScannerPipelineDebug: (state: boolean) => void;
+
+  scannerPreviewWidth: number;
+  scannerPreviewHeight: number;
+  scannerFramerate: number;
+  scannerCameraId: string;
+  setScannerPreview: (
+    width: number,
+    height: number,
+    framerate: number,
+    cameraId: string,
+  ) => void;
 }
 
 export const useSettingsStore = create<SettingsState>()(
@@ -78,6 +99,13 @@ export const useSettingsStore = create<SettingsState>()(
       onlineSearchEnabled: false,
       showModelSelectorInScanPage: false,
       showOnlineSearchInScanPage: false,
+      scannerDetectionBackend: "opencv",
+      scannerNativeOrtStrictMode: false,
+      scannerPipelineDebug: false,
+      scannerPreviewWidth: 640,
+      scannerPreviewHeight: 360,
+      scannerFramerate: 30,
+      scannerCameraId: "0",
 
       setThemePreference: (theme) => set({ theme }),
       setLanguage: (language) =>
@@ -115,6 +143,19 @@ export const useSettingsStore = create<SettingsState>()(
         set({ showModelSelectorInScanPage: state }),
       setShowOnlineSearchInScanPage: (state) =>
         set({ showOnlineSearchInScanPage: state }),
+      setScannerDetectionBackend: (backend) =>
+        set({ scannerDetectionBackend: backend }),
+      setScannerNativeOrtStrictMode: (state) =>
+        set({ scannerNativeOrtStrictMode: state }),
+      setScannerPipelineDebug: (state) =>
+        set({ scannerPipelineDebug: state }),
+      setScannerPreview: (width, height, framerate, cameraId) =>
+        set({
+          scannerPreviewWidth: width,
+          scannerPreviewHeight: height,
+          scannerFramerate: framerate,
+          scannerCameraId: cameraId,
+        }),
     }),
     {
       name: "skidhw-storage",
@@ -131,8 +172,15 @@ export const useSettingsStore = create<SettingsState>()(
         onlineSearchEnabled: state.onlineSearchEnabled,
         showModelSelectorInScanPage: state.showModelSelectorInScanPage,
         showOnlineSearchInScanPage: state.showOnlineSearchInScanPage,
+        scannerDetectionBackend: state.scannerDetectionBackend,
+        scannerNativeOrtStrictMode: state.scannerNativeOrtStrictMode,
+        scannerPipelineDebug: state.scannerPipelineDebug,
+        scannerPreviewWidth: state.scannerPreviewWidth,
+        scannerPreviewHeight: state.scannerPreviewHeight,
+        scannerFramerate: state.scannerFramerate,
+        scannerCameraId: state.scannerCameraId,
       }),
-      version: 10,
+      version: 11,
       migrate: (persistedState, version) => {
         const data: Partial<SettingsState> & Record<string, unknown> =
           persistedState && typeof persistedState === "object"
@@ -151,6 +199,12 @@ export const useSettingsStore = create<SettingsState>()(
         const legacyShowOnlineSearchInScanner = (
           data as { showOnlineSearchInScanner?: boolean }
         ).showOnlineSearchInScanner;
+        const rawDetectionBackend = (data as { scannerDetectionBackend?: unknown })
+          .scannerDetectionBackend;
+        const scannerDetectionBackend: ScannerDetectionBackend =
+          rawDetectionBackend === "native-ort" || rawDetectionBackend === "opencv"
+            ? rawDetectionBackend
+            : "opencv";
 
         const migratedData = {
           ...data,
@@ -180,10 +234,26 @@ export const useSettingsStore = create<SettingsState>()(
             (data as { devtoolsEnabled?: boolean }).devtoolsEnabled ??
             legacyDevtools ??
             false,
+          scannerDetectionBackend,
+          scannerNativeOrtStrictMode:
+            (data as { scannerNativeOrtStrictMode?: boolean })
+              .scannerNativeOrtStrictMode ?? false,
+          scannerPipelineDebug:
+            (data as { scannerPipelineDebug?: boolean }).scannerPipelineDebug ??
+            false,
+          scannerPreviewWidth:
+            (data as { scannerPreviewWidth?: number }).scannerPreviewWidth ?? 640,
+          scannerPreviewHeight:
+            (data as { scannerPreviewHeight?: number }).scannerPreviewHeight ?? 360,
+          scannerFramerate:
+            (data as { scannerFramerate?: number }).scannerFramerate ?? 30,
+          scannerCameraId:
+            (data as { scannerCameraId?: string }).scannerCameraId ?? "0",
         };
 
         delete (migratedData as Record<string, unknown>).devtools;
         delete (migratedData as Record<string, unknown>).imageEnhancement;
+        delete (migratedData as Record<string, unknown>).scannerPostProcessBackend;
         delete (migratedData as Record<string, unknown>)
           .showModelSelectorInScanner;
         delete (migratedData as Record<string, unknown>)

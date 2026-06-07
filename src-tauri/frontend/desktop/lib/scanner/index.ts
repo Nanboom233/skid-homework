@@ -32,3 +32,16 @@ export type {
   FramePacketTelemetry,
   ParsedFramePacket,
 } from "./frame-codec";
+
+export {
+  evaluateFrameMappingCompatibility,
+  scalePointBetweenFrames,
+  scalePointsBetweenFrames,
+} from "./capture-mapping";
+
+export type {
+  FrameDimensions,
+  FrameMappingCompatibility,
+} from "./capture-mapping";
+
+export type {Point} from "./types";

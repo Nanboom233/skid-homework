@@ -255,6 +255,7 @@
     "pdf-disabled": "PDF uploads are available only when a Gemini or OpenAI (Response API enabled) source is enabled.",
     "adb": {
       "connect": "ADB Connect",
+      "document-scanner": "Document Scanner",
       "reconnect": "Reconnect ADB",
       "screenshot": "ADB Screenshot",
       "connecting": "Connecting...",
@@ -765,7 +766,8 @@
   "sources": {
     "upload": "Upload",
     "camera": "Camera",
-    "adb": "ADB"
+    "adb": "ADB",
+    "scan": "Scan"
   },
   "ai-client": {
     "openai": {
@@ -811,6 +813,113 @@
     "footer": {
       "notice": "Licensed under GPLv3, created by cubewhy.",
       "source": "Source Code"
+    }
+  },
+  "document-scanner": {
+    "title": "Document Scanner",
+    "auto-capture": "Auto",
+    "capture": "Capture",
+    "start": "Start",
+    "stop": "Stop",
+    "actions": {
+      "close": "Close",
+      "diagnostics": "Diagnostics",
+      "send-to-ai": "Send to AI ({{count}})",
+      "settings": "Settings",
+      "toggle-orientation": "Toggle orientation"
+    },
+    "status": {
+      "editing": "Editing",
+      "device": {
+        "connected": "Connected",
+        "connecting": "Connecting",
+        "disconnected": "Disconnected",
+        "error": "Error"
+      }
+    },
+    "captured": {
+      "preview-alt": "Captured document {{index}}",
+      "actions": {
+        "remove": "Remove"
+      },
+      "status": {
+        "processing": "Processing",
+        "ready": "Ready",
+        "failed": "Failed"
+      }
+    },
+    "connection": {
+      "recovering": "Recovering preview stream...",
+      "starting": "Starting preview stream...",
+      "recovered": "Preview stream recovered.",
+      "active": "Preview stream active.",
+      "recovering-delay": "Recovering preview stream in {{delayMs}}ms.",
+      "stopped-by-user": "Preview stopped by user.",
+      "stopped": "Preview stream stopped.",
+      "failed": "Preview stream failed.",
+      "idle": "Scanner idle.",
+      "started": "Preview stream started.",
+      "start-failed": "Failed to start preview stream."
+    },
+    "toasts": {
+      "scanner-error": "Scanner error: {{message}}",
+      "auto-capturing-preview": "Auto-capturing from preview...",
+      "capturing-preview": "Capturing from preview...",
+      "preview-ready": "Preview capture ready.",
+      "preview-failed": "Preview capture failed: {{message}}",
+      "no-device": "No ADB device connected. Please connect a device first.",
+      "server-jar-missing": "Failed to locate camera-server.jar resource.",
+      "start-failed": "Failed to start scanner: {{message}}",
+      "no-documents": "No documents captured yet."
+    },
+    "controls": {
+      "title": "Live Preview Controls",
+      "badges": {
+        "live": "Live",
+        "stopped": "Stopped",
+        "stable": "Stable",
+        "unstable": "Unstable"
+      },
+      "actions": {
+        "start": "Start Preview",
+        "stop": "Stop Preview",
+        "processing": "Processing...",
+        "capture": "Capture Preview",
+        "use-landscape": "Use Landscape Frame",
+        "use-portrait": "Use Portrait Frame"
+      },
+      "auto-capture": {
+        "label": "Auto-Capture"
+      }
+    },
+    "preview-hud": {
+      "state": {
+        "pass": "PASS",
+        "pending": "PENDING",
+        "fail": "FAIL"
+      },
+      "target": "{{fps}}+ FPS",
+      "metrics": {
+        "now": "inst",
+        "window": "win",
+        "effective": "stream",
+        "frame": "frame",
+        "resolution": "res"
+      }
+    },
+    "debug": {
+      "states": {
+        "reconnect": {
+          "connected": "Connected",
+          "connecting": "Connecting",
+          "reconnecting": "Reconnecting",
+          "stopped": "Stopped",
+          "error": "Error",
+          "idle": "Idle",
+          "starting": "Starting",
+          "stopping": "Stopping"
+        }
+      }
     }
   },
   "scanner": {

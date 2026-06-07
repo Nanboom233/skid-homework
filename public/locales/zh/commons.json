@@ -255,6 +255,7 @@
     "pdf-disabled": "仅在启用 Gemini 源或开启 Responses API 的 OpenAI 源时支持 PDF 上传。",
     "adb": {
       "connect": "ADB 连接",
+      "document-scanner": "文档扫描",
       "reconnect": "重新连接 ADB",
       "screenshot": "ADB 截图",
       "connecting": "连接中...",
@@ -769,7 +770,8 @@
   "sources": {
     "upload": "本地上传",
     "camera": "拍摄",
-    "adb": "ADB"
+    "adb": "ADB",
+    "scan": "扫描"
   },
   "ai-client": {
     "openai": {
@@ -815,6 +817,113 @@
     "footer": {
       "notice": "基于 GPLv3 许可，由 cubewhy 创建。",
       "source": "源代码"
+    }
+  },
+  "document-scanner": {
+    "title": "文档扫描",
+    "auto-capture": "自动",
+    "capture": "采集",
+    "start": "启动",
+    "stop": "停止",
+    "actions": {
+      "close": "关闭",
+      "diagnostics": "诊断",
+      "send-to-ai": "发送到 AI（{{count}}）",
+      "settings": "设置",
+      "toggle-orientation": "切换方向"
+    },
+    "status": {
+      "editing": "编辑中",
+      "device": {
+        "connected": "已连接",
+        "connecting": "连接中",
+        "disconnected": "未连接",
+        "error": "错误"
+      }
+    },
+    "captured": {
+      "preview-alt": "已捕获文档 {{index}}",
+      "actions": {
+        "remove": "移除"
+      },
+      "status": {
+        "processing": "处理中",
+        "ready": "已就绪",
+        "failed": "失败"
+      }
+    },
+    "connection": {
+      "recovering": "正在恢复预览流...",
+      "starting": "正在启动预览流...",
+      "recovered": "预览流已恢复。",
+      "active": "预览流运行中。",
+      "recovering-delay": "{{delayMs}}ms 后恢复预览流。",
+      "stopped-by-user": "预览已由用户停止。",
+      "stopped": "预览流已停止。",
+      "failed": "预览流失败。",
+      "idle": "扫描器空闲。",
+      "started": "预览流已启动。",
+      "start-failed": "预览流启动失败。"
+    },
+    "toasts": {
+      "scanner-error": "扫描错误：{{message}}",
+      "auto-capturing-preview": "正在从预览自动采集...",
+      "capturing-preview": "正在从预览采集...",
+      "preview-ready": "预览采集已完成。",
+      "preview-failed": "预览采集失败：{{message}}",
+      "no-device": "没有可用的 ADB 设备，请先连接设备。",
+      "server-jar-missing": "无法定位 camera-server.jar 资源。",
+      "start-failed": "启动扫描器失败：{{message}}",
+      "no-documents": "还没有采集到任何文档。"
+    },
+    "controls": {
+      "title": "实时预览控制",
+      "badges": {
+        "live": "实时中",
+        "stopped": "已停止",
+        "stable": "稳定",
+        "unstable": "不稳定"
+      },
+      "actions": {
+        "start": "启动预览",
+        "stop": "停止预览",
+        "processing": "处理中...",
+        "capture": "采集预览",
+        "use-landscape": "切换为横向预览框",
+        "use-portrait": "切换为纵向预览框"
+      },
+      "auto-capture": {
+        "label": "自动采集"
+      }
+    },
+    "preview-hud": {
+      "state": {
+        "pass": "达标",
+        "pending": "等待中",
+        "fail": "未达标"
+      },
+      "target": "{{fps}}+ FPS",
+      "metrics": {
+        "now": "瞬时",
+        "window": "窗口",
+        "effective": "推流",
+        "frame": "帧",
+        "resolution": "分辨率"
+      }
+    },
+    "debug": {
+      "states": {
+        "reconnect": {
+          "connected": "已连接",
+          "connecting": "连接中",
+          "reconnecting": "重连中",
+          "stopped": "已停止",
+          "error": "错误",
+          "idle": "空闲",
+          "starting": "启动中",
+          "stopping": "停止中"
+        }
+      }
     }
   },
   "scanner": {

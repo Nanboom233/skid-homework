@@ -5,6 +5,12 @@ mod scanner_assets;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 mod scanner_camera_resource;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
+mod scanner_cv_detect;
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+mod scanner_detect;
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+mod scanner_detect_loop;
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 mod scanner_frame_protocol;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 mod scanner_ort;
@@ -12,6 +18,8 @@ mod scanner_ort;
 mod scanner_platform;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 mod scanner_resource;
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+mod scanner_tracker;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 mod scanner_transport;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
@@ -46,6 +54,10 @@ pub fn run() {
         scanner_assets::scanner_assets_check_update,
         scanner_camera_resource::scanner_camera_server_artifact,
         scanner_ort::scanner_probe_ort,
+        scanner_detect::tauri_scanner_probe_detect,
+        scanner_detect::tauri_scanner_detect_document,
+        scanner_detect_loop::tauri_scanner_start_detection_loop,
+        scanner_detect_loop::tauri_scanner_stop_detection_loop,
         scanner_transport::tauri_adb_capture_still,
         scanner_transport::tauri_adb_capture_still_stream,
         stream_decoder::tauri_scanner_start_stream,

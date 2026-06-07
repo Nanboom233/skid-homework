@@ -68,6 +68,113 @@ export default interface Resources {
       "subtitle": "与已配置的模型一起讨论作业。",
       "title": "打滑作业聊天"
     },
+    "document-scanner": {
+      "actions": {
+        "close": "关闭",
+        "diagnostics": "诊断",
+        "send-to-ai": "发送到 AI（{{count}}）",
+        "settings": "设置",
+        "toggle-orientation": "切换方向"
+      },
+      "auto-capture": "自动",
+      "capture": "采集",
+      "captured": {
+        "actions": {
+          "remove": "移除"
+        },
+        "preview-alt": "已捕获文档 {{index}}",
+        "status": {
+          "failed": "失败",
+          "processing": "处理中",
+          "ready": "已就绪"
+        }
+      },
+      "connection": {
+        "active": "预览流运行中。",
+        "failed": "预览流失败。",
+        "idle": "扫描器空闲。",
+        "recovered": "预览流已恢复。",
+        "recovering": "正在恢复预览流...",
+        "recovering-delay": "{{delayMs}}ms 后恢复预览流。",
+        "start-failed": "预览流启动失败。",
+        "started": "预览流已启动。",
+        "starting": "正在启动预览流...",
+        "stopped": "预览流已停止。",
+        "stopped-by-user": "预览已由用户停止。"
+      },
+      "controls": {
+        "actions": {
+          "capture": "采集预览",
+          "processing": "处理中...",
+          "start": "启动预览",
+          "stop": "停止预览",
+          "use-landscape": "切换为横向预览框",
+          "use-portrait": "切换为纵向预览框"
+        },
+        "auto-capture": {
+          "label": "自动采集"
+        },
+        "badges": {
+          "live": "实时中",
+          "stable": "稳定",
+          "stopped": "已停止",
+          "unstable": "不稳定"
+        },
+        "title": "实时预览控制"
+      },
+      "debug": {
+        "states": {
+          "reconnect": {
+            "connected": "已连接",
+            "connecting": "连接中",
+            "error": "错误",
+            "idle": "空闲",
+            "reconnecting": "重连中",
+            "starting": "启动中",
+            "stopped": "已停止",
+            "stopping": "停止中"
+          }
+        }
+      },
+      "preview-hud": {
+        "metrics": {
+          "effective": "推流",
+          "frame": "帧",
+          "now": "瞬时",
+          "resolution": "分辨率",
+          "window": "窗口"
+        },
+        "state": {
+          "fail": "未达标",
+          "pass": "达标",
+          "pending": "等待中"
+        },
+        "target": "{{fps}}+ FPS"
+      },
+      "start": "启动",
+      "status": {
+        "device": {
+          "connected": "已连接",
+          "connecting": "连接中",
+          "disconnected": "未连接",
+          "error": "错误"
+        },
+        "editing": "编辑中"
+      },
+      "stop": "停止",
+      "title": "文档扫描",
+      "toasts": {
+        "auto-capturing-preview": "正在从预览自动采集...",
+        "capturing-preview": "正在从预览采集...",
+        "no-device": "没有可用的 ADB 设备，请先连接设备。",
+        "no-documents": "还没有采集到任何文档。",
+        "preview-failed": "预览采集失败：{{message}}",
+        "preview-ready": "预览采集已完成。",
+        "scanner-error": "扫描错误：{{message}}",
+        "server-jar-missing": "无法定位 camera-server.jar 资源。",
+        "start-failed": "启动扫描器失败：{{message}}"
+      }
+    },
     "import-settings-page": {
       "confirm": {
         "alert": {
@@ -817,6 +924,7 @@ export default interface Resources {
     "sources": {
       "adb": "ADB",
       "camera": "拍摄",
+      "scan": "扫描",
       "upload": "本地上传"
     },
     "upload-area": {
@@ -825,6 +933,7 @@ export default interface Resources {
         "connect": "ADB 连接",
         "connected": "已连接到 {{serial}}。",
         "connecting": "连接中...",
+        "document-scanner": "文档扫描",
         "menu-aria-label": "ADB 操作菜单",
         "paired": "配对成功。请再使用设备的连接地址执行连接。",
         "reconnect": "重新连接 ADB",
