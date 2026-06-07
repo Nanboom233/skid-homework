@@ -7,8 +7,10 @@ import {Badge} from "@/components/ui/badge";
 import {Button} from "@/components/ui/button";
 import {Card, CardContent, CardHeader, CardTitle,} from "@/components/ui/card";
 import {Label} from "@/components/ui/label";
+import {Select, SelectContent, SelectItem, SelectTrigger, SelectValue} from "@/components/ui/select";
 import {Separator} from "@/components/ui/separator";
 import {Switch} from "@/components/ui/switch";
+import type {ScannerPostProcessBackend} from "@/store/settings-store";
 
 interface ScannerControlsProps {
   isConnecting: boolean;
@@ -16,7 +18,9 @@ interface ScannerControlsProps {
   isProcessing: boolean;
   autoCapture: boolean;
   isStable: boolean;
+  requestedPostProcessBackend: ScannerPostProcessBackend;
   previewOrientation: "landscape" | "portrait";
+  onPostProcessBackendChange: (backend: ScannerPostProcessBackend) => void;
   onAutoCaptureChange: (enabled: boolean) => void;
   onPreviewOrientationToggle: () => void;
   onStart: () => void;
@@ -24,13 +28,27 @@ interface ScannerControlsProps {
   onPreviewCapture: () => void;
 }
 
+const translatePostProcessBackend = (
+  backend: ScannerPostProcessBackend,
+  t: ReturnType<typeof useTranslation<"commons", "document-scanner.controls">>["t"],
+): string => {
+  switch (backend) {
+    case "heuristic":
+      return t("postprocess-backend.options.heuristic");
+    case "native-ml-v1":
+      return t("postprocess-backend.options.native-ml-v1");
+  }
+};
+
 export function ScannerControls({
   isConnecting,
   isStreaming,
   isProcessing,
   autoCapture,
   isStable,
+  requestedPostProcessBackend,
   previewOrientation,
+  onPostProcessBackendChange,
   onAutoCaptureChange,
   onPreviewOrientationToggle,
   onStart,
@@ -60,6 +78,33 @@ export function ScannerControls({
         </div>
       </CardHeader>
       <CardContent className="space-y-3">
+        <div className="grid gap-3 rounded-lg border bg-background/60 p-3">
+          <div className="grid gap-3">
+            <div className="space-y-2">
+              <Label htmlFor="scanner-postprocess-backend">
+                {t("postprocess-backend.label")}
+              </Label>
+              <Select
+                value={requestedPostProcessBackend}
+                onValueChange={(value) => onPostProcessBackendChange(value as ScannerPostProcessBackend)}
+                disabled={isProcessing}
+              >
+                <SelectTrigger id="scanner-postprocess-backend">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="heuristic">
+                    {translatePostProcessBackend("heuristic", t)}
+                  </SelectItem>
+                  <SelectItem value="native-ml-v1">
+                    {translatePostProcessBackend("native-ml-v1", t)}
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+        </div>
+
         <div className="grid gap-2 sm:grid-cols-2">
           <Button
             variant="outline"

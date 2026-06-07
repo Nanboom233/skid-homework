@@ -4526,6 +4526,7 @@ dependencies = [
  "log",
  "openh264",
  "ort",
+ "png 0.17.16",
  "reqwest",
  "serde",
  "serde_json",

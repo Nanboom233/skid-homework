@@ -1,40 +1,24 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
-use ort::ep::ExecutionProvider as _;
-use ort::{
-    ep,
-    session::{builder::SessionBuilder, Session},
-    value::Tensor,
-};
+use ort::{session::Session, value::Tensor};
 
 use crate::scanner_detect_config::{
     build_resource_statuses, preferred_provider_from_config, resolve_scanner_detect_config,
-    resource_specs_for_current_platform, runtime_library_path_for_current_platform,
-    select_model_variant, ResolvedScannerModel, DETECT_INTERESTING_PATHS,
+    resource_specs_for_current_platform, select_model_variant, ResolvedScannerModel,
+    DETECT_INTERESTING_PATHS,
 };
-use crate::scanner_platform;
+use crate::scanner_ort::{create_model_session, probe_ort_runtime as probe_shared_ort_runtime};
 use crate::scanner_resource;
 
 #[derive(Debug, Default)]
 struct OrtRuntimeState {
-    environment_ready: bool,
-    runtime_library_path: Option<PathBuf>,
-    ort_build_info: Option<String>,
-    runtime_error: Option<String>,
-    available_providers: Vec<String>,
     session: Option<Session>,
     session_model_path: Option<PathBuf>,
     session_error: Option<String>,
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct OrtRuntimeSnapshot {
-    pub(crate) ready: bool,
-    pub(crate) runtime_error: Option<String>,
-    pub(crate) ort_build_info: Option<String>,
-    pub(crate) available_providers: Vec<String>,
-}
+pub(crate) use crate::scanner_ort::OrtRuntimeSnapshot;
 
 #[derive(Debug, Clone)]
 pub(crate) struct OrtSessionSnapshot {
@@ -107,86 +91,13 @@ pub(crate) fn resolve_detection_runtime_context(
 }
 
 pub(crate) fn probe_ort_runtime(resource_base_dir: Option<&Path>) -> OrtRuntimeSnapshot {
-    let Some(resource_base_dir) = resource_base_dir else {
-        return OrtRuntimeSnapshot {
-            ready: false,
-            runtime_error: Some("Could not resolve the scanner resource directory.".to_string()),
-            ort_build_info: None,
-            available_providers: Vec::new(),
-        };
-    };
-
-    let Some(runtime_library_path) = runtime_library_path_for_current_platform(resource_base_dir)
-    else {
-        return OrtRuntimeSnapshot {
-            ready: false,
-            runtime_error: Some(
-                "This platform does not have a configured ORT runtime path yet.".to_string(),
-            ),
-            ort_build_info: None,
-            available_providers: vec!["CPU".to_string()],
-        };
-    };
-
-    if !runtime_library_path.exists() {
-        return OrtRuntimeSnapshot {
-            ready: false,
-            runtime_error: Some(format!(
-                "Missing ONNX Runtime library: {}.",
-                scanner_resource::path_to_string(&runtime_library_path)
-            )),
-            ort_build_info: None,
-            available_providers: Vec::new(),
-        };
-    }
-
-    let mut state = runtime_state()
-        .lock()
-        .expect("ORT runtime state mutex should not be poisoned");
-
-    if !state.environment_ready {
-        state.runtime_library_path = Some(runtime_library_path.clone());
-
-        let init_result = ort::init_from(&runtime_library_path)
-            .map(|builder| {
-                builder
-                    .with_name("scanner-native-ort")
-                    .with_telemetry(false)
-                    .commit()
-            })
-            .map_err(|error| {
-                format!(
-                    "Failed to initialize ONNX Runtime from {}: {error}",
-                    scanner_resource::path_to_string(&runtime_library_path)
-                )
-            });
-
-        match init_result {
-            Ok(_) => {
-                state.environment_ready = true;
-                state.runtime_error = None;
-                state.ort_build_info = Some(ort::info().to_string());
-                state.available_providers = available_providers_for_current_platform();
-            }
-            Err(error) => {
-                state.environment_ready = false;
-                state.runtime_error = Some(error);
-            }
-        }
-    }
-
-    OrtRuntimeSnapshot {
-        ready: state.environment_ready,
-        runtime_error: state.runtime_error.clone(),
-        ort_build_info: state.ort_build_info.clone(),
-        available_providers: state.available_providers.clone(),
-    }
+    probe_shared_ort_runtime(resource_base_dir)
 }
 
 pub(crate) fn ensure_ort_session(
     resource_base_dir: Option<&Path>,
     model: &ResolvedScannerModel,
-    preferred_provider: &str,
+    _preferred_provider: &str,
 ) -> OrtSessionSnapshot {
     let Some(resource_base_dir) = resource_base_dir else {
         return OrtSessionSnapshot {
@@ -206,19 +117,20 @@ pub(crate) fn ensure_ort_session(
         };
     }
 
+    let runtime_snapshot = probe_ort_runtime(Some(resource_base_dir));
+    if !runtime_snapshot.ready {
+        return OrtSessionSnapshot {
+            ready: false,
+            session_error: Some(runtime_snapshot.runtime_error.unwrap_or_else(|| {
+                "ONNX Runtime environment is not initialized, so the model session cannot be created."
+                    .to_string()
+            })),
+        };
+    }
+
     let mut state = runtime_state()
         .lock()
         .expect("ORT runtime state mutex should not be poisoned");
-
-    if !state.environment_ready {
-        return OrtSessionSnapshot {
-            ready: false,
-            session_error: Some(
-                "ONNX Runtime environment is not initialized, so the model session cannot be created."
-                    .to_string(),
-            ),
-        };
-    }
 
     let same_model_loaded = state
         .session_model_path
@@ -233,18 +145,7 @@ pub(crate) fn ensure_ort_session(
         };
     }
 
-    let session_result = Session::builder()
-        .map_err(|error| format!("Failed to create ORT session builder: {error}"))
-        .and_then(|builder| {
-            let mut builder = configure_scanner_session_builder_for_current_platform(builder)?;
-            builder = builder
-                .with_execution_providers(build_scanner_execution_providers(preferred_provider))
-                .map_err(|error| format!("Failed to configure execution providers: {error}"))?;
-
-            builder
-                .commit_from_file(&model_path)
-                .map_err(|error| format!("Failed to load ONNX model session: {error}"))
-        });
+    let session_result = create_model_session(&model_path, &runtime_snapshot.available_providers);
 
     match session_result {
         Ok(session) => {
@@ -306,6 +207,22 @@ fn detection_context_cache() -> &'static Mutex<DetectionContextCacheState> {
     STATE.get_or_init(|| Mutex::new(DetectionContextCacheState::default()))
 }
 
+pub fn reset_scanner_detect_runtime_caches() {
+    {
+        let mut cache = detection_context_cache()
+            .lock()
+            .expect("detection context cache mutex should not be poisoned");
+        *cache = DetectionContextCacheState::default();
+    }
+
+    let mut state = runtime_state()
+        .lock()
+        .expect("ORT runtime state mutex should not be poisoned");
+    state.session = None;
+    state.session_model_path = None;
+    state.session_error = None;
+}
+
 fn build_detection_runtime_context(
     resource_dir_hint: Option<PathBuf>,
     installed_assets_current_dir_hint: Option<PathBuf>,
@@ -332,93 +249,4 @@ fn build_detection_runtime_context(
         selected_model,
         preferred_provider,
     })
-}
-
-fn configure_scanner_session_builder_for_current_platform(
-    builder: SessionBuilder,
-) -> Result<SessionBuilder, String> {
-    match std::env::consts::OS {
-        "windows" => {
-            // DirectML requires sequential execution and disabled memory-pattern optimization.
-            builder
-                .with_parallel_execution(false)
-                .and_then(|builder: SessionBuilder| builder.with_memory_pattern(false))
-                .map_err(|error| format!("Failed to apply DirectML-safe session options: {error}"))
-        }
-        _ => Ok(builder),
-    }
-}
-
-fn available_providers_for_current_platform() -> Vec<String> {
-    let mut providers = Vec::new();
-
-    match std::env::consts::OS {
-        "windows" => {
-            let directml = ep::DirectML::default();
-            if directml.supported_by_platform() && directml.is_available().unwrap_or(false) {
-                providers.push("DirectML".to_string());
-            }
-            providers.push("CPU".to_string());
-        }
-        "linux" => {
-            let tensorrt = ep::TensorRT::default();
-            if tensorrt.supported_by_platform() && tensorrt.is_available().unwrap_or(false) {
-                providers.push("TensorRT".to_string());
-            }
-
-            let cuda = ep::CUDA::default();
-            if cuda.supported_by_platform() && cuda.is_available().unwrap_or(false) {
-                providers.push("CUDA".to_string());
-            }
-
-            providers.push("CPU".to_string());
-        }
-        _ => {
-            providers.push("CPU".to_string());
-        }
-    }
-
-    providers
-}
-
-fn build_scanner_execution_providers(
-    preferred_provider: &str,
-) -> Vec<ort::execution_providers::ExecutionProviderDispatch> {
-    let normalized = scanner_platform::normalize_provider_name(preferred_provider);
-
-    match std::env::consts::OS {
-        "windows" => {
-            if normalized == "CPU" {
-                vec![ep::CPU::default().build()]
-            } else {
-                vec![ep::DirectML::default().build(), ep::CPU::default().build()]
-            }
-        }
-        "linux" => {
-            let mut order = Vec::new();
-            match normalized.as_str() {
-                "CUDA" => {
-                    order.push("CUDA");
-                    order.push("TensorRT");
-                }
-                "CPU" => {}
-                _ => {
-                    order.push("TensorRT");
-                    order.push("CUDA");
-                }
-            }
-
-            let mut providers = Vec::new();
-            for provider in order {
-                match provider {
-                    "TensorRT" => providers.push(ep::TensorRT::default().build()),
-                    "CUDA" => providers.push(ep::CUDA::default().build()),
-                    _ => {}
-                }
-            }
-            providers.push(ep::CPU::default().build());
-            providers
-        }
-        _ => vec![ep::CPU::default().build()],
-    }
 }

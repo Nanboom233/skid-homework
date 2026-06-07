@@ -2,6 +2,8 @@ import {create} from "zustand";
 import type {ScannerDetectionBackend} from "@/lib/scanner-types";
 import type {FrameSource, Point, ScannerConfig} from "../lib/scanner";
 import type {OrthogonalRotation} from "../lib/scanner/image-data";
+import type {ScannerPostProcessBackend} from "@/store/settings-store";
+import type {PostProcessOptions} from "../components/scanner/ScannerCapturedDocumentEditor";
 import type {
   ScannerAssetsError,
   ScannerAssetsProgress,
@@ -36,6 +38,7 @@ export type ScannerHighQualityCaptureStatus =
   | "processing"
   | "success"
   | "error";
+export type ScannerPostProcessStatus = "idle" | "processing" | "success" | "error";
 export type ScannerCvPipeline = "idle" | "preview" | "single-hq";
 
 export interface ScannerPreviewDebugState {
@@ -97,6 +100,30 @@ export interface ScannerCaptureDebugState {
   lastCaptureAt: number | null;
   lastCaptureError: string | null;
   lastCaptureDocumentDetected: boolean;
+  postProcessStatus: ScannerPostProcessStatus;
+  postProcessError: string | null;
+  postProcessDecodeMs: number | null;
+  postProcessRedetectMs: number | null;
+  postProcessPerspectiveMs: number | null;
+  postProcessEnhanceMs: number | null;
+  postProcessEncodeMs: number | null;
+  postProcessTotalMs: number | null;
+  postProcessBackend: ScannerPostProcessBackend;
+  postProcessModelId: string | null;
+  postProcessModelMs: number | null;
+  postProcessResidualWarpMs: number | null;
+  postProcessFlattenMs: number | null;
+  postProcessUsedRedetect: boolean;
+  postProcessUsedPerspective: boolean;
+  postProcessUsedEnhancement: boolean;
+  postProcessUsedResidualWarp: boolean;
+  postProcessFallbackReason: string | null;
+  postProcessControlGridShape: string | null;
+  postProcessInputWidth: number | null;
+  postProcessInputHeight: number | null;
+  postProcessOutputWidth: number | null;
+  postProcessOutputHeight: number | null;
+  postProcessUpdatedAt: number | null;
 }
 
 export interface ScannerCapturedDocument {
@@ -112,6 +139,7 @@ export interface ScannerCapturedDocument {
   sourceHeight: number;
   outputNameBase: string;
   outputRotation: OrthogonalRotation;
+  options?: PostProcessOptions;
 }
 
 export type ScannerOperationContext =
@@ -566,79 +594,113 @@ const mergePatchIfChanged = <T extends object>(
   return hasChange ? {...current, ...patch} : current;
 };
 
-const createInitialPreviewDebugState = (): ScannerPreviewDebugState => ({
-  frameIndex: 0,
-  previewFps: null,
-  recentWindowFps: null,
-  effectiveFps: null,
-  payloadBytes: null,
-  pollWaitMs: null,
-  jsDecodeMs: null,
-  canvasDrawMs: null,
-  pollCount: null,
-  previewWidth: null,
-  previewHeight: null,
-  transport: null,
-  updatedAt: null,
-});
+function createInitialPreviewDebugState(): ScannerPreviewDebugState {
+  return {
+    frameIndex: 0,
+    previewFps: null,
+    recentWindowFps: null,
+    effectiveFps: null,
+    payloadBytes: null,
+    pollWaitMs: null,
+    jsDecodeMs: null,
+    canvasDrawMs: null,
+    pollCount: null,
+    previewWidth: null,
+    previewHeight: null,
+    transport: null,
+    updatedAt: null,
+  };
+}
 
-const createInitialCvDebugState = (): ScannerCvDebugState => ({
-  pipeline: "idle",
-  cvReady: false,
-  requestedBackend: "opencv",
-  activeBackend: "opencv",
-  strictMode: false,
-  preferredProvider: null,
-  preferredProviderReady: false,
-  selectedModelId: null,
-  selectedModelKind: null,
-  selectedModelTask: null,
-  backendMessage: null,
-  documentDetected: false,
-  cornerCount: 0,
-  cornerPoints: [],
-  isStable: false,
-  processingWidth: null,
-  processingHeight: null,
-  autoCaptureEnabled: true,
-  isProcessing: false,
-  updatedAt: null,
-});
+function createInitialCvDebugState(): ScannerCvDebugState {
+  return {
+    pipeline: "idle",
+    cvReady: false,
+    requestedBackend: "native-ort",
+    activeBackend: "native-ort",
+    strictMode: false,
+    preferredProvider: null,
+    preferredProviderReady: false,
+    selectedModelId: null,
+    selectedModelKind: null,
+    selectedModelTask: null,
+    backendMessage: null,
+    documentDetected: false,
+    cornerCount: 0,
+    cornerPoints: [],
+    isStable: false,
+    processingWidth: null,
+    processingHeight: null,
+    autoCaptureEnabled: true,
+    isProcessing: false,
+    updatedAt: null,
+  };
+}
 
-const createInitialConnectionDebugState = (): ScannerConnectionDebugState => ({
-  reconnectState: "idle",
-  reconnectAttempt: null,
-  reconnectMaxAttempts: null,
-  reconnectDelayMs: null,
-  reconnectMessage: null,
-  lastErrorReason: null,
-  lastDisconnectAt: null,
-});
+function createInitialConnectionDebugState(): ScannerConnectionDebugState {
+  return {
+    reconnectState: "idle",
+    reconnectAttempt: null,
+    reconnectMaxAttempts: null,
+    reconnectDelayMs: null,
+    reconnectMessage: null,
+    lastErrorReason: null,
+    lastDisconnectAt: null,
+  };
+}
 
-const createInitialCaptureDebugState = (): ScannerCaptureDebugState => ({
-  highQualityStatus: "idle",
-  highQualitySource: null,
-  highQualityFallbackReason: null,
-  lastCaptureSource: null,
-  lastCaptureWidth: null,
-  lastCaptureHeight: null,
-  lastCaptureAt: null,
-  lastCaptureError: null,
-  lastCaptureDocumentDetected: false,
-});
+function createInitialCaptureDebugState(): ScannerCaptureDebugState {
+  return {
+    highQualityStatus: "idle",
+    highQualitySource: null,
+    highQualityFallbackReason: null,
+    lastCaptureSource: null,
+    lastCaptureWidth: null,
+    lastCaptureHeight: null,
+    lastCaptureAt: null,
+    lastCaptureError: null,
+    lastCaptureDocumentDetected: false,
+    postProcessStatus: "idle",
+    postProcessError: null,
+    postProcessDecodeMs: null,
+    postProcessRedetectMs: null,
+    postProcessPerspectiveMs: null,
+    postProcessEnhanceMs: null,
+    postProcessEncodeMs: null,
+    postProcessTotalMs: null,
+    postProcessBackend: "heuristic",
+    postProcessModelId: null,
+    postProcessModelMs: null,
+    postProcessResidualWarpMs: null,
+    postProcessFlattenMs: null,
+    postProcessUsedRedetect: false,
+    postProcessUsedPerspective: false,
+    postProcessUsedEnhancement: false,
+    postProcessUsedResidualWarp: false,
+    postProcessFallbackReason: null,
+    postProcessControlGridShape: null,
+    postProcessInputWidth: null,
+    postProcessInputHeight: null,
+    postProcessOutputWidth: null,
+    postProcessOutputHeight: null,
+    postProcessUpdatedAt: null,
+  };
+}
 
-const createInitialWorkspaceState = () => ({
-  status: "idle" as ScannerStatus,
-  errorMessage: null,
-  frameSource: null,
-  config: null,
-  frameCount: 0,
-  capturedDocuments: [],
-  previewDebug: createInitialPreviewDebugState(),
-  cvDebug: createInitialCvDebugState(),
-  connectionDebug: createInitialConnectionDebugState(),
-  captureDebug: createInitialCaptureDebugState(),
-});
+function createInitialWorkspaceState() {
+  return {
+    status: "idle" as ScannerStatus,
+    errorMessage: null,
+    frameSource: null,
+    config: null,
+    frameCount: 0,
+    capturedDocuments: [],
+    previewDebug: createInitialPreviewDebugState(),
+    cvDebug: createInitialCvDebugState(),
+    connectionDebug: createInitialConnectionDebugState(),
+    captureDebug: createInitialCaptureDebugState(),
+  };
+}
 
 function operationSuccessState() {
   return {

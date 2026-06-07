@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::scanner_detect::ScannerDetectResourceStatus;
 use crate::scanner_platform;
@@ -193,16 +193,6 @@ pub(crate) fn select_model_variant(
     candidate_model_variants(config)
         .into_iter()
         .find(|model| resource_exists(resources, model.variant.resource_key()))
-}
-
-pub(crate) fn runtime_library_path_for_current_platform(
-    resource_base_dir: &Path,
-) -> Option<PathBuf> {
-    match std::env::consts::OS {
-        "windows" => Some(resource_base_dir.join(WINDOWS_ORT_RELATIVE_PATH)),
-        "linux" => Some(resource_base_dir.join(LINUX_ORT_RELATIVE_PATH)),
-        _ => None,
-    }
 }
 
 fn candidate_model_variants(config: &ScannerDetectConfig) -> Vec<ResolvedScannerModel> {

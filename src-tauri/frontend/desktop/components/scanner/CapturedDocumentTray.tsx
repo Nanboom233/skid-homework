@@ -8,6 +8,7 @@ import {CapturedDocumentCard} from "./CapturedDocumentCard";
 
 interface CapturedDocumentTrayProps {
   documents: ScannerCapturedDocument[];
+  onEdit: (documentId: string) => void;
   onRemove: (documentId: string) => void;
   onSendToAI: () => void;
   sendDisabled: boolean;
@@ -16,6 +17,7 @@ interface CapturedDocumentTrayProps {
 
 export function CapturedDocumentTray({
   documents,
+  onEdit,
   onRemove,
   onSendToAI,
   sendDisabled,
@@ -40,6 +42,7 @@ export function CapturedDocumentTray({
               key={doc.id}
               document={doc}
               index={index}
+              onEdit={onEdit}
               onRemove={onRemove}
             />
           ))}

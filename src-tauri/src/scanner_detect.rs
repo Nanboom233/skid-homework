@@ -25,6 +25,11 @@ pub(crate) use crate::scanner_detect_image::build_dynamic_image_from_preview_fra
 
 const STAGE: &str = "ort-runtime";
 
+pub use crate::scanner_detect_runtime::reset_scanner_detect_runtime_caches;
+pub(crate) use crate::scanner_ort::{
+    build_scanner_execution_providers, configure_scanner_session_builder_for_current_platform,
+};
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScannerDetectResourceStatus {
@@ -68,6 +73,53 @@ pub struct ScannerDetectProbeResponse {
 pub struct ScannerPoint {
     pub x: f32,
     pub y: f32,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct SharedScannerOrtContext {
+    pub(crate) runtime_ready: bool,
+    pub(crate) preferred_provider: String,
+    pub(crate) preferred_provider_ready: bool,
+    pub(crate) available_providers: Vec<String>,
+    pub(crate) ort_build_info: Option<String>,
+    pub(crate) runtime_error: Option<String>,
+    pub(crate) context_error: Option<String>,
+}
+
+pub(crate) fn ensure_shared_scanner_ort_context(
+    resource_dir_hint: Option<PathBuf>,
+    _app_config_dir_hint: Option<PathBuf>,
+) -> SharedScannerOrtContext {
+    let resource_root_candidates =
+        scanner_resource::build_resource_root_candidates(resource_dir_hint, None);
+    let selected_resource_root = scanner_resource::select_resource_root(
+        &resource_root_candidates,
+        &DETECT_INTERESTING_PATHS,
+    );
+    let resource_base_dir = selected_resource_root
+        .as_ref()
+        .map(|candidate| candidate.path.clone());
+    let runtime_snapshot = probe_ort_runtime(resource_base_dir.as_deref());
+    let preferred_provider = scanner_platform::default_preferred_provider().to_string();
+    let preferred_provider_ready = scanner_platform::is_provider_available(
+        &preferred_provider,
+        &runtime_snapshot.available_providers,
+    );
+    let context_error = if resource_base_dir.is_none() {
+        Some("Could not resolve the scanner resource directory.".to_string())
+    } else {
+        None
+    };
+
+    SharedScannerOrtContext {
+        runtime_ready: runtime_snapshot.ready,
+        preferred_provider,
+        preferred_provider_ready,
+        available_providers: runtime_snapshot.available_providers,
+        ort_build_info: runtime_snapshot.ort_build_info,
+        runtime_error: runtime_snapshot.runtime_error,
+        context_error,
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -114,6 +166,12 @@ pub struct ScannerDetectDocumentResponse {
     pub session_error: Option<String>,
     pub points: Option<Vec<ScannerPoint>>,
     pub message: String,
+}
+
+impl ScannerDetectDocumentResponse {
+    pub fn detected_points(&self) -> Option<&[ScannerPoint]> {
+        self.points.as_deref()
+    }
 }
 
 #[command]
@@ -417,6 +475,9 @@ pub fn detect_document_native_ort(
                     runtime_error: Some(error.clone()),
                     ort_build_info: None,
                     available_providers: Vec::new(),
+                    selected_runtime_library_path: None,
+                    loaded_runtime_library_path: None,
+                    runtime_path_mismatch: false,
                 },
                 OrtSessionSnapshot {
                     ready: false,

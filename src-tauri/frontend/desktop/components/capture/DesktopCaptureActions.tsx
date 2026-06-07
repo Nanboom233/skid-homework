@@ -1,6 +1,6 @@
 "use client";
 
-import {MoreVertical, ScanLine} from "lucide-react";
+import {Camera, MoreVertical} from "lucide-react";
 import dynamic from "next/dynamic";
 import Image from "next/image";
 import {useCallback, useEffect, useState} from "react";
@@ -46,10 +46,10 @@ export function DesktopCaptureActions({
   );
   const [adbConnected, setAdbConnected] = useState(false);
   const [adbRemoteDialogOpen, setAdbRemoteDialogOpen] = useState(false);
+  const [scannerDialogOpen, setScannerDialogOpen] = useState(false);
   const [selectedAdbSerial, setSelectedAdbSerial] = useState<string | null>(
     null,
   );
-  const [scannerOpen, setScannerOpen] = useState(false);
 
   const isDisabled = disabled || adbBusy;
 
@@ -204,6 +204,11 @@ export function DesktopCaptureActions({
     [handleAdbBtnClicked],
   );
 
+  const handleDocumentsCaptured = useCallback(
+    (files: File[]) => appendFiles(files, "scanner"),
+    [appendFiles],
+  );
+
   if (isCompact) {
     return null;
   }
@@ -211,19 +216,6 @@ export function DesktopCaptureActions({
   return (
     <>
       <div className="flex gap-2">
-        <Button
-          variant="outline"
-          className="flex-1 items-center justify-between min-w-0"
-          size="default"
-          disabled={isDisabled}
-          onClick={() => setScannerOpen(true)}
-          title={t("adb.document-scanner")}
-        >
-          <span className="flex items-center gap-1.5 min-w-0">
-            <ScanLine className="h-4.5 w-4.5 shrink-0" />
-            <span className="truncate">{t("adb.document-scanner")}</span>
-          </span>
-        </Button>
         <Button
           variant="outline"
           className="flex-1 items-center min-w-0 justify-between"
@@ -266,6 +258,10 @@ export function DesktopCaptureActions({
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" className="min-w-40">
+              <DropdownMenuItem onClick={() => setScannerDialogOpen(true)}>
+                <Camera className="mr-2 h-4 w-4" />
+                {t("adb.document-scanner")}
+              </DropdownMenuItem>
               <DropdownMenuItem onClick={() => void handleAdbReconnect()}>
                 {t("adb.reconnect")}
               </DropdownMenuItem>
@@ -282,11 +278,13 @@ export function DesktopCaptureActions({
         onSelectDevice={handleTauriDeviceSelect}
         selectedSerial={selectedAdbSerial}
       />
-      <ScannerWorkspace
-        isOpen={scannerOpen}
-        onOpenChange={setScannerOpen}
-        onDocumentsCaptured={(files) => appendFiles(files, "scan")}
-      />
+      {scannerDialogOpen && (
+        <ScannerWorkspace
+          isOpen={scannerDialogOpen}
+          onOpenChange={setScannerDialogOpen}
+          onDocumentsCaptured={handleDocumentsCaptured}
+        />
+      )}
     </>
   );
 }

@@ -113,23 +113,23 @@ const resolveDetectionBackendState = (
     && nativeProbe?.detectionImplemented,
   );
 
-  if (requestedBackend === "native-ort") {
-    if (nativeSupported && nativeReady) {
-      return {
-        requestedBackend,
-        activeBackend: "native-ort",
-        ready: true,
-        strictMode,
-        message: nativeProbe?.message
-          ?? "Native runtime is active for stage-1 document detection.",
-        preferredProvider: nativeProbe?.preferredProvider ?? null,
-        preferredProviderReady: nativeProbe?.preferredProviderReady ?? false,
-        selectedModelId: nativeProbe?.selectedModelId ?? null,
-        selectedModelKind: nativeProbe?.selectedModelKind ?? null,
-        selectedModelTask: nativeProbe?.selectedModelTask ?? null,
-      };
-    }
+  if (nativeSupported && nativeReady) {
+    return {
+      requestedBackend,
+      activeBackend: "native-ort",
+      ready: true,
+      strictMode,
+      message: nativeProbe?.message
+        ?? "Native runtime is active for stage-1 document detection.",
+      preferredProvider: nativeProbe?.preferredProvider ?? null,
+      preferredProviderReady: nativeProbe?.preferredProviderReady ?? false,
+      selectedModelId: nativeProbe?.selectedModelId ?? null,
+      selectedModelKind: nativeProbe?.selectedModelKind ?? null,
+      selectedModelTask: nativeProbe?.selectedModelTask ?? null,
+    };
+  }
 
+  if (requestedBackend === "native-ort") {
     if (strictMode) {
       return {
         requestedBackend,
@@ -153,7 +153,7 @@ const resolveDetectionBackendState = (
     return {
       requestedBackend,
       activeBackend: "opencv",
-      ready: false,
+      ready: true,
       strictMode,
       message: nativeProbe?.message
         ?? (nativeSupported
@@ -170,7 +170,7 @@ const resolveDetectionBackendState = (
   return {
     requestedBackend,
     activeBackend: "opencv",
-    ready: false,
+    ready: true,
     strictMode,
     message: "OpenCV contour detection is active.",
     preferredProvider: nativeProbe?.preferredProvider ?? null,
@@ -848,6 +848,18 @@ export function useScannerSession({
         reconnectMessage: t("connection.started"),
       });
 
+      const latestNativeProbe = await refreshNativeOrtProbe();
+      if (!dialogOpenRef.current || !isCurrentSourceSession()) {
+        releaseFrameSourceIfCurrent(source);
+        try {
+          await source.stop();
+        } catch (error) {
+          console.warn("[Scanner] Failed to stop frame source:", error);
+        }
+        return;
+      }
+      applyNativeORTProbe(latestNativeProbe);
+
       const detectionBackend = activeDetectionBackendRef.current ?? "opencv";
 
       try {
@@ -924,6 +936,7 @@ export function useScannerSession({
     }
   }, [
     applyFrameSourceState,
+    applyNativeORTProbe,
     applyRecoverableScannerSignal,
     attachOptionalHooks,
     beginFrameSourceSession,
@@ -937,6 +950,7 @@ export function useScannerSession({
     requestAutoCapture,
     resetDebugState,
     resetPreview,
+    refreshNativeOrtProbe,
     scannerSettings,
     serverJarPath,
     setCvDebug,

@@ -1,7 +1,7 @@
 import {useTranslation} from "react-i18next";
 import {Button} from "@/components/ui/button";
 import {Badge} from "@/components/ui/badge";
-import {X, Camera, RotateCw, Settings, Wifi, WifiOff, Loader2, AlertCircle} from "lucide-react";
+import {X, Camera, Bug, RotateCw, Settings, Wifi, WifiOff, Loader2, AlertCircle} from "lucide-react";
 import {cn} from "@/lib/utils";
 
 interface ScannerHeaderProps {
@@ -9,7 +9,7 @@ interface ScannerHeaderProps {
   isEditing: boolean;
   editingLabel?: string;
   deviceStatus: "connected" | "connecting" | "disconnected" | "error";
-  onToggleDiagnostics?: () => void;
+  onToggleDiagnostics: () => void;
   onToggleOrientation?: () => void;
   onSettingsClick?: () => void;
 }
@@ -74,12 +74,10 @@ export function ScannerHeader({
           </Button>
         )}
 
-        {onToggleDiagnostics && (
-          <Button variant="ghost" size="icon" onClick={onToggleDiagnostics}>
-            <Settings className="h-5 w-5" />
-            <span className="sr-only">{t("actions.diagnostics", "Diagnostics")}</span>
-          </Button>
-        )}
+        <Button variant="ghost" size="icon" onClick={onToggleDiagnostics}>
+          <Bug className="h-5 w-5" />
+          <span className="sr-only">{t("actions.diagnostics", "Diagnostics")}</span>
+        </Button>
 
         <div className="mx-1 h-4 w-px bg-border" aria-hidden="true" />
 

@@ -1,13 +1,15 @@
 mod adb_plugin;
 
 #[cfg(any(target_os = "windows", target_os = "linux"))]
+mod png_bridge;
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 mod scanner_assets;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 mod scanner_camera_resource;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 mod scanner_cv_detect;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
-mod scanner_detect;
+pub mod scanner_detect;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 mod scanner_detect_config;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
@@ -19,11 +21,15 @@ mod scanner_detect_model;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 mod scanner_detect_runtime;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
-mod scanner_frame_protocol;
+pub mod scanner_frame_protocol;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 mod scanner_ort;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 mod scanner_platform;
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+pub mod scanner_postprocess;
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+pub mod scanner_postprocess_model;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 mod scanner_resource;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
@@ -66,8 +72,11 @@ pub fn run() {
         scanner_detect::tauri_scanner_detect_document,
         scanner_detect_loop::tauri_scanner_start_detection_loop,
         scanner_detect_loop::tauri_scanner_stop_detection_loop,
+        scanner_postprocess::tauri_scanner_postprocess_image,
+        scanner_postprocess::tauri_scanner_refine_document_corners,
         scanner_transport::tauri_adb_capture_still,
         scanner_transport::tauri_adb_capture_still_stream,
+        png_bridge::tauri_scanner_encode_png_rgba,
         stream_decoder::tauri_scanner_start_stream,
         stream_decoder::tauri_scanner_stop_stream,
     ]);

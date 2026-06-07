@@ -163,6 +163,18 @@ export const captureTauriAdbScreenshot = async (
 
 // --- Scanner camera-server transport ---
 
+export const encodeTauriPngRgba = async (
+  width: number,
+  height: number,
+  rgba: Uint8Array,
+): Promise<Uint8Array> => {
+  return await invokeTauriBinaryChannelCommand("tauri_scanner_encode_png_rgba", {
+    width,
+    height,
+    rgba,
+  });
+};
+
 export const resolveTauriCameraServerArtifact = async (): Promise<TauriCameraServerArtifact> => {
   return await invokeTauriCommand<TauriCameraServerArtifact>("scanner_camera_server_artifact");
 };

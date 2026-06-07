@@ -1,3 +1,5 @@
+import {isTauri} from "../tauri/platform";
+
 export type OrthogonalRotation = 0 | 90 | 180 | 270;
 
 type PngEncodeSurface =
@@ -15,6 +17,7 @@ type PngEncodeSurface =
 let pngEncodeSurface: PngEncodeSurface | null = null;
 let pngEncodeQueue: Promise<void> = Promise.resolve();
 let pngEncodeWorkerDisabled = false;
+let pngEncodeNativeDisabled = false;
 
 type PngEncodeWorkerState = {
   nextRequestId: number;
@@ -229,7 +232,27 @@ const encodeImageDataToPngBlobViaWorker = async (frame: ImageData): Promise<Blob
   return await blobPromise;
 };
 
+const encodeImageDataToPngBlobViaNative = async (frame: ImageData): Promise<Blob> => {
+  if (!isTauri()) {
+    throw new Error("Native PNG encode is only available in Tauri desktop builds.");
+  }
+
+  const {encodeTauriPngRgba} = await import("../tauri/adb");
+  const rgba = new Uint8Array(frame.data);
+  const encodedBytes = await encodeTauriPngRgba(frame.width, frame.height, rgba);
+  return new Blob([new Uint8Array(encodedBytes)], {type: "image/png"});
+};
+
 export const encodeImageDataToPngBlob = async (frame: ImageData): Promise<Blob> => {
+  if (!pngEncodeNativeDisabled && isTauri()) {
+    try {
+      return await encodeImageDataToPngBlobViaNative(frame);
+    } catch (error) {
+      console.warn("[Scanner] Native PNG encode failed, falling back to browser encoder.", error);
+      pngEncodeNativeDisabled = true;
+    }
+  }
+
   try {
     return await encodeImageDataToPngBlobViaWorker(frame);
   } catch (error) {

@@ -1,4 +1,4 @@
-import {useCallback, useEffect, useRef, useState} from "react";
+import {useCallback, useEffect, useMemo, useRef, useState} from "react";
 import {useScannerStore} from "../../store/scanner-store";
 import type {KeyboardEvent as ReactKeyboardEvent} from "react";
 import {useTranslation} from "react-i18next";
@@ -7,10 +7,13 @@ import {useScannerCapture, type UseScannerCaptureResult} from "../../hooks/use-s
 import {useScannerPreview} from "../../hooks/use-scanner-preview";
 import {useScannerSession} from "../../hooks/use-scanner-session";
 import {useMediaQuery} from "@/hooks/use-media-query";
+import {useSettingsStore} from "@/store/settings-store";
 import {Dialog, DialogContent, DialogTitle} from "@/components/ui/dialog";
 import {CapturedDocumentTray} from "./CapturedDocumentTray";
 import {ScannerActionBar} from "./ScannerActionBar";
+import {ScannerCapturedDocumentEditor} from "./ScannerCapturedDocumentEditor";
 import {ScannerControls} from "./ScannerControls";
+import {ScannerDiagnosticsDrawer} from "./ScannerDiagnosticsDrawer";
 import {ScannerHeader} from "./ScannerHeader";
 import {ScannerOverlay} from "./ScannerOverlay";
 import {ScannerPreviewHud} from "./ScannerPreviewHud";
@@ -72,6 +75,11 @@ export function ScannerWorkspace({
   const {t} = useTranslation("commons", {keyPrefix: "document-scanner"});
   const prefersReducedMotion = useMediaQuery("(prefers-reduced-motion: reduce)");
 
+  const scannerPostProcessBackend = useSettingsStore((s) => s.scannerPostProcessBackend);
+  const setScannerPostProcessBackend = useSettingsStore((s) => s.setScannerPostProcessBackend);
+
+  const [editingDocId, setEditingDocId] = useState<string | null>(null);
+  const [isDiagnosticsOpen, setIsDiagnosticsOpen] = useState(false);
   const [captureFlash, setCaptureFlash] = useState(false);
 
   const workspaceRef = useRef<HTMLDivElement | null>(null);
@@ -133,6 +141,14 @@ export function ScannerWorkspace({
     detectionEvents,
   } = session;
 
+  const editingDocument = useMemo(
+    () => capture.capturedDocuments.find((d) => d.id === editingDocId) ?? null,
+    [capture.capturedDocuments, editingDocId],
+  );
+
+  // M1 fix: derive isEditing from actual document existence, not just ID.
+  const isEditing = editingDocument !== null;
+
   const deviceStatus = isStreaming
     ? "connected" as const
     : isConnecting
@@ -140,6 +156,14 @@ export function ScannerWorkspace({
       : session.status === "error"
         ? "error" as const
         : "disconnected" as const;
+
+  const handleExitEditor = useCallback(() => {
+    setEditingDocId(null);
+  }, []);
+
+  const handleToggleDiagnostics = useCallback(() => {
+    setIsDiagnosticsOpen((current) => !current);
+  }, []);
 
   const clearCaptureFlashTimeout = useCallback(() => {
     if (captureFlashTimeoutRef.current) {
@@ -171,6 +195,9 @@ export function ScannerWorkspace({
   const handleCloseWorkspace = useCallback(async () => {
     if (closingRef.current) return;
     closingRef.current = true;
+    // M1 fix: Reset local UI state to prevent stale editing state on reopen.
+    setEditingDocId(null);
+    setIsDiagnosticsOpen(false);
     try {
       await stopStream();
     } finally {
@@ -181,13 +208,13 @@ export function ScannerWorkspace({
   }, [onOpenChange, reset, stopStream]);
 
   const handleCapture = useCallback(() => {
-    if (!isStreaming || capture.isCapturing) {
+    if (!isStreaming || isEditing || capture.isCapturing) {
       return;
     }
 
     triggerCaptureFlash();
     void capture.capture();
-  }, [capture, isStreaming, triggerCaptureFlash]);
+  }, [capture, isEditing, isStreaming, triggerCaptureFlash]);
 
   const handleToggleOrientation = useCallback(() => {
     if (capture.isCapturing) return;
@@ -224,7 +251,7 @@ export function ScannerWorkspace({
     }
 
     if (event.code === "Space") {
-      if (event.repeat || isInteractiveTarget(event.target) || !isStreaming) {
+      if (event.repeat || isInteractiveTarget(event.target) || !isStreaming || isEditing) {
         return;
       }
 
@@ -235,13 +262,27 @@ export function ScannerWorkspace({
 
     if (event.key === "Escape") {
       if (event.defaultPrevented) return;
+      if (isEditing || isDiagnosticsOpen) return;
       event.preventDefault();
       handleCloseWorkspace();
       return;
     }
+
+    if (
+      (event.ctrlKey || event.metaKey)
+      && event.shiftKey
+      && !event.altKey
+      && event.key.toLowerCase() === "d"
+    ) {
+      event.preventDefault();
+      handleToggleDiagnostics();
+    }
   }, [
     handleCapture,
     handleCloseWorkspace,
+    handleToggleDiagnostics,
+    isDiagnosticsOpen,
+    isEditing,
     isOpen,
     isStreaming,
   ]);
@@ -324,8 +365,8 @@ export function ScannerWorkspace({
     ? previewDimensions.displayWidth / previewDimensions.displayHeight
     : (orientation === "portrait" ? 3 / 4 : 16 / 9);
 
-  const hasTray = capturedDocuments.length > 0;
-  const sidePanelsWidth = hasTray ? "44rem" : "24rem";
+  const hasTray = !isEditing && capturedDocuments.length > 0;
+  const sidePanelsWidth = isEditing ? "0px" : hasTray ? "44rem" : "24rem";
 
   return (
     <Dialog open={isOpen} onOpenChange={(open) => {
@@ -334,6 +375,7 @@ export function ScannerWorkspace({
       }
     }}>
       <DialogContent
+        size="scanner"
         className="!flex h-[min(85vh,820px)] flex-col overflow-hidden p-0 transition-[max-width] duration-300 ease-out"
         showCloseButton={false}
         onInteractOutside={(e) => e.preventDefault()}
@@ -357,9 +399,11 @@ export function ScannerWorkspace({
         >
       <ScannerHeader
         onClose={handleCloseWorkspace}
-        isEditing={false}
+        isEditing={isEditing}
+        editingLabel={isEditing ? t("editor.title", "Edit Document") : undefined}
         deviceStatus={deviceStatus}
-        onToggleOrientation={handleToggleOrientation}
+        onToggleOrientation={!isEditing ? handleToggleOrientation : undefined}
+        onToggleDiagnostics={handleToggleDiagnostics}
       />
 
       <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
@@ -428,38 +472,69 @@ export function ScannerWorkspace({
               isStreaming={isStreaming}
               onStartStop={handleStartStop}
               isConnecting={isConnecting}
+              disabled={isEditing}
             />
           </div>
         </main>
 
         {/* Desktop Controls (Vertical) */}
-        <div className="hidden w-96 shrink-0 flex-col overflow-y-auto border-l bg-background p-4 lg:flex">
-          <ScannerControls
-            isConnecting={isConnecting}
-            isStreaming={isStreaming}
-            isProcessing={capture.isCapturing || hasProcessingDocs}
-            autoCapture={capture.autoCapture}
-            isStable={detectionEvents.isStable}
-            previewOrientation={orientation}
-            onAutoCaptureChange={capture.setAutoCapture}
-            onPreviewOrientationToggle={handleToggleOrientation}
-            onStart={session.startStream}
-            onStop={session.stopStream}
-            onPreviewCapture={handleCapture}
-          />
-        </div>
+        {!isEditing && (
+          <div className="hidden w-96 shrink-0 flex-col overflow-y-auto border-l bg-background p-4 lg:flex">
+            <ScannerControls
+              isConnecting={isConnecting}
+              isStreaming={isStreaming}
+              isProcessing={capture.isCapturing || hasProcessingDocs}
+              autoCapture={capture.autoCapture}
+              isStable={detectionEvents.isStable}
+              requestedPostProcessBackend={scannerPostProcessBackend}
+              previewOrientation={orientation}
+              onPostProcessBackendChange={setScannerPostProcessBackend}
+              onAutoCaptureChange={capture.setAutoCapture}
+              onPreviewOrientationToggle={handleToggleOrientation}
+              onStart={session.startStream}
+              onStop={session.stopStream}
+              onPreviewCapture={handleCapture}
+            />
+          </div>
+        )}
 
         {/* Document Tray */}
-        <aside className="shrink-0 border-t bg-muted/20 lg:border-l lg:border-t-0">
-          <CapturedDocumentTray
-            documents={capturedDocuments}
-            onRemove={capture.removeCapturedDocument}
-            onSendToAI={handleSendToAI}
-            sendDisabled={capturedDocuments.length === 0 || hasProcessingDocs || hasFailedDocs || capture.isCaptureCommitPending}
-            sendLabel={t("actions.send-to-ai", {count: capturedDocuments.length})}
-          />
-        </aside>
+        {!isEditing && (
+          <aside className="shrink-0 border-t bg-muted/20 lg:border-l lg:border-t-0">
+            <CapturedDocumentTray
+              documents={capturedDocuments}
+              onEdit={setEditingDocId}
+              onRemove={capture.removeCapturedDocument}
+              onSendToAI={handleSendToAI}
+              sendDisabled={capturedDocuments.length === 0 || hasProcessingDocs || hasFailedDocs || capture.isCaptureCommitPending}
+              sendLabel={t("actions.send-to-ai", {count: capturedDocuments.length})}
+            />
+          </aside>
+        )}
       </div>
+
+      {/* Editor */}
+      <ScannerCapturedDocumentEditor
+        open={isEditing}
+        document={editingDocument}
+        isApplying={editingDocument?.status === "processing"}
+        onOpenChange={(open) => {
+          if (!open) {
+            handleExitEditor();
+          }
+        }}
+        onApply={(id, points, options) => {
+          capture.reprocessCapturedDocument(id, points, options);
+          handleExitEditor();
+        }}
+        onPreviewRequest={capture.getEditorPreview}
+      />
+
+      {/* Diagnostics */}
+      <ScannerDiagnosticsDrawer
+        open={isDiagnosticsOpen}
+        onOpenChange={setIsDiagnosticsOpen}
+      />
         </div>
       </DialogContent>
     </Dialog>

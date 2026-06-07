@@ -1,0 +1,7 @@
+fn main() {
+    let probe = app_lib::scanner_detect::probe_native_ort_runtime_with_hints(None, None, None);
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&probe).expect("probe output should serialize")
+    );
+}

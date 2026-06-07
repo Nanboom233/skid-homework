@@ -1,4 +1,4 @@
-import {AlertCircle, Check, Loader2, Trash2} from "lucide-react";
+import {AlertCircle, Check, Loader2, Pencil, Trash2} from "lucide-react";
 import {useTranslation} from "react-i18next";
 import {PhotoView} from "react-photo-view";
 
@@ -12,12 +12,14 @@ import {cn} from "@/lib/utils";
 interface CapturedDocumentCardProps {
   document: ScannerCapturedDocument;
   index: number;
+  onEdit: (documentId: string) => void;
   onRemove: (documentId: string) => void;
 }
 
 export function CapturedDocumentCard({
   document,
   index,
+  onEdit,
   onRemove,
 }: CapturedDocumentCardProps) {
   const {t} = useTranslation("commons", {keyPrefix: "document-scanner.captured"});
@@ -75,6 +77,19 @@ export function CapturedDocumentCard({
       </div>
 
       <div className="absolute right-1 top-1 flex flex-col gap-1 transition-opacity lg:right-2 lg:top-2 lg:flex-row opacity-100 lg:opacity-0 lg:group-hover:opacity-100 lg:group-focus-within:opacity-100">
+        <Button
+          variant="secondary"
+          size="icon"
+          className="h-6 w-6 rounded-full shadow-sm lg:h-8 lg:w-8"
+          onClick={(e) => {
+            e.stopPropagation();
+            onEdit(document.id);
+          }}
+          disabled={isProcessing}
+        >
+          <Pencil className="h-3 w-3 lg:h-4 lg:w-4" />
+          <span className="sr-only">{t("actions.edit", "Edit")}</span>
+        </Button>
         <Button
           variant="destructive"
           size="icon"
