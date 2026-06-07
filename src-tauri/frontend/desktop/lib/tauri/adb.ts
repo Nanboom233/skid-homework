@@ -11,9 +11,33 @@ export interface TauriAdbConnectResult {
   message: string;
 }
 
+export interface TauriCameraServerArtifact {
+  path: string;
+  source: string;
+}
+
+export interface TauriDecodeStreamHandle {
+  frameChannel: unknown;
+  statusChannel: unknown;
+  dispose: () => void;
+}
+
+export interface TauriDecodeStreamLifecycleEvent {
+  state: "starting" | "connected" | "connecting" | "reconnecting" | "ready" | "error" | "stopped";
+  detail: string;
+  recoverable: boolean;
+  reconnectAttempt: number;
+}
+
 export interface TauriAdbPairRequest {
   address: string;
   pairingCode: string;
+}
+
+export interface TauriAdbStillPayload {
+  mimeType: "image/jpeg";
+  bytes: Uint8Array;
+  transport: "device-file-channel" | "forwarded-stream-channel";
 }
 
 type TauriRawChannelPayload = string | ArrayBuffer | Uint8Array | number[];
@@ -137,7 +161,11 @@ export const captureTauriAdbScreenshot = async (
   });
 };
 
-// --- Generic ADB primitives for future desktop integrations ---
+// --- Scanner camera-server transport ---
+
+export const resolveTauriCameraServerArtifact = async (): Promise<TauriCameraServerArtifact> => {
+  return await invokeTauriCommand<TauriCameraServerArtifact>("scanner_camera_server_artifact");
+};
 
 export const pushTauriAdbFile = async (
   serial: string,
@@ -171,4 +199,191 @@ export const removeForwardTauriAdbPort = async (
     serial,
     localPort,
   });
+};
+
+export const pushTauriCameraServer = async (
+  serial: string,
+  remotePath: string,
+): Promise<string> => {
+  const artifact = await resolveTauriCameraServerArtifact();
+  return await pushTauriAdbFile(serial, artifact.path, remotePath);
+};
+
+export const startTauriAdbServer = async (
+  serial: string,
+  classpath: string,
+  mainClass: string,
+  serverArgs: string[],
+): Promise<string> => {
+  return await invokeTauriCommand<string>("tauri_adb_start_server", {
+    serial,
+    classpath,
+    mainClass,
+    serverArgs,
+  });
+};
+
+export const stopTauriAdbServer = async (
+  serial: string,
+  classpath: string,
+): Promise<string> => {
+  return await invokeTauriCommand<string>("tauri_adb_stop_server", {
+    serial,
+    classpath,
+  });
+};
+
+export const awaitTauriAdbServerReady = async (
+  serial: string,
+  timeoutMs: number,
+): Promise<void> => {
+  return await invokeTauriCommand<void>("tauri_adb_await_server_ready", {
+    serial,
+    timeoutMs,
+  });
+};
+
+export const startTauriAdbLogTailer = async (serial: string): Promise<void> => {
+  return await invokeTauriCommand<void>("tauri_adb_start_log_tailer", {serial});
+};
+
+export const stopTauriAdbLogTailer = async (): Promise<void> => {
+  return await invokeTauriCommand<void>("tauri_adb_stop_log_tailer");
+};
+
+export const captureTauriAdbStill = async (
+  serial: string,
+  classpath: string,
+  socketName: string,
+): Promise<TauriAdbStillPayload> => {
+  const bytes = await invokeTauriBinaryChannelCommand("tauri_adb_capture_still", {
+    serial,
+    classpath,
+    socketName,
+  });
+  return {
+    mimeType: "image/jpeg",
+    bytes,
+    transport: "device-file-channel",
+  };
+};
+
+export const captureTauriAdbStillStream = async (
+  port: number,
+): Promise<TauriAdbStillPayload> => {
+  const bytes = await invokeTauriBinaryChannelCommand("tauri_adb_capture_still_stream", {
+    port,
+  });
+  return {
+    mimeType: "image/jpeg",
+    bytes,
+    transport: "forwarded-stream-channel",
+  };
+};
+
+export const startTauriDecodeStream = async (
+  port: number,
+  onFrame: (framePacket: Uint8Array) => void,
+  onLifecycleEvent: (event: TauriDecodeStreamLifecycleEvent) => void,
+  options?: {
+    maxPreviewWidth?: number;
+    maxPreviewHeight?: number;
+  },
+): Promise<TauriDecodeStreamHandle> => {
+  if (!isTauri()) {
+    throw new Error("Tauri decoded frame streaming is only available in Tauri desktop builds.");
+  }
+
+  const {invoke, Channel} = await import("@tauri-apps/api/core");
+  let latestFramePacket: TauriRawChannelPayload | null = null;
+  let frameDispatchScheduled = false;
+  let disposed = false;
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+  const clearScheduledDispatch = (): void => {
+    if (timeoutId !== null) {
+      clearTimeout(timeoutId);
+      timeoutId = null;
+    }
+    frameDispatchScheduled = false;
+  };
+
+  const flushLatestFrame = (): void => {
+    frameDispatchScheduled = false;
+    timeoutId = null;
+
+    if (disposed) {
+      latestFramePacket = null;
+      return;
+    }
+
+    const framePacket = latestFramePacket;
+    latestFramePacket = null;
+    if (framePacket === null) {
+      return;
+    }
+
+    onFrame(normalizeTauriRawChannelPayload(framePacket));
+
+    if (latestFramePacket !== null) {
+      scheduleLatestFrameDispatch();
+    }
+  };
+
+  function scheduleLatestFrameDispatch(): void {
+    if (disposed || frameDispatchScheduled) {
+      return;
+    }
+
+    frameDispatchScheduled = true;
+
+    if (typeof queueMicrotask === "function") {
+      queueMicrotask(() => {
+        flushLatestFrame();
+      });
+      return;
+    }
+
+    timeoutId = setTimeout(() => {
+      flushLatestFrame();
+    }, 0);
+  }
+
+  const frameChannel = new Channel<TauriRawChannelPayload>((framePacket) => {
+    if (disposed) {
+      return;
+    }
+
+    latestFramePacket = framePacket;
+    scheduleLatestFrameDispatch();
+  });
+  const statusChannel = new Channel<TauriDecodeStreamLifecycleEvent>((event) => {
+    if (disposed) {
+      return;
+    }
+
+    onLifecycleEvent(event);
+  });
+
+  await invoke<void>("tauri_scanner_start_stream", {
+    port,
+    frameChannel,
+    statusChannel,
+    maxPreviewWidth: options?.maxPreviewWidth,
+    maxPreviewHeight: options?.maxPreviewHeight,
+  });
+
+  return {
+    frameChannel,
+    statusChannel,
+    dispose: () => {
+      disposed = true;
+      latestFramePacket = null;
+      clearScheduledDispatch();
+    },
+  };
+};
+
+export const stopTauriDecodeStream = async (): Promise<void> => {
+  return await invokeTauriCommand<void>("tauri_scanner_stop_stream");
 };
