@@ -9,7 +9,15 @@ mod scanner_cv_detect;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 mod scanner_detect;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
+mod scanner_detect_config;
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+mod scanner_detect_image;
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 mod scanner_detect_loop;
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+mod scanner_detect_model;
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+mod scanner_detect_runtime;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 mod scanner_frame_protocol;
 #[cfg(any(target_os = "windows", target_os = "linux"))]

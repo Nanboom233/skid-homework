@@ -198,11 +198,8 @@ async fn detection_loop(
     let stable_hold = Duration::from_millis(stable_hold_ms);
     let backend = config.backend.clone();
 
-    let mut stability_tracker = StabilityTracker::new(
-        stable_frames,
-        variance_threshold,
-        1, // miss_grace_frames: tolerate 1 consecutive None before clearing history
-    );
+    let mut stability_tracker =
+        StabilityTracker::new(stable_frames, variance_threshold, config.miss_grace_frames);
     let mut presence_tracker = DetectionPresenceTracker::new(
         config.miss_grace_frames,
         config.miss_grace_ms,

@@ -59,7 +59,7 @@ self.onmessage = (event: MessageEvent<PngEncodeRequest>) => {
       const frame = new ImageData(new Uint8ClampedArray(data), width, height);
       context.putImageData(frame, 0, 0);
 
-      const encodedBlob = await canvas.convertToBlob({ type: "image/jpeg", quality: 0.95 });
+      const encodedBlob = await canvas.convertToBlob({ type: "image/png" });
       const encodedBuffer = await encodedBlob.arrayBuffer();
 
       postWorkerResponse(

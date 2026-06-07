@@ -1,4 +1,5 @@
 import {create} from "zustand";
+import type {ScannerDetectionBackend} from "@/lib/scanner-types";
 import type {FrameSource, Point, ScannerConfig} from "../lib/scanner";
 import type {OrthogonalRotation} from "../lib/scanner/image-data";
 import type {
@@ -36,7 +37,6 @@ export type ScannerHighQualityCaptureStatus =
   | "success"
   | "error";
 export type ScannerCvPipeline = "idle" | "preview" | "single-hq";
-export type ScannerDetectionBackend = "opencv" | "native-ort";
 
 export interface ScannerPreviewDebugState {
   frameIndex: number;

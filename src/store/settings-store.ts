@@ -1,6 +1,9 @@
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 
+import type { ScannerDetectionBackend } from "@/lib/scanner-types";
+export type { ScannerDetectionBackend } from "@/lib/scanner-types";
+
 export type ThemePreference = "light" | "dark" | "system";
 export type LanguagePreference = "en" | "zh";
 export type ShortcutAction =
@@ -16,7 +19,6 @@ export type ShortcutAction =
 export type ShortcutMap = Record<ShortcutAction, string>;
 
 export type ExplanationMode = "explanation" | "steps";
-export type ScannerDetectionBackend = "opencv" | "native-ort";
 
 const DEFAULT_SHORTCUTS: ShortcutMap = {
   upload: "ctrl+1",
