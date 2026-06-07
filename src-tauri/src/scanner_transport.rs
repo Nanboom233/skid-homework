@@ -15,9 +15,8 @@ use tauri::{
 };
 
 use crate::adb_plugin::{
-    build_app_process_shell_command, combine_command_output, ensure_non_empty,
-    normalize_text_output, run_adb_checked, run_adb_command, shell_single_quote,
-    wrap_shell_c_script,
+    build_app_process_shell_command, combine_command_output, ensure_non_empty, run_adb_checked,
+    run_adb_command, shell_single_quote, wrap_shell_c_script,
 };
 
 const DEVICE_TMP_DIR: &str = "/data/local/tmp";
@@ -129,6 +128,22 @@ pub(crate) fn describe_binary_payload(bytes: &[u8]) -> String {
     )
 }
 
+fn readable_text_payload(bytes: &[u8]) -> Option<String> {
+    let text = std::str::from_utf8(bytes).ok()?.trim();
+    if text.is_empty() {
+        return None;
+    }
+
+    if text
+        .chars()
+        .all(|value| value == '\n' || value == '\r' || value == '\t' || !value.is_control())
+    {
+        Some(text.replace("\r\n", "\n"))
+    } else {
+        None
+    }
+}
+
 fn build_remove_file_shell_script(path: &str) -> String {
     format!("rm -f {}", shell_single_quote(path))
 }
@@ -155,8 +170,7 @@ pub(crate) fn validate_still_capture_payload(
         return Ok(payload);
     }
 
-    let text_probe = normalize_text_output(&payload);
-    if !text_probe.is_empty() {
+    if let Some(text_probe) = readable_text_payload(&payload) {
         return Err(format!(
             "{failure_context} was not a JPEG for {serial}: {text_probe}"
         ));

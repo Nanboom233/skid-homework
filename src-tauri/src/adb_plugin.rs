@@ -729,10 +729,9 @@ pub async fn tauri_adb_start_server(
 
 /// Stop the Android camera server on the selected device.
 #[command]
-pub async fn tauri_adb_stop_server(serial: String, classpath: String) -> Result<String, String> {
+pub async fn tauri_adb_stop_server(serial: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let serial = ensure_non_empty(&serial, "ADB serial")?;
-        let _classpath = ensure_non_empty(&classpath, "Server classpath")?;
         let shell_command = build_scanner_server_stop_script(SCANNER_SERVER_MAIN_CLASS);
         let args = vec![
             "-s".to_string(),

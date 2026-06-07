@@ -223,13 +223,9 @@ export const startTauriAdbServer = async (
   });
 };
 
-export const stopTauriAdbServer = async (
-  serial: string,
-  classpath: string,
-): Promise<string> => {
+export const stopTauriAdbServer = async (serial: string): Promise<string> => {
   return await invokeTauriCommand<string>("tauri_adb_stop_server", {
     serial,
-    classpath,
   });
 };
 

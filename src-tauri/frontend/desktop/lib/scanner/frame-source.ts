@@ -1901,7 +1901,7 @@ export class TauriNativeFrameSource implements FrameSource {
   }
 
   private async cleanupTransport(options: CleanupTransportOptions): Promise<void> {
-    const { serial, remoteJarPath, localPort } = this.config;
+    const { serial, localPort } = this.config;
     const stillLocalPort = this.stillLocalPort;
     this.streamActive = false;
     this.clearTimers();
@@ -1913,7 +1913,7 @@ export class TauriNativeFrameSource implements FrameSource {
 
     if (options.stopServer) {
       try {
-        await stopTauriAdbServer(serial, remoteJarPath);
+        await stopTauriAdbServer(serial);
       } catch {
         // Ignore server shutdown errors so recovery can proceed.
       }
