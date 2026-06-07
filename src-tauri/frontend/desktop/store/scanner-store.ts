@@ -1,4 +1,9 @@
 import {create} from "zustand";
+import type {ScannerDetectionBackend} from "@/lib/scanner-types";
+import type {FrameSource, Point, ScannerConfig} from "../lib/scanner";
+import type {OrthogonalRotation} from "../lib/scanner/image-data";
+import type {ScannerPostProcessBackend} from "@/store/settings-store";
+import type {PostProcessOptions} from "../components/scanner/ScannerCapturedDocumentEditor";
 import type {
   ScannerAssetsError,
   ScannerAssetsProgress,
@@ -18,6 +23,125 @@ import {
 
 const CANCELLED_ERROR_CODE = "assets.operation.cancelled";
 
+export type ScannerStatus = "idle" | "connecting" | "streaming" | "error";
+export type ScannerCapturedDocumentStatus = "processing" | "ready" | "failed";
+export type ScannerReconnectState =
+  | "idle"
+  | "connecting"
+  | "connected"
+  | "reconnecting"
+  | "stopped"
+  | "error";
+export type ScannerHighQualityCaptureStatus =
+  | "idle"
+  | "capturing"
+  | "processing"
+  | "success"
+  | "error";
+export type ScannerPostProcessStatus = "idle" | "processing" | "success" | "error";
+export type ScannerCvPipeline = "idle" | "preview" | "single-hq";
+
+export interface ScannerPreviewDebugState {
+  frameIndex: number;
+  previewFps: number | null;
+  recentWindowFps: number | null;
+  effectiveFps: number | null;
+  payloadBytes: number | null;
+  pollWaitMs: number | null;
+  jsDecodeMs: number | null;
+  canvasDrawMs: number | null;
+  pollCount: number | null;
+  previewWidth: number | null;
+  previewHeight: number | null;
+  transport: string | null;
+  updatedAt: number | null;
+}
+
+export interface ScannerCvDebugState {
+  pipeline: ScannerCvPipeline;
+  cvReady: boolean;
+  requestedBackend: ScannerDetectionBackend;
+  activeBackend: ScannerDetectionBackend;
+  strictMode: boolean;
+  preferredProvider: string | null;
+  preferredProviderReady: boolean;
+  selectedModelId: string | null;
+  selectedModelKind: string | null;
+  selectedModelTask: string | null;
+  backendMessage: string | null;
+  documentDetected: boolean;
+  cornerCount: number;
+  cornerPoints: Point[];
+  isStable: boolean;
+  processingWidth: number | null;
+  processingHeight: number | null;
+  autoCaptureEnabled: boolean;
+  isProcessing: boolean;
+  updatedAt: number | null;
+}
+
+export interface ScannerConnectionDebugState {
+  reconnectState: ScannerReconnectState;
+  reconnectAttempt: number | null;
+  reconnectMaxAttempts: number | null;
+  reconnectDelayMs: number | null;
+  reconnectMessage: string | null;
+  lastErrorReason: string | null;
+  lastDisconnectAt: number | null;
+}
+
+export interface ScannerCaptureDebugState {
+  highQualityStatus: ScannerHighQualityCaptureStatus;
+  highQualitySource: string | null;
+  highQualityFallbackReason: string | null;
+  lastCaptureSource: "preview-stream" | "single-hq" | null;
+  lastCaptureWidth: number | null;
+  lastCaptureHeight: number | null;
+  lastCaptureAt: number | null;
+  lastCaptureError: string | null;
+  lastCaptureDocumentDetected: boolean;
+  postProcessStatus: ScannerPostProcessStatus;
+  postProcessError: string | null;
+  postProcessDecodeMs: number | null;
+  postProcessRedetectMs: number | null;
+  postProcessPerspectiveMs: number | null;
+  postProcessEnhanceMs: number | null;
+  postProcessEncodeMs: number | null;
+  postProcessTotalMs: number | null;
+  postProcessBackend: ScannerPostProcessBackend;
+  postProcessModelId: string | null;
+  postProcessModelMs: number | null;
+  postProcessResidualWarpMs: number | null;
+  postProcessFlattenMs: number | null;
+  postProcessUsedRedetect: boolean;
+  postProcessUsedPerspective: boolean;
+  postProcessUsedEnhancement: boolean;
+  postProcessUsedResidualWarp: boolean;
+  postProcessFallbackReason: string | null;
+  postProcessControlGridShape: string | null;
+  postProcessInputWidth: number | null;
+  postProcessInputHeight: number | null;
+  postProcessOutputWidth: number | null;
+  postProcessOutputHeight: number | null;
+  postProcessUpdatedAt: number | null;
+}
+
+export interface ScannerCapturedDocument {
+  id: string;
+  file: File;
+  sourceFile: File;
+  points: Point[] | null;
+  status: ScannerCapturedDocumentStatus;
+  error: string | null;
+  documentDetected: boolean;
+  captureSource: "preview-stream" | "single-hq";
+  sourceWidth: number;
+  sourceHeight: number;
+  outputNameBase: string;
+  outputRotation: OrthogonalRotation;
+  options?: PostProcessOptions;
+}
+
 export type ScannerOperationContext =
   | {kind: "download"; operationId: string; source: "default" | "update"}
   | {kind: "import"; archivePath: string}
@@ -29,6 +153,17 @@ export type ScannerUpdateCheckResult =
   | {kind: "install-available"; version: string};
 
 export interface ScannerStore {
+  status: ScannerStatus;
+  errorMessage: string | null;
+  frameSource: FrameSource | null;
+  config: ScannerConfig | null;
+  frameCount: number;
+  capturedDocuments: ScannerCapturedDocument[];
+  previewDebug: ScannerPreviewDebugState;
+  cvDebug: ScannerCvDebugState;
+  connectionDebug: ScannerConnectionDebugState;
+  captureDebug: ScannerCaptureDebugState;
+
   assetsStatus: ScannerAssetsStatus | null;
   probeStatus: ScannerOrtProbeStatus | null;
   progress: ScannerAssetsProgress | null;
@@ -39,6 +174,25 @@ export interface ScannerStore {
   canRetryLastOperation: boolean;
   canCancelCurrentOperation: boolean;
   updateCheckResult: ScannerUpdateCheckResult | null;
+
+  setStatus: (status: ScannerStatus, error?: string) => void;
+  setFrameSource: (source: FrameSource | null) => void;
+  setConfig: (config: ScannerConfig | null) => void;
+  incrementFrameCount: () => void;
+  resetFrameCount: () => void;
+  addCapturedDocument: (doc: ScannerCapturedDocument) => void;
+  updateCapturedDocument: (
+    id: string,
+    updates: Partial<ScannerCapturedDocument>,
+  ) => void;
+  removeCapturedDocument: (id: string) => void;
+  clearCapturedDocuments: () => void;
+  setPreviewDebug: (patch: Partial<ScannerPreviewDebugState>) => void;
+  setCvDebug: (patch: Partial<ScannerCvDebugState>) => void;
+  setConnectionDebug: (patch: Partial<ScannerConnectionDebugState>) => void;
+  setCaptureDebug: (patch: Partial<ScannerCaptureDebugState>) => void;
+  resetDebugState: () => void;
+  reset: () => void;
 
   fetchStatus: () => Promise<void>;
   fetchProbe: () => Promise<void>;
@@ -54,6 +208,7 @@ export interface ScannerStore {
 }
 
 export const useScannerStore = create<ScannerStore>()((set, get) => ({
+  ...createInitialWorkspaceState(),
   assetsStatus: null,
   probeStatus: null,
   progress: null,
@@ -64,6 +219,83 @@ export const useScannerStore = create<ScannerStore>()((set, get) => ({
   canRetryLastOperation: false,
   canCancelCurrentOperation: false,
   updateCheckResult: null,
+
+  setStatus: (status, error) =>
+    set((state) => {
+      const errorMessage = error ?? null;
+      return state.status === status && Object.is(state.errorMessage, errorMessage)
+        ? state
+        : {status, errorMessage};
+    }),
+
+  setFrameSource: (source) =>
+    set((state) => (state.frameSource === source ? state : {frameSource: source})),
+
+  setConfig: (config) =>
+    set((state) => (state.config === config ? state : {config})),
+
+  incrementFrameCount: () =>
+    set((state) => ({frameCount: state.frameCount + 1})),
+
+  resetFrameCount: () =>
+    set((state) => (state.frameCount === 0 ? state : {frameCount: 0})),
+
+  addCapturedDocument: (doc) =>
+    set((state) => ({
+      capturedDocuments: [...state.capturedDocuments, doc],
+    })),
+
+  updateCapturedDocument: (id, updates) =>
+    set((state) => {
+      let didChange = false;
+      const capturedDocuments = state.capturedDocuments.map((document) => {
+        if (document.id !== id) return document;
+        didChange = true;
+        return {...document, ...updates};
+      });
+      return didChange ? {capturedDocuments} : state;
+    }),
+
+  removeCapturedDocument: (id) =>
+    set((state) => ({
+      capturedDocuments: state.capturedDocuments.filter((document) => document.id !== id),
+    })),
+
+  clearCapturedDocuments: () => set({capturedDocuments: []}),
+
+  setPreviewDebug: (patch) =>
+    set((state) => {
+      const previewDebug = mergePatchIfChanged(state.previewDebug, patch, ["updatedAt"]);
+      return previewDebug === state.previewDebug ? state : {previewDebug};
+    }),
+
+  setCvDebug: (patch) =>
+    set((state) => {
+      const cvDebug = mergePatchIfChanged(state.cvDebug, patch, ["updatedAt"]);
+      return cvDebug === state.cvDebug ? state : {cvDebug};
+    }),
+
+  setConnectionDebug: (patch) =>
+    set((state) => {
+      const connectionDebug = mergePatchIfChanged(state.connectionDebug, patch);
+      return connectionDebug === state.connectionDebug ? state : {connectionDebug};
+    }),
+
+  setCaptureDebug: (patch) =>
+    set((state) => {
+      const captureDebug = mergePatchIfChanged(state.captureDebug, patch);
+      return captureDebug === state.captureDebug ? state : {captureDebug};
+    }),
+
+  resetDebugState: () =>
+    set({
+      previewDebug: createInitialPreviewDebugState(),
+      cvDebug: createInitialCvDebugState(),
+      connectionDebug: createInitialConnectionDebugState(),
+      captureDebug: createInitialCaptureDebugState(),
+    }),
+
+  reset: () => set(createInitialWorkspaceState()),
 
   fetchStatus: async () => {
     try {
@@ -324,6 +556,151 @@ export const useScannerStore = create<ScannerStore>()((set, get) => ({
 
   clearUpdateCheckResult: () => set({updateCheckResult: null}),
 }));
+
+const isPlainObject = (value: unknown): value is Record<string, unknown> => {
+  if (!value || typeof value !== "object") return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+};
+
+const isSamePatchValue = (current: unknown, next: unknown): boolean => {
+  if (Object.is(current, next)) return true;
+
+  if (Array.isArray(current) && Array.isArray(next)) {
+    return current.length === next.length
+      && current.every((value, index) => isSamePatchValue(value, next[index]));
+  }
+
+  if (isPlainObject(current) && isPlainObject(next)) {
+    const currentKeys = Object.keys(current);
+    const nextKeys = Object.keys(next);
+    return currentKeys.length === nextKeys.length
+      && currentKeys.every((key) => isSamePatchValue(current[key], next[key]));
+  }
+
+  return false;
+};
+
+const mergePatchIfChanged = <T extends object>(
+  current: T,
+  patch: Partial<T>,
+  ignoredKeys: ReadonlyArray<keyof T> = [],
+): T => {
+  const keys = Object.keys(patch) as Array<keyof T>;
+  const hasChange = keys.some((key) => {
+    if (ignoredKeys.includes(key)) return false;
+    return !isSamePatchValue(current[key], patch[key]);
+  });
+  return hasChange ? {...current, ...patch} : current;
+};
+
+function createInitialPreviewDebugState(): ScannerPreviewDebugState {
+  return {
+    frameIndex: 0,
+    previewFps: null,
+    recentWindowFps: null,
+    effectiveFps: null,
+    payloadBytes: null,
+    pollWaitMs: null,
+    jsDecodeMs: null,
+    canvasDrawMs: null,
+    pollCount: null,
+    previewWidth: null,
+    previewHeight: null,
+    transport: null,
+    updatedAt: null,
+  };
+}
+
+function createInitialCvDebugState(): ScannerCvDebugState {
+  return {
+    pipeline: "idle",
+    cvReady: false,
+    requestedBackend: "native-ort",
+    activeBackend: "native-ort",
+    strictMode: false,
+    preferredProvider: null,
+    preferredProviderReady: false,
+    selectedModelId: null,
+    selectedModelKind: null,
+    selectedModelTask: null,
+    backendMessage: null,
+    documentDetected: false,
+    cornerCount: 0,
+    cornerPoints: [],
+    isStable: false,
+    processingWidth: null,
+    processingHeight: null,
+    autoCaptureEnabled: true,
+    isProcessing: false,
+    updatedAt: null,
+  };
+}
+
+function createInitialConnectionDebugState(): ScannerConnectionDebugState {
+  return {
+    reconnectState: "idle",
+    reconnectAttempt: null,
+    reconnectMaxAttempts: null,
+    reconnectDelayMs: null,
+    reconnectMessage: null,
+    lastErrorReason: null,
+    lastDisconnectAt: null,
+  };
+}
+
+function createInitialCaptureDebugState(): ScannerCaptureDebugState {
+  return {
+    highQualityStatus: "idle",
+    highQualitySource: null,
+    highQualityFallbackReason: null,
+    lastCaptureSource: null,
+    lastCaptureWidth: null,
+    lastCaptureHeight: null,
+    lastCaptureAt: null,
+    lastCaptureError: null,
+    lastCaptureDocumentDetected: false,
+    postProcessStatus: "idle",
+    postProcessError: null,
+    postProcessDecodeMs: null,
+    postProcessRedetectMs: null,
+    postProcessPerspectiveMs: null,
+    postProcessEnhanceMs: null,
+    postProcessEncodeMs: null,
+    postProcessTotalMs: null,
+    postProcessBackend: "heuristic",
+    postProcessModelId: null,
+    postProcessModelMs: null,
+    postProcessResidualWarpMs: null,
+    postProcessFlattenMs: null,
+    postProcessUsedRedetect: false,
+    postProcessUsedPerspective: false,
+    postProcessUsedEnhancement: false,
+    postProcessUsedResidualWarp: false,
+    postProcessFallbackReason: null,
+    postProcessControlGridShape: null,
+    postProcessInputWidth: null,
+    postProcessInputHeight: null,
+    postProcessOutputWidth: null,
+    postProcessOutputHeight: null,
+    postProcessUpdatedAt: null,
+  };
+}
+
+function createInitialWorkspaceState() {
+  return {
+    status: "idle" as ScannerStatus,
+    errorMessage: null,
+    frameSource: null,
+    config: null,
+    frameCount: 0,
+    capturedDocuments: [],
+    previewDebug: createInitialPreviewDebugState(),
+    cvDebug: createInitialCvDebugState(),
+    connectionDebug: createInitialConnectionDebugState(),
+    captureDebug: createInitialCaptureDebugState(),
+  };
+}
 
 function operationSuccessState() {
   return {

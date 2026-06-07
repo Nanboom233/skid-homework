@@ -55,14 +55,14 @@ struct OrtRuntimeState {
 }
 
 #[derive(Debug, Clone)]
-struct OrtRuntimeSnapshot {
-    ready: bool,
-    runtime_error: Option<String>,
-    ort_build_info: Option<String>,
-    available_providers: Vec<String>,
-    selected_runtime_library_path: Option<PathBuf>,
-    loaded_runtime_library_path: Option<PathBuf>,
-    runtime_path_mismatch: bool,
+pub(crate) struct OrtRuntimeSnapshot {
+    pub(crate) ready: bool,
+    pub(crate) runtime_error: Option<String>,
+    pub(crate) ort_build_info: Option<String>,
+    pub(crate) available_providers: Vec<String>,
+    pub(crate) selected_runtime_library_path: Option<PathBuf>,
+    pub(crate) loaded_runtime_library_path: Option<PathBuf>,
+    pub(crate) runtime_path_mismatch: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -340,7 +340,7 @@ fn runtime_state() -> &'static Mutex<OrtRuntimeState> {
     STATE.get_or_init(|| Mutex::new(OrtRuntimeState::default()))
 }
 
-fn probe_ort_runtime(resource_base_dir: Option<&Path>) -> OrtRuntimeSnapshot {
+pub(crate) fn probe_ort_runtime(resource_base_dir: Option<&Path>) -> OrtRuntimeSnapshot {
     let Some(resource_base_dir) = resource_base_dir else {
         return OrtRuntimeSnapshot {
             ready: false,
@@ -459,7 +459,7 @@ fn runtime_path_mismatch_error(selected: Option<&Path>, loaded: Option<&Path>) -
     ))
 }
 
-fn create_model_session(
+pub(crate) fn create_model_session(
     model_path: &Path,
     available_providers: &[String],
 ) -> Result<Session, String> {
@@ -477,7 +477,7 @@ fn create_model_session(
         })
 }
 
-fn configure_scanner_session_builder_for_current_platform(
+pub(crate) fn configure_scanner_session_builder_for_current_platform(
     builder: SessionBuilder,
 ) -> Result<SessionBuilder, String> {
     match std::env::consts::OS {
@@ -529,7 +529,7 @@ fn available_providers_for_current_platform() -> Vec<String> {
     providers
 }
 
-fn build_scanner_execution_providers(
+pub(crate) fn build_scanner_execution_providers(
     available_providers: &[String],
 ) -> Vec<ort::execution_providers::ExecutionProviderDispatch> {
     let provider_available = |provider: &str| {

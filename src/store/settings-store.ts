@@ -1,6 +1,9 @@
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 
+import type { ScannerDetectionBackend } from "@/lib/scanner-types";
+export type { ScannerDetectionBackend } from "@/lib/scanner-types";
+
 export type ThemePreference = "light" | "dark" | "system";
 export type LanguagePreference = "en" | "zh";
 export type ShortcutAction =
@@ -16,6 +19,7 @@ export type ShortcutAction =
 export type ShortcutMap = Record<ShortcutAction, string>;
 
 export type ExplanationMode = "explanation" | "steps";
+export type ScannerPostProcessBackend = "heuristic" | "native-ml-v1";
 
 const DEFAULT_SHORTCUTS: ShortcutMap = {
   upload: "ctrl+1",
@@ -31,6 +35,9 @@ const DEFAULT_SHORTCUTS: ShortcutMap = {
 const DEFAULT_LANGUAGE: LanguagePreference = "en";
 
 export interface SettingsState {
+  imageEnhancement: boolean;
+  setImageEnhancement: (imagePostprocessing: boolean) => void;
+
   theme: ThemePreference;
   setThemePreference: (theme: ThemePreference) => void;
 
@@ -62,11 +69,35 @@ export interface SettingsState {
 
   showOnlineSearchInScanPage: boolean;
   setShowOnlineSearchInScanPage: (state: boolean) => void;
+
+  scannerDetectionBackend: ScannerDetectionBackend;
+  setScannerDetectionBackend: (backend: ScannerDetectionBackend) => void;
+
+  scannerNativeOrtStrictMode: boolean;
+  setScannerNativeOrtStrictMode: (state: boolean) => void;
+
+  scannerPostProcessBackend: ScannerPostProcessBackend;
+  setScannerPostProcessBackend: (backend: ScannerPostProcessBackend) => void;
+
+  scannerPipelineDebug: boolean;
+  setScannerPipelineDebug: (state: boolean) => void;
+
+  scannerPreviewWidth: number;
+  scannerPreviewHeight: number;
+  scannerFramerate: number;
+  scannerCameraId: string;
+  setScannerPreview: (
+    width: number,
+    height: number,
+    framerate: number,
+    cameraId: string,
+  ) => void;
 }
 
 export const useSettingsStore = create<SettingsState>()(
   persist(
     (set) => ({
+      imageEnhancement: true,
       theme: "system",
       language: DEFAULT_LANGUAGE,
       languageInitialized: false,
@@ -78,7 +109,16 @@ export const useSettingsStore = create<SettingsState>()(
       onlineSearchEnabled: false,
       showModelSelectorInScanPage: false,
       showOnlineSearchInScanPage: false,
+      scannerDetectionBackend: "native-ort",
+      scannerNativeOrtStrictMode: false,
+      scannerPostProcessBackend: "heuristic",
+      scannerPipelineDebug: false,
+      scannerPreviewWidth: 640,
+      scannerPreviewHeight: 360,
+      scannerFramerate: 30,
+      scannerCameraId: "0",
 
+      setImageEnhancement: (state) => set({ imageEnhancement: state }),
       setThemePreference: (theme) => set({ theme }),
       setLanguage: (language) =>
         set({
@@ -115,11 +155,27 @@ export const useSettingsStore = create<SettingsState>()(
         set({ showModelSelectorInScanPage: state }),
       setShowOnlineSearchInScanPage: (state) =>
         set({ showOnlineSearchInScanPage: state }),
+      setScannerDetectionBackend: (backend) =>
+        set({ scannerDetectionBackend: backend }),
+      setScannerNativeOrtStrictMode: (state) =>
+        set({ scannerNativeOrtStrictMode: state }),
+      setScannerPostProcessBackend: (backend) =>
+        set({ scannerPostProcessBackend: backend }),
+      setScannerPipelineDebug: (state) =>
+        set({ scannerPipelineDebug: state }),
+      setScannerPreview: (width, height, framerate, cameraId) =>
+        set({
+          scannerPreviewWidth: width,
+          scannerPreviewHeight: height,
+          scannerFramerate: framerate,
+          scannerCameraId: cameraId,
+        }),
     }),
     {
       name: "skidhw-storage",
       storage: createJSONStorage(() => localStorage),
       partialize: (state) => ({
+        imageEnhancement: state.imageEnhancement,
         theme: state.theme,
         language: state.language,
         languageInitialized: state.languageInitialized,
@@ -131,8 +187,16 @@ export const useSettingsStore = create<SettingsState>()(
         onlineSearchEnabled: state.onlineSearchEnabled,
         showModelSelectorInScanPage: state.showModelSelectorInScanPage,
         showOnlineSearchInScanPage: state.showOnlineSearchInScanPage,
+        scannerDetectionBackend: state.scannerDetectionBackend,
+        scannerNativeOrtStrictMode: state.scannerNativeOrtStrictMode,
+        scannerPostProcessBackend: state.scannerPostProcessBackend,
+        scannerPipelineDebug: state.scannerPipelineDebug,
+        scannerPreviewWidth: state.scannerPreviewWidth,
+        scannerPreviewHeight: state.scannerPreviewHeight,
+        scannerFramerate: state.scannerFramerate,
+        scannerCameraId: state.scannerCameraId,
       }),
-      version: 10,
+      version: 13,
       migrate: (persistedState, version) => {
         const data: Partial<SettingsState> & Record<string, unknown> =
           persistedState && typeof persistedState === "object"
@@ -151,6 +215,19 @@ export const useSettingsStore = create<SettingsState>()(
         const legacyShowOnlineSearchInScanner = (
           data as { showOnlineSearchInScanner?: boolean }
         ).showOnlineSearchInScanner;
+        const rawDetectionBackend = (data as { scannerDetectionBackend?: unknown })
+          .scannerDetectionBackend;
+        const scannerDetectionBackend: ScannerDetectionBackend =
+          rawDetectionBackend === "native-ort" || rawDetectionBackend === "opencv"
+            ? rawDetectionBackend
+            : "native-ort";
+        const rawPostProcessBackend = (
+          data as { scannerPostProcessBackend?: unknown }
+        ).scannerPostProcessBackend;
+        const scannerPostProcessBackend: ScannerPostProcessBackend =
+          rawPostProcessBackend === "native-ml-v1" || rawPostProcessBackend === "heuristic"
+            ? rawPostProcessBackend
+            : "heuristic";
 
         const migratedData = {
           ...data,
@@ -180,10 +257,27 @@ export const useSettingsStore = create<SettingsState>()(
             (data as { devtoolsEnabled?: boolean }).devtoolsEnabled ??
             legacyDevtools ??
             false,
+          imageEnhancement:
+            (data as { imageEnhancement?: boolean }).imageEnhancement ?? true,
+          scannerDetectionBackend,
+          scannerNativeOrtStrictMode:
+            (data as { scannerNativeOrtStrictMode?: boolean })
+              .scannerNativeOrtStrictMode ?? false,
+          scannerPostProcessBackend,
+          scannerPipelineDebug:
+            (data as { scannerPipelineDebug?: boolean }).scannerPipelineDebug ??
+            false,
+          scannerPreviewWidth:
+            (data as { scannerPreviewWidth?: number }).scannerPreviewWidth ?? 640,
+          scannerPreviewHeight:
+            (data as { scannerPreviewHeight?: number }).scannerPreviewHeight ?? 360,
+          scannerFramerate:
+            (data as { scannerFramerate?: number }).scannerFramerate ?? 30,
+          scannerCameraId:
+            (data as { scannerCameraId?: string }).scannerCameraId ?? "0",
         };
 
         delete (migratedData as Record<string, unknown>).devtools;
-        delete (migratedData as Record<string, unknown>).imageEnhancement;
         delete (migratedData as Record<string, unknown>)
           .showModelSelectorInScanner;
         delete (migratedData as Record<string, unknown>)

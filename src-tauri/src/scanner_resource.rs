@@ -1,3 +1,9 @@
+/// Shared resource directory resolution utilities.
+///
+/// Installed scanner assets are preferred when available, but the original
+/// scanner workflow also supported development resources under `src-tauri/resources`.
+/// Keep both paths so local scanner/postprocess behavior matches the baseline
+/// while still allowing runtime-downloaded assets to take precedence.
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -28,6 +34,18 @@ pub fn build_resource_root_candidates(
         push_candidate("tauri-resource-dir", resource_dir);
     }
 
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    push_candidate("cargo-manifest-resources", manifest_dir.join("resources"));
+
+    #[cfg(debug_assertions)]
+    if let Ok(current_dir) = std::env::current_dir() {
+        push_candidate("cwd-resources", current_dir.join("resources"));
+        push_candidate(
+            "cwd-src-tauri-resources",
+            current_dir.join("src-tauri").join("resources"),
+        );
+    }
+
     candidates
 }
 
@@ -37,7 +55,8 @@ pub fn select_resource_root(
 ) -> Option<ResourceRootCandidate> {
     candidates
         .iter()
-        .find(|candidate| score_resource_root(&candidate.path, interesting_paths) > 0)
+        .filter(|candidate| score_resource_root(&candidate.path, interesting_paths) > 0)
+        .max_by_key(|candidate| score_resource_root(&candidate.path, interesting_paths))
         .cloned()
 }
 
