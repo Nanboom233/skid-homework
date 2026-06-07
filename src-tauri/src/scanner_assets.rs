@@ -1,6 +1,7 @@
 use std::{
     collections::HashSet,
     fs::{self, File},
+    future::Future,
     io::{self, BufReader, BufWriter, Read, Write},
     path::{Component, Path, PathBuf},
     sync::{
@@ -285,32 +286,10 @@ pub async fn scanner_assets_download(
     request: ScannerAssetsDownloadRequest,
     progress_channel: Channel<ScannerAssetsProgress>,
 ) -> Result<ScannerAssetsInstallResult, ScannerAssetsError> {
-    let (guard, cancel_requested) = match try_acquire_download_operation(request.operation_id) {
-        Ok(operation) => operation,
-        Err(error) => {
-            send_failed_progress(&progress_channel, error.clone());
-            return Err(error);
-        }
-    };
-    let paths = match resolve_asset_paths(&app) {
-        Ok(paths) => paths,
-        Err(error) => {
-            send_failed_progress(&progress_channel, error.clone());
-            return Err(error);
-        }
-    };
-
-    let _guard = guard;
-    finish_progress_operation(
-        &progress_channel,
-        download_and_install(
-            paths,
-            expected_download_target(),
-            &progress_channel,
-            cancel_requested,
-        )
-        .await,
-    )
+    scanner_assets_download_with_target(app, request, progress_channel, || async {
+        Ok(expected_download_target())
+    })
+    .await
 }
 
 #[command]
@@ -350,6 +329,22 @@ pub async fn scanner_assets_download_update(
     request: ScannerAssetsDownloadRequest,
     progress_channel: Channel<ScannerAssetsProgress>,
 ) -> Result<ScannerAssetsInstallResult, ScannerAssetsError> {
+    scanner_assets_download_with_target(app, request, progress_channel, || async {
+        latest_official_release_target().await
+    })
+    .await
+}
+
+async fn scanner_assets_download_with_target<F, Fut>(
+    app: AppHandle,
+    request: ScannerAssetsDownloadRequest,
+    progress_channel: Channel<ScannerAssetsProgress>,
+    resolve_target: F,
+) -> Result<ScannerAssetsInstallResult, ScannerAssetsError>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<ScannerAssetsDownloadTarget, ScannerAssetsError>>,
+{
     let (guard, cancel_requested) = match try_acquire_download_operation(request.operation_id) {
         Ok(operation) => operation,
         Err(error) => {
@@ -365,7 +360,7 @@ pub async fn scanner_assets_download_update(
         }
     };
 
-    let target = match latest_official_release_target().await {
+    let target = match resolve_target().await {
         Ok(target) => target,
         Err(error) => {
             set_last_error(error.clone());

@@ -18,7 +18,7 @@ import {
 
 const CANCELLED_ERROR_CODE = "assets.operation.cancelled";
 
-type ScannerOperationContext =
+export type ScannerOperationContext =
   | {kind: "download"; operationId: string; source: "default" | "update"}
   | {kind: "import"; archivePath: string}
   | {kind: "clear"};
@@ -47,7 +47,7 @@ export interface ScannerStore {
   startImport: (archivePath: string) => Promise<void>;
   checkForAssetUpdate: () => Promise<void>;
   clearInstalledAssets: () => Promise<void>;
-  cancelCurrentOperation: (options?: {silent?: boolean}) => Promise<void>;
+  cancelCurrentOperation: () => Promise<void>;
   retryLastOperation: () => Promise<void>;
   clearError: () => void;
   clearUpdateCheckResult: () => void;

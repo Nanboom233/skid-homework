@@ -7,11 +7,9 @@ import {
   XCircle,
   Download,
   FolderOpen,
-  AlertTriangle,
   Loader2,
   Cpu,
   Zap,
-  X,
   RefreshCw,
   Trash2,
 } from "lucide-react";
@@ -19,7 +17,8 @@ import {Button} from "@/components/ui/button";
 import {Card, CardContent, CardDescription, CardHeader, CardTitle} from "@/components/ui/card";
 import {Collapsible, CollapsibleContent, CollapsibleTrigger} from "@/components/ui/collapsible";
 import {Badge} from "@/components/ui/badge";
-import {scannerErrorI18nKey} from "../../lib/tauri/scanner";
+import {ScannerOperationPanel} from "../scanner/ScannerOperationPanel";
+import {useScannerArchiveImport} from "../scanner/useScannerArchiveImport";
 import {useScannerStore} from "../../store/scanner-store";
 
 export default function ScannerSettingsCard() {
@@ -44,6 +43,7 @@ export default function ScannerSettingsCard() {
   const clearUpdateCheckResult = useScannerStore((s) => s.clearUpdateCheckResult);
   const [confirmClear, setConfirmClear] = useState(false);
   const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
+  const importArchive = useScannerArchiveImport();
 
   useEffect(() => {
     void fetchStatus();
@@ -54,7 +54,7 @@ export default function ScannerSettingsCard() {
     return () => {
       const state = useScannerStore.getState();
       if (state.activeOperation?.kind === "download") {
-        void state.cancelCurrentOperation({silent: true});
+        void state.cancelCurrentOperation();
       }
     };
   }, []);
@@ -76,24 +76,6 @@ export default function ScannerSettingsCard() {
       setConfirmClear(false);
     }
   }, [isOperating]);
-
-  const handleImport = async () => {
-    const {open} = await import("@tauri-apps/plugin-dialog");
-    const isWindows = navigator.userAgent.includes("Windows");
-    const selected = await open({
-      multiple: false,
-      filters: [
-        {
-          name: t("import.filter-label"),
-          extensions: isWindows ? ["zip"] : ["tar.gz"],
-        },
-      ],
-    });
-    if (selected) {
-      const {startImport} = useScannerStore.getState();
-      await startImport(selected);
-    }
-  };
 
   const state = assetsStatus?.state ?? "missing";
   const hasDownloadedAssets = state === "ready" || state === "invalid";
@@ -182,7 +164,7 @@ export default function ScannerSettingsCard() {
           <Button
             size="sm"
             variant="outline"
-            onClick={() => void handleImport()}
+            onClick={() => void importArchive()}
             disabled={isOperating}
           >
             <FolderOpen className="mr-2 h-4 w-4" />
@@ -201,94 +183,18 @@ export default function ScannerSettingsCard() {
           )}
         </div>
 
-        {isOperating && (progress || activeOperation) && (
-          <div className="space-y-2">
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-2">
-                <Loader2 className="h-4 w-4 animate-spin" />
-                <span className="text-sm">
-                  {progress
-                    ? t(`phases.${progress.phase}`)
-                    : activeOperation?.kind === "download"
-                      ? t("status.downloading")
-                      : activeOperation?.kind === "clear"
-                        ? t("status.clearing")
-                        : t("status.importing")}
-                </span>
-              </div>
-              {canCancelCurrentOperation && (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => void cancelCurrentOperation()}
-                >
-                  <X className="mr-2 h-4 w-4" />
-                  {t("actions.cancel")}
-                </Button>
-              )}
-            </div>
-            {progress?.bytesTotal != null && progress.bytesTotal > 0 && (
-              <div className="space-y-1">
-                <div className="h-2 w-full overflow-hidden rounded-full bg-secondary">
-                  <div
-                    className="h-full bg-primary transition-all duration-300"
-                    style={{width: `${Math.min(100, ((progress.bytesDone ?? 0) / progress.bytesTotal) * 100)}%`}}
-                  />
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  {formatBytes(progress.bytesDone ?? 0)} / {formatBytes(progress.bytesTotal)}
-                </p>
-              </div>
-            )}
-          </div>
-        )}
-
-        {operationError && (
-          <div className="space-y-2 rounded-lg border border-red-200 bg-red-50 p-3 dark:border-red-800 dark:bg-red-950">
-            <div className="flex items-start gap-2">
-              <AlertTriangle className="mt-0.5 h-4 w-4 text-red-600 dark:text-red-400" />
-              <div className="flex-1">
-                <p className="text-sm font-medium text-red-800 dark:text-red-200">
-                  {t("error.title")}
-                </p>
-                <p className="mt-1 text-xs text-red-600 dark:text-red-400">
-                  {scannerErrorI18nKey(operationError.code)
-                    ? t(scannerErrorI18nKey(operationError.code)!)
-                    : t("error.unknown", {code: operationError.code})}
-                </p>
-                <p className="mt-1 text-xs text-red-600/80 dark:text-red-400/80">
-                  {t("error.diagnostic-code", {code: operationError.code})}
-                </p>
-                {operationError.details && (
-                  <p className="mt-1 text-xs text-red-600/80 dark:text-red-400/80">
-                    {t("error.diagnostic-details", {details: operationError.details})}
-                  </p>
-                )}
-              </div>
-            </div>
-            <div className="flex gap-2">
-              {operationError.retryable && canRetryLastOperation && (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => void retryLastOperation()}
-                  disabled={isOperating}
-                >
-                  {t("actions.retry")}
-                </Button>
-              )}
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={clearError}
-                disabled={isOperating}
-              >
-                <X className="mr-2 h-4 w-4" />
-                {t("actions.cancel")}
-              </Button>
-            </div>
-          </div>
-        )}
+        <ScannerOperationPanel
+          progress={progress}
+          activeOperation={activeOperation}
+          operationError={operationError}
+          canRetryLastOperation={canRetryLastOperation}
+          canCancelCurrentOperation={canCancelCurrentOperation}
+          isOperating={isOperating}
+          errorClassName="space-y-2 rounded-lg border border-red-200 bg-red-50 p-3 dark:border-red-800 dark:bg-red-950"
+          onCancel={() => void cancelCurrentOperation()}
+          onRetry={() => void retryLastOperation()}
+          onClearError={clearError}
+        />
 
         {probeStatus && (
           <Collapsible>
@@ -440,10 +346,4 @@ function normalizeDisplayPath(value?: string | null) {
     .replace(/[\\/]+/g, preferredSeparator);
 
   return `${prefix}${rest}`;
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
