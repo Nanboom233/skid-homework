@@ -12,6 +12,8 @@ import {
   Zap,
   RefreshCw,
   Trash2,
+  File as FileIcon,
+  Folder,
 } from "lucide-react";
 import {Button} from "@/components/ui/button";
 import {Card, CardContent, CardDescription, CardHeader, CardTitle} from "@/components/ui/card";
@@ -19,6 +21,7 @@ import {Collapsible, CollapsibleContent, CollapsibleTrigger} from "@/components/
 import {Badge} from "@/components/ui/badge";
 import {ScannerOperationPanel} from "../scanner/ScannerOperationPanel";
 import {useScannerArchiveImport} from "../scanner/useScannerArchiveImport";
+import type {ScannerOrtResourceTreeEntry} from "../../lib/tauri/scanner";
 import {useScannerStore} from "../../store/scanner-store";
 
 export default function ScannerSettingsCard() {
@@ -306,6 +309,8 @@ function DiagnosticsSection({probeStatus}: {probeStatus: NonNullable<ReturnType<
           ))}
         </div>
       </div>
+
+      <ResourceTree resources={probeStatus.resourceTree} />
     </div>
   );
 }
@@ -318,6 +323,75 @@ function DiagRow({label, value, error}: {label: string; value?: string | null; e
       <span className={`break-all font-mono ${error ? "text-red-600 dark:text-red-400" : ""}`}>{value}</span>
     </div>
   );
+}
+
+function ResourceTree({resources}: {resources: ScannerOrtResourceTreeEntry[]}) {
+  const {t} = useTranslation("commons", {keyPrefix: "scanner.diagnostics"});
+  const fileCount = resources.filter((resource) => !resource.isDir).length;
+  const directoryCount = resources.length - fileCount;
+  const totalSizeBytes = resources.reduce(
+    (total, resource) => resource.isDir ? total : total + (resource.sizeBytes ?? 0),
+    0,
+  );
+
+  return (
+    <div className="space-y-2 pt-1">
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+        <p className="font-medium text-muted-foreground">{t("resource-tree")}</p>
+        <p className="text-muted-foreground">
+          {t("resources-summary", {
+            files: fileCount,
+            directories: directoryCount,
+            size: formatFileSize(totalSizeBytes),
+          })}
+        </p>
+      </div>
+
+      {resources.length > 0 ? (
+        <div className="max-h-64 overflow-auto rounded-md border bg-muted/20 py-1">
+          {resources.map((resource) => (
+            <div
+              key={resource.relativePath}
+              className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-3 py-1.5 hover:bg-muted/40"
+            >
+              <div
+                className="flex min-w-0 items-center gap-2"
+                style={{paddingLeft: `${resource.depth * 16}px`}}
+              >
+                {resource.isDir ? (
+                  <Folder className="h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
+                ) : (
+                  <FileIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                )}
+                <span className="truncate font-mono" title={resource.relativePath}>
+                  {resource.name}
+                </span>
+              </div>
+              <span className="shrink-0 font-mono text-muted-foreground">
+                {formatFileSize(resource.sizeBytes)}
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="rounded-md border bg-muted/20 px-3 py-2 font-mono text-muted-foreground">
+          {t("empty-resource-tree")}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function formatFileSize(sizeBytes?: number) {
+  if (sizeBytes == null) return "-";
+  if (sizeBytes < 1024) return `${sizeBytes} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let value = sizeBytes / 1024;
+  for (const unit of units) {
+    if (value < 1024) return `${value.toFixed(value >= 100 ? 0 : 1)} ${unit}`;
+    value /= 1024;
+  }
+  return `${value.toFixed(1)} PB`;
 }
 
 function normalizeDisplayPath(value?: string | null) {

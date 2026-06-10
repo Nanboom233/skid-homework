@@ -370,11 +370,14 @@ export default interface Resources {
       "diagnostics": {
         "build-info": "ORT 构建信息",
         "compat-runtime-path": "运行时库路径（兼容）",
+        "empty-resource-tree": "未发现已安装资源",
         "loaded-runtime-path": "已加载的运行时库路径",
         "models": "模型",
         "providers": "可用提供者",
         "resource-base-dir": "资源目录",
+        "resource-tree": "已安装资源树",
         "resources": "资源",
+        "resources-summary": "{{files}} 个文件 / {{directories}} 个文件夹 / {{size}}",
         "runtime-error": "运行时错误",
         "selected-runtime-path": "选中的运行时库路径",
         "title": "高级诊断"

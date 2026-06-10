@@ -65,8 +65,17 @@ export interface ScannerOrtResourceStatus {
   relativePath: string;
   resolvedPath?: string;
   exists: boolean;
+  sizeBytes?: number;
   required: boolean;
 }
+
+export type ScannerOrtResourceTreeEntry = {
+  relativePath: string;
+  name: string;
+  depth: number;
+  isDir: boolean;
+  sizeBytes?: number;
+};
 
 export interface ScannerOrtProbeStatus {
   stage: string;
@@ -87,6 +96,7 @@ export interface ScannerOrtProbeStatus {
   ortBuildInfo?: string;
   runtimeError?: string;
   resources: ScannerOrtResourceStatus[];
+  resourceTree: ScannerOrtResourceTreeEntry[];
   models: ScannerOrtModelStatus[];
   message: string;
 }

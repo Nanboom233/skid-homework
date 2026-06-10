@@ -926,7 +926,10 @@
       "providers": "Available Providers",
       "runtime-error": "Runtime Error",
       "models": "Models",
-      "resources": "Resources"
+      "resources": "Resources",
+      "resource-tree": "Installed Resource Tree",
+      "resources-summary": "{{files}} files / {{directories}} folders / {{size}}",
+      "empty-resource-tree": "No installed resources found"
     }
   }
 }
