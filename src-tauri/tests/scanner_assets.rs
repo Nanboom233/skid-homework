@@ -39,7 +39,7 @@ mod scanner_assets_under_test {
             ScannerAssetManifestFile {
                 path: path.to_string(),
                 size: bytes.len() as u64,
-                sha256: hex_lower(&Sha256::digest(bytes)),
+                sha256: Some(hex_lower(&Sha256::digest(bytes))),
                 source_url: format!("https://official.example/{path}"),
             }
         }
@@ -139,6 +139,10 @@ mod scanner_assets_under_test {
             assert_eq!(target.asset_tag, "v0.2.0");
             assert_eq!(target.package_file_name, v020);
             assert_eq!(
+                target.checksum_url,
+                official_release_checksum_url("v0.2.0", &target.package_file_name)
+            );
+            assert_eq!(
                 target.asset_url,
                 official_release_asset_url("v0.2.0", &target.package_file_name)
             );
@@ -227,6 +231,25 @@ mod scanner_assets_under_test {
         fn download_timeouts_are_configured() {
             assert_eq!(DOWNLOAD_CONNECT_TIMEOUT, Duration::from_secs(15));
             assert_eq!(DOWNLOAD_READ_TIMEOUT, Duration::from_secs(60));
+        }
+
+        #[test]
+        fn checksum_sidecar_uses_only_first_64_hex_chars() {
+            let digest = "A".repeat(64);
+            let parsed = parse_sha256_sidecar(&format!("{digest}  package.zip\n")).unwrap();
+
+            assert_eq!(parsed, "a".repeat(64));
+        }
+
+        #[test]
+        fn checksum_sidecar_rejects_short_or_non_hex_prefix() {
+            let short_error = parse_sha256_sidecar("abc").unwrap_err();
+            assert_eq!(short_error.code, "assets.install.verify.checksumMismatch");
+
+            let mut non_hex = "a".repeat(64);
+            non_hex.replace_range(10..11, "g");
+            let non_hex_error = parse_sha256_sidecar(&non_hex).unwrap_err();
+            assert_eq!(non_hex_error.code, "assets.install.verify.checksumMismatch");
         }
 
         #[test]
@@ -363,7 +386,7 @@ mod scanner_assets_under_test {
         }
 
         #[test]
-        fn declared_checksum_mismatch_is_rejected() {
+        fn declared_checksum_mismatch_is_ignored_for_archive_level_checksum() {
             let temp_dir = tempfile::tempdir().unwrap();
             let file_path = temp_dir.path().join("models").join("model.onnx");
             fs::create_dir_all(file_path.parent().unwrap()).unwrap();
@@ -371,9 +394,8 @@ mod scanner_assets_under_test {
             let entry = manifest_file("models/model.onnx", b"other!");
             let manifest = manifest_with_files(vec![entry]);
 
-            let error = verify_declared_files(temp_dir.path(), &manifest)
-                .expect_err("checksum mismatch must fail");
-            assert_eq!(error.code, "assets.install.verify.checksumMismatch");
+            verify_declared_files(temp_dir.path(), &manifest)
+                .expect("per-file hashes are no longer authoritative");
         }
 
         #[test]
@@ -462,9 +484,11 @@ mod scanner_assets_under_test {
             fs::create_dir_all(&paths.staging_dir).unwrap();
             fs::write(paths.staging_dir.join("marker"), b"staging").unwrap();
             let archive_path = paths.assets_dir.join(".download-test");
+            let checksum_path = paths.assets_dir.join(".download-test.sha256");
             fs::write(&archive_path, b"download").unwrap();
+            fs::write(&checksum_path, b"checksum").unwrap();
 
-            cleanup_failed_download(&paths, &archive_path, true);
+            cleanup_failed_downloads(&paths, &[&archive_path, &checksum_path], true);
 
             assert_eq!(
                 fs::read(paths.current_dir.join("marker")).unwrap(),
@@ -472,6 +496,7 @@ mod scanner_assets_under_test {
             );
             assert!(!paths.staging_dir.exists());
             assert!(!archive_path.exists());
+            assert!(!checksum_path.exists());
         }
 
         #[test]

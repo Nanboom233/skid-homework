@@ -218,7 +218,8 @@ struct ScannerAssetManifest {
 struct ScannerAssetManifestFile {
     path: String,
     size: u64,
-    sha256: String,
+    #[allow(dead_code)]
+    sha256: Option<String>,
     source_url: String,
 }
 
@@ -234,6 +235,7 @@ pub struct ScannerAssetPaths {
 struct ScannerAssetsDownloadTarget {
     asset_tag: String,
     asset_url: String,
+    checksum_url: String,
     package_file_name: String,
 }
 
@@ -507,11 +509,16 @@ fn official_release_asset_url(tag: &str, package_file_name: &str) -> String {
     )
 }
 
+fn official_release_checksum_url(tag: &str, package_file_name: &str) -> String {
+    official_release_asset_url(tag, &format!("{package_file_name}.sha256"))
+}
+
 fn expected_download_target() -> ScannerAssetsDownloadTarget {
     let package_file_name = platform_package_file_name();
     ScannerAssetsDownloadTarget {
         asset_tag: EXPECTED_SCANNER_ASSET_TAG.to_string(),
         asset_url: official_release_asset_url(EXPECTED_SCANNER_ASSET_TAG, &package_file_name),
+        checksum_url: official_release_checksum_url(EXPECTED_SCANNER_ASSET_TAG, &package_file_name),
         package_file_name,
     }
 }
@@ -599,6 +606,7 @@ fn select_latest_release_target(releases: &[GitHubRelease]) -> Option<ScannerAss
         Some(ScannerAssetsDownloadTarget {
             asset_tag: release.tag_name.clone(),
             asset_url: official_release_asset_url(&release.tag_name, &package_file_name),
+            checksum_url: official_release_checksum_url(&release.tag_name, &package_file_name),
             package_file_name,
         })
     })
@@ -829,6 +837,10 @@ async fn download_and_install(
         ".download-{}",
         target.package_file_name.replace('/', "-")
     ));
+    let checksum_path = paths.assets_dir.join(format!(
+        ".download-{}.sha256",
+        target.package_file_name.replace('/', "-")
+    ));
 
     let result = match download_archive_to_path(
         &target.asset_url,
@@ -838,38 +850,101 @@ async fn download_and_install(
     )
     .await
     {
-        Ok(()) => match check_cancelled(&cancel_requested) {
-            Ok(()) => {
-                let paths_for_install = paths.clone();
-                let archive_path_for_install = archive_path.clone();
-                let channel_for_install = channel.clone();
-                let cancel_requested_for_install = Arc::clone(&cancel_requested);
-                let target_asset_tag = target.asset_tag.clone();
-                tauri::async_runtime::spawn_blocking(move || {
-                    install_archive(
-                        &paths_for_install,
-                        &archive_path_for_install,
-                        &channel_for_install,
-                        Some(cancel_requested_for_install.as_ref()),
-                        ManifestVersionPolicy::RequireTag(target_asset_tag),
-                    )
-                })
-                .await
-                .map_err(|error| {
-                    ScannerAssetsError::with_details(
-                        "assets.operation.taskFailed",
-                        true,
-                        format!("Scanner asset install task failed: {error}"),
-                    )
-                })?
-            }
+        Ok(()) => match download_archive_to_path(
+            &target.checksum_url,
+            &checksum_path,
+            channel,
+            &cancel_requested,
+        )
+        .await
+        {
+            Ok(()) => match check_cancelled(&cancel_requested) {
+                Ok(()) => {
+                    send_phase_progress(channel, "verifying");
+                    let expected_sha256 = read_sha256_sidecar_file(&checksum_path)?;
+                    verify_file_sha256(&archive_path, &expected_sha256)?;
+                    check_cancelled(&cancel_requested)?;
+
+                    let paths_for_install = paths.clone();
+                    let archive_path_for_install = archive_path.clone();
+                    let channel_for_install = channel.clone();
+                    let cancel_requested_for_install = Arc::clone(&cancel_requested);
+                    let target_asset_tag = target.asset_tag.clone();
+                    tauri::async_runtime::spawn_blocking(move || {
+                        install_archive(
+                            &paths_for_install,
+                            &archive_path_for_install,
+                            &channel_for_install,
+                            Some(cancel_requested_for_install.as_ref()),
+                            ManifestVersionPolicy::RequireTag(target_asset_tag),
+                        )
+                    })
+                    .await
+                    .map_err(|error| {
+                        ScannerAssetsError::with_details(
+                            "assets.operation.taskFailed",
+                            true,
+                            format!("Scanner asset install task failed: {error}"),
+                        )
+                    })?
+                }
+                Err(error) => Err(error),
+            },
             Err(error) => Err(error),
         },
         Err(error) => Err(error),
     };
 
-    cleanup_failed_download(&paths, &archive_path, result.is_err());
+    cleanup_failed_downloads(&paths, &[&archive_path, &checksum_path], result.is_err());
     result
+}
+
+fn read_sha256_sidecar_file(path: &Path) -> Result<String, ScannerAssetsError> {
+    let contents = fs::read_to_string(path).map_err(|error| {
+        ScannerAssetsError::with_details(
+            "assets.install.verify.checksumMismatch",
+            false,
+            format!(
+                "Failed to read checksum sidecar {}: {error}",
+                scanner_resource::path_to_string(path)
+            ),
+        )
+    })?;
+    parse_sha256_sidecar(&contents)
+}
+
+fn parse_sha256_sidecar(contents: &str) -> Result<String, ScannerAssetsError> {
+    let Some(digest) = contents.get(..64) else {
+        return Err(ScannerAssetsError::with_details(
+            "assets.install.verify.checksumMismatch",
+            false,
+            "Checksum sidecar must begin with a 64-character SHA-256 digest.",
+        ));
+    };
+    if !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(ScannerAssetsError::with_details(
+            "assets.install.verify.checksumMismatch",
+            false,
+            "Checksum sidecar must begin with a 64-character SHA-256 digest.",
+        ));
+    }
+    Ok(digest.to_ascii_lowercase())
+}
+
+fn verify_file_sha256(path: &Path, expected_sha256: &str) -> Result<(), ScannerAssetsError> {
+    let expected_sha256 = parse_sha256_sidecar(expected_sha256)?;
+    let actual_sha256 = sha256_file_hex(path)?;
+    if actual_sha256 != expected_sha256 {
+        return Err(ScannerAssetsError::with_details(
+            "assets.install.verify.checksumMismatch",
+            false,
+            format!(
+                "Downloaded scanner asset checksum mismatch for {}.",
+                scanner_resource::path_to_string(path)
+            ),
+        ));
+    }
+    Ok(())
 }
 
 async fn download_archive_to_path(
@@ -969,8 +1044,10 @@ async fn download_archive_to_path(
     Ok(())
 }
 
-fn cleanup_failed_download(paths: &ScannerAssetPaths, archive_path: &Path, failed: bool) {
-    let _ = fs::remove_file(archive_path);
+fn cleanup_failed_downloads(paths: &ScannerAssetPaths, download_paths: &[&Path], failed: bool) {
+    for path in download_paths {
+        let _ = fs::remove_file(path);
+    }
     if failed {
         let _ = fs::remove_dir_all(&paths.staging_dir);
     }
@@ -1608,16 +1685,6 @@ fn verify_declared_files(
                 ),
             ));
         }
-
-        let expected_sha256 = normalize_sha256(&file.sha256)?;
-        let actual_sha256 = sha256_file_hex(&resolved_path)?;
-        if actual_sha256 != expected_sha256 {
-            return Err(ScannerAssetsError::with_details(
-                "assets.install.verify.checksumMismatch",
-                false,
-                format!("{} sha256 mismatch.", file.path),
-            ));
-        }
     }
 
     Ok(())
@@ -1699,18 +1766,6 @@ fn validate_manifest_relative_path(relative_path: &str) -> Result<PathBuf, Scann
 fn looks_like_windows_drive_path(path: &str) -> bool {
     let bytes = path.as_bytes();
     bytes.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic()
-}
-
-fn normalize_sha256(value: &str) -> Result<String, ScannerAssetsError> {
-    let normalized = value.trim().to_ascii_lowercase();
-    if normalized.len() != 64 || !normalized.chars().all(|ch| ch.is_ascii_hexdigit()) {
-        return Err(ScannerAssetsError::with_details(
-            "assets.install.manifest.invalid",
-            false,
-            "Manifest entry has invalid sha256 value.",
-        ));
-    }
-    Ok(normalized)
 }
 
 fn sha256_file_hex(path: &Path) -> Result<String, ScannerAssetsError> {
