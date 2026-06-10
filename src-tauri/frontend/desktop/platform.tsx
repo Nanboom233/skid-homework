@@ -30,6 +30,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import {useShortcut} from "@/hooks/use-shortcut";
 import {TimeoutError, withTimeout} from "@/utils/timeout";
+import {useScannerStore} from "./store/scanner-store";
 
 export type {AppTarget, PlatformCaptureActionsProps};
 
@@ -290,3 +291,7 @@ export { default as PlatformInitPage } from "@/components/init/InitWizard";
 export { default as PlatformInitGuard } from "@/components/guards/RequireInit";
 export { default as PlatformScannerSetupStep } from "./components/init/ScannerSetupStep";
 export { default as PlatformScannerSettingsCard } from "./components/settings/ScannerSettingsCard";
+
+export function usePlatformScannerSetupReady(): boolean {
+  return useScannerStore((state) => state.assetsStatus?.["camera-server"]?.state === "ready");
+}

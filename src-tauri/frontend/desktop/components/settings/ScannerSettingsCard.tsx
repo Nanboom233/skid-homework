@@ -18,107 +18,127 @@ import {
 import {Button} from "@/components/ui/button";
 import {Card, CardContent, CardDescription, CardHeader, CardTitle} from "@/components/ui/card";
 import {Collapsible, CollapsibleContent, CollapsibleTrigger} from "@/components/ui/collapsible";
+import {Separator} from "@/components/ui/separator";
 import {Badge} from "@/components/ui/badge";
+import {createScannerAssetView, type ScannerAssetView} from "../scanner/scannerAssetView";
 import {ScannerOperationPanel} from "../scanner/ScannerOperationPanel";
 import {useScannerArchiveImport} from "../scanner/useScannerArchiveImport";
-import type {ScannerOrtResourceTreeEntry} from "../../lib/tauri/scanner";
+import type {
+  ScannerOrtProbeStatus,
+  ScannerOrtResourceTreeEntry,
+} from "../../lib/tauri/scanner";
 import {useScannerStore} from "../../store/scanner-store";
 
 export default function ScannerSettingsCard() {
   const {t} = useTranslation("commons", {keyPrefix: "scanner"});
   const assetsStatus = useScannerStore((s) => s.assetsStatus);
   const probeStatus = useScannerStore((s) => s.probeStatus);
-  const progress = useScannerStore((s) => s.progress);
-  const isOperating = useScannerStore((s) => s.isOperating);
-  const activeOperation = useScannerStore((s) => s.activeOperation);
-  const operationError = useScannerStore((s) => s.operationError);
-  const canRetryLastOperation = useScannerStore((s) => s.canRetryLastOperation);
-  const canCancelCurrentOperation = useScannerStore((s) => s.canCancelCurrentOperation);
+  const operation = useScannerStore((s) => s.operation);
   const updateCheckResult = useScannerStore((s) => s.updateCheckResult);
-  const fetchStatus = useScannerStore((s) => s.fetchStatus);
   const fetchProbe = useScannerStore((s) => s.fetchProbe);
-  const startUpdateDownload = useScannerStore((s) => s.startUpdateDownload);
-  const checkForAssetUpdate = useScannerStore((s) => s.checkForAssetUpdate);
-  const clearInstalledAssets = useScannerStore((s) => s.clearInstalledAssets);
+  const checkForUpdate = useScannerStore((s) => s.checkForUpdate);
+  const startDownload = useScannerStore((s) => s.startDownload);
+  const startUpdateAll = useScannerStore((s) => s.startUpdateAll);
+  const clearAssets = useScannerStore((s) => s.clearAssets);
   const cancelCurrentOperation = useScannerStore((s) => s.cancelCurrentOperation);
   const retryLastOperation = useScannerStore((s) => s.retryLastOperation);
   const clearError = useScannerStore((s) => s.clearError);
-  const clearUpdateCheckResult = useScannerStore((s) => s.clearUpdateCheckResult);
-  const [confirmClear, setConfirmClear] = useState(false);
+  const [confirmClearCamera, setConfirmClearCamera] = useState(false);
+  const [confirmClearOrt, setConfirmClearOrt] = useState(false);
   const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
-  const importArchive = useScannerArchiveImport();
+  const importOrt = useScannerArchiveImport("onnxruntime");
+  const importCamera = useScannerArchiveImport("camera-server");
 
   useEffect(() => {
-    void fetchStatus();
+    let active = true;
+    setIsCheckingUpdate(true);
+    void checkForUpdate().finally(() => {
+      if (active) {
+        setIsCheckingUpdate(false);
+      }
+    });
     void fetchProbe();
-  }, [fetchStatus, fetchProbe]);
+    return () => {
+      active = false;
+    };
+  }, [checkForUpdate, fetchProbe]);
 
   useEffect(() => {
     return () => {
       const state = useScannerStore.getState();
-      if (state.activeOperation?.kind === "download") {
+      if (state.operation.active?.kind === "download") {
         void state.cancelCurrentOperation();
       }
     };
   }, []);
 
   useEffect(() => {
-    if (updateCheckResult?.kind !== "up-to-date") return;
-    const timeout = window.setTimeout(clearUpdateCheckResult, 2500);
+    if (!confirmClearCamera) return;
+    const timeout = window.setTimeout(() => setConfirmClearCamera(false), 3000);
     return () => window.clearTimeout(timeout);
-  }, [clearUpdateCheckResult, updateCheckResult?.kind]);
+  }, [confirmClearCamera]);
 
   useEffect(() => {
-    if (!confirmClear) return;
-    const timeout = window.setTimeout(() => setConfirmClear(false), 3000);
+    if (!confirmClearOrt) return;
+    const timeout = window.setTimeout(() => setConfirmClearOrt(false), 3000);
     return () => window.clearTimeout(timeout);
-  }, [confirmClear]);
+  }, [confirmClearOrt]);
 
   useEffect(() => {
-    if (isOperating) {
-      setConfirmClear(false);
+    if (operation.isOperating) {
+      setConfirmClearCamera(false);
+      setConfirmClearOrt(false);
     }
-  }, [isOperating]);
+  }, [operation.isOperating]);
 
-  const state = assetsStatus?.state ?? "missing";
-  const hasDownloadedAssets = state === "ready" || state === "invalid";
-  const providerStatus = state === "ready" && assetsStatus?.manifest ? probeStatus : null;
-  const canStartCheckedDownload =
-    updateCheckResult?.kind === "update-available" ||
-    updateCheckResult?.kind === "install-available";
-  const updateButtonIsGreen = canStartCheckedDownload;
-  const updateButtonDisabled =
-    isOperating || isCheckingUpdate || updateCheckResult?.kind === "up-to-date";
-  const updateButtonLabel =
-    updateCheckResult?.kind === "up-to-date"
-      ? t("actions.up-to-date")
-      : updateCheckResult?.kind === "update-available"
-        ? t("actions.update-to", {version: updateCheckResult.version})
-        : updateCheckResult?.kind === "install-available"
-          ? t("actions.install-version", {version: updateCheckResult.version})
-          : t("actions.check-update");
+  const cameraStatus = assetsStatus?.["camera-server"];
+  const ortStatus = assetsStatus?.onnxruntime;
+  const cameraUpdate = updateCheckResult?.["camera-server"];
+  const ortUpdate = updateCheckResult?.onnxruntime;
+  const cameraView = createScannerAssetView({
+    target: "camera-server",
+    status: cameraStatus,
+    update: cameraUpdate,
+    operation,
+    fallbackErrorTarget: true,
+  });
+  const ortView = createScannerAssetView({
+    target: "onnxruntime",
+    status: ortStatus,
+    update: ortUpdate,
+    operation,
+  });
+  const anyUpdateAvailable = cameraView.updateAvailable || ortView.updateAvailable;
 
-  const handleUpdateButton = async () => {
-    if (canStartCheckedDownload) {
-      clearUpdateCheckResult();
-      await startUpdateDownload();
-      return;
-    }
+  const handleCheckUpdate = async () => {
     setIsCheckingUpdate(true);
     try {
-      await checkForAssetUpdate();
+      await checkForUpdate();
     } finally {
       setIsCheckingUpdate(false);
     }
   };
 
-  const handleClearAssets = async () => {
-    if (!confirmClear) {
-      setConfirmClear(true);
+  const handleUpdateAll = async () => {
+    await startUpdateAll();
+  };
+
+  const handleClearCamera = async () => {
+    if (!confirmClearCamera) {
+      setConfirmClearCamera(true);
       return;
     }
-    setConfirmClear(false);
-    await clearInstalledAssets();
+    setConfirmClearCamera(false);
+    await clearAssets("camera-server");
+  };
+
+  const handleClearOrt = async () => {
+    if (!confirmClearOrt) {
+      setConfirmClearOrt(true);
+      return;
+    }
+    setConfirmClearOrt(false);
+    await clearAssets("onnxruntime");
   };
 
   return (
@@ -128,84 +148,152 @@ export default function ScannerSettingsCard() {
         <CardDescription>{t("settings.description")}</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
+        <div className="flex flex-wrap gap-2">
+          {anyUpdateAvailable ? (
+            <Button
+              size="sm"
+              className="bg-green-600 text-white hover:bg-green-700"
+              onClick={() => void handleUpdateAll()}
+              disabled={operation.isOperating}
+            >
+              <Download className="mr-2 h-4 w-4" />
+              {t("actions.update-all")}
+            </Button>
+          ) : (
+            <Button
+              size="sm"
+              onClick={() => void handleCheckUpdate()}
+              disabled={operation.isOperating || isCheckingUpdate}
+            >
+              <RefreshCw className={`mr-2 h-4 w-4 ${isCheckingUpdate ? "animate-spin" : ""}`} />
+              {t("actions.check-update")}
+            </Button>
+          )}
+        </div>
+
         <div className="space-y-2">
+          <p className="text-sm font-medium">{t("target.camera")}</p>
           <div className="flex flex-wrap items-center gap-2">
-            <StatusBadge state={state} />
-            {assetsStatus?.manifest && (
-              <Badge variant="secondary">{assetsStatus.manifest.assetVersion}</Badge>
+            <StatusBadge state={cameraView.state} />
+            {cameraView.installedVersion && (
+              <Badge variant="secondary">{cameraView.installedVersion}</Badge>
             )}
-            {providerStatus && (
-              <Badge variant={providerStatus.preferredProviderReady ? "default" : "secondary"}>
-                {providerStatus.preferredProviderReady ? (
-                  <><Zap className="mr-1 h-3 w-3" />{providerStatus.preferredProvider}</>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {(cameraView.showDownloadAction || cameraView.showUpdateAction) && (
+              <Button
+                size="sm"
+                className={cameraView.showUpdateAction ? "bg-green-600 text-white hover:bg-green-700" : undefined}
+                onClick={() => void startDownload("camera-server")}
+                disabled={operation.isOperating}
+              >
+                <Download className="mr-2 h-4 w-4" />
+                {cameraView.showUpdateAction
+                  ? t("actions.update-to", {version: cameraView.targetVersion ?? ""})
+                  : downloadLabel(t("actions.download"), cameraView.targetVersion)}
+              </Button>
+            )}
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => void importCamera()}
+              disabled={operation.isOperating}
+            >
+              <FolderOpen className="mr-2 h-4 w-4" />
+              {t("actions.import")}
+            </Button>
+            {cameraView.hasAssets && (
+              <Button
+                size="sm"
+                variant={confirmClearCamera ? "destructive" : "outline"}
+                onClick={() => void handleClearCamera()}
+                disabled={operation.isOperating}
+              >
+                <Trash2 className="mr-2 h-4 w-4" />
+                {confirmClearCamera ? t("actions.confirm-clear") : t("actions.clear")}
+              </Button>
+            )}
+          </div>
+          <TargetOperationPanel
+            view={cameraView}
+            onCancel={() => void cancelCurrentOperation()}
+            onRetry={() => void retryLastOperation()}
+            onClearError={clearError}
+          />
+        </div>
+
+        <Separator />
+
+        <div className="space-y-2">
+          <p className="text-sm font-medium">{t("target.ort")}</p>
+          <div className="flex flex-wrap items-center gap-2">
+            <StatusBadge state={ortView.state} />
+            {ortView.installedVersion && (
+              <Badge variant="secondary">{ortView.installedVersion}</Badge>
+            )}
+            {ortView.isReady && probeStatus && (
+              <Badge variant={probeStatus.preferredProviderReady ? "default" : "secondary"}>
+                {probeStatus.preferredProviderReady ? (
+                  <><Zap className="mr-1 h-3 w-3" />{probeStatus.preferredProvider}</>
                 ) : (
                   <><Cpu className="mr-1 h-3 w-3" />{t("status.cpu-fallback")}</>
                 )}
               </Badge>
             )}
           </div>
-        </div>
-
-        <div className="flex flex-wrap gap-2">
-          <Button
-            size="sm"
-            onClick={() => void handleUpdateButton()}
-            disabled={updateButtonDisabled}
-            className={
-              updateButtonIsGreen
-                ? "bg-green-600 text-white hover:bg-green-700"
-                : undefined
-            }
-          >
-            {canStartCheckedDownload ? (
-              <Download className="mr-2 h-4 w-4" />
-            ) : (
-              <RefreshCw className={`mr-2 h-4 w-4 ${isCheckingUpdate ? "animate-spin" : ""}`} />
+          <div className="flex flex-wrap gap-2">
+            {(ortView.showDownloadAction || ortView.showUpdateAction) && (
+              <Button
+                size="sm"
+                className={ortView.showUpdateAction ? "bg-green-600 text-white hover:bg-green-700" : undefined}
+                onClick={() => void startDownload("onnxruntime")}
+                disabled={operation.isOperating}
+              >
+                <Download className="mr-2 h-4 w-4" />
+                {ortView.showUpdateAction
+                  ? t("actions.update-to", {version: ortView.targetVersion ?? ""})
+                  : downloadLabel(t("actions.download"), ortView.targetVersion)}
+              </Button>
             )}
-            {updateButtonLabel}
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => void importArchive()}
-            disabled={isOperating}
-          >
-            <FolderOpen className="mr-2 h-4 w-4" />
-            {t("actions.import")}
-          </Button>
-          {hasDownloadedAssets && (
             <Button
               size="sm"
-              variant={confirmClear ? "destructive" : "outline"}
-              onClick={() => void handleClearAssets()}
-              disabled={isOperating}
+              variant="outline"
+              onClick={() => void importOrt()}
+              disabled={operation.isOperating}
             >
-              <Trash2 className="mr-2 h-4 w-4" />
-              {confirmClear ? t("actions.confirm-clear") : t("actions.clear")}
+              <FolderOpen className="mr-2 h-4 w-4" />
+              {t("actions.import")}
             </Button>
-          )}
+            {ortView.hasAssets && (
+              <Button
+                size="sm"
+                variant={confirmClearOrt ? "destructive" : "outline"}
+                onClick={() => void handleClearOrt()}
+                disabled={operation.isOperating}
+              >
+                <Trash2 className="mr-2 h-4 w-4" />
+                {confirmClearOrt ? t("actions.confirm-clear") : t("actions.clear")}
+              </Button>
+            )}
+          </div>
+          <TargetOperationPanel
+            view={ortView}
+            onCancel={() => void cancelCurrentOperation()}
+            onRetry={() => void retryLastOperation()}
+            onClearError={clearError}
+          />
         </div>
 
-        <ScannerOperationPanel
-          progress={progress}
-          activeOperation={activeOperation}
-          operationError={operationError}
-          canRetryLastOperation={canRetryLastOperation}
-          canCancelCurrentOperation={canCancelCurrentOperation}
-          isOperating={isOperating}
-          errorClassName="space-y-2 rounded-lg border border-red-200 bg-red-50 p-3 dark:border-red-800 dark:bg-red-950"
-          onCancel={() => void cancelCurrentOperation()}
-          onRetry={() => void retryLastOperation()}
-          onClearError={clearError}
-        />
-
-        {probeStatus && (
+        {(probeStatus || cameraStatus?.artifact) && (
           <Collapsible>
             <CollapsibleTrigger className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors">
               {t("diagnostics.title")}
             </CollapsibleTrigger>
-            <CollapsibleContent className="mt-3 space-y-3">
-              <DiagnosticsSection probeStatus={probeStatus} />
+            <CollapsibleContent className="mt-3">
+              <ScannerDiagnostics
+                serverPath={cameraStatus?.artifact?.path}
+                probeStatus={probeStatus}
+              />
             </CollapsibleContent>
           </Collapsible>
         )}
@@ -214,13 +302,46 @@ export default function ScannerSettingsCard() {
   );
 }
 
+function downloadLabel(label: string, version?: string) {
+  return version ? `${label} ${version}` : label;
+}
+
+function TargetOperationPanel({
+  view,
+  onCancel,
+  onRetry,
+  onClearError,
+}: {
+  view: ScannerAssetView;
+  onCancel: () => void;
+  onRetry: () => void;
+  onClearError: () => void;
+}) {
+  if (!view.showPanel) return null;
+
+  return (
+    <ScannerOperationPanel
+      progress={view.panelProgress}
+      activeOperation={view.panelActiveOperation}
+      operationError={view.panelError}
+      canRetry={view.panelCanRetry}
+      canCancel={view.panelCanCancel}
+      isOperating={view.panelIsOperating}
+      errorClassName="space-y-2 rounded-lg border border-red-200 bg-red-50 p-3 dark:border-red-800 dark:bg-red-950"
+      onCancel={onCancel}
+      onRetry={onRetry}
+      onClearError={onClearError}
+    />
+  );
+}
+
 function StatusBadge({state}: {state: string}) {
-  const {t} = useTranslation("commons", {keyPrefix: "scanner.status"});
+  const {t} = useTranslation("commons", {keyPrefix: "scanner"});
   switch (state) {
     case "ready":
       return (
         <Badge variant="default" className="bg-green-600">
-          <CheckCircle2 className="mr-1 h-3 w-3" />{t("ready")}
+          <CheckCircle2 className="mr-1 h-3 w-3" />{t("settings.ready")}
         </Badge>
       );
     case "downloading":
@@ -228,89 +349,52 @@ function StatusBadge({state}: {state: string}) {
     case "clearing":
       return (
         <Badge variant="secondary">
-          <Loader2 className="mr-1 h-3 w-3 animate-spin" />{t(state)}
+          <Loader2 className="mr-1 h-3 w-3 animate-spin" />{t(`status.${state}`)}
         </Badge>
       );
     case "invalid":
       return (
         <Badge variant="destructive">
-          <XCircle className="mr-1 h-3 w-3" />{t("invalid")}
+          <XCircle className="mr-1 h-3 w-3" />{t("status.invalid")}
         </Badge>
       );
     default:
       return (
         <Badge variant="outline">
-          <XCircle className="mr-1 h-3 w-3" />{t("missing")}
+          <XCircle className="mr-1 h-3 w-3" />{t("status.missing")}
         </Badge>
       );
   }
 }
 
-function DiagnosticsSection({probeStatus}: {probeStatus: NonNullable<ReturnType<typeof useScannerStore.getState>["probeStatus"]>}) {
+function ScannerDiagnostics({
+  serverPath,
+  probeStatus,
+}: {
+  serverPath?: string;
+  probeStatus: ScannerOrtProbeStatus | null;
+}) {
   const {t} = useTranslation("commons", {keyPrefix: "scanner.diagnostics"});
-  const hasExplicitRuntimePath =
-    Boolean(probeStatus.selectedRuntimeLibraryPath) ||
-    Boolean(probeStatus.loadedRuntimeLibraryPath);
+  const onnxRuntimePath = probeStatus
+    ? normalizeDisplayPath(
+        probeStatus.selectedRuntimeLibraryPath
+        ?? probeStatus.loadedRuntimeLibraryPath
+        ?? probeStatus.runtimeLibraryPath,
+      )
+    : undefined;
 
   return (
-    <div className="space-y-2 text-xs">
-      <DiagRow label={t("resource-base-dir")} value={normalizeDisplayPath(probeStatus.resourceBaseDir)} />
+    <div className="space-y-3 text-xs">
+      <DiagRow label={t("server-path")} value={normalizeDisplayPath(serverPath)} />
+      <DiagRow label={t("onnxruntime-path")} value={onnxRuntimePath} />
+      <DiagRow label={t("onnxruntime-build-info")} value={probeStatus?.ortBuildInfo} />
       <DiagRow
-        label={t("selected-runtime-path")}
-        value={normalizeDisplayPath(probeStatus.selectedRuntimeLibraryPath)}
+        label={t("onnxruntime-providers")}
+        value={probeStatus?.availableProviders.join(", ")}
       />
-      <DiagRow
-        label={t("loaded-runtime-path")}
-        value={normalizeDisplayPath(probeStatus.loadedRuntimeLibraryPath)}
-      />
-      {!hasExplicitRuntimePath && (
-        <DiagRow
-          label={t("compat-runtime-path")}
-          value={normalizeDisplayPath(probeStatus.runtimeLibraryPath)}
-        />
+      {probeStatus && (
+        <ResourceTree resources={probeStatus.resourceTree} />
       )}
-      <DiagRow label={t("build-info")} value={probeStatus.ortBuildInfo} />
-      <DiagRow label={t("providers")} value={probeStatus.availableProviders.join(", ")} />
-      {probeStatus.runtimeError && (
-        <DiagRow label={t("runtime-error")} value={probeStatus.runtimeError} error />
-      )}
-
-      <div className="pt-1">
-        <p className="font-medium text-muted-foreground">{t("models")}</p>
-        <div className="mt-1 space-y-1">
-          {probeStatus.models.map((model) => (
-            <div key={model.id} className="flex items-center gap-2">
-              {model.sessionReady ? (
-                <CheckCircle2 className="h-3 w-3 text-green-600 dark:text-green-400" />
-              ) : (
-                <XCircle className="h-3 w-3 text-red-600 dark:text-red-400" />
-              )}
-              <span className="font-mono">{model.id}</span>
-              {model.sessionError && (
-                <span className="text-red-600 dark:text-red-400">— {model.sessionError}</span>
-              )}
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <div className="pt-1">
-        <p className="font-medium text-muted-foreground">{t("resources")}</p>
-        <div className="mt-1 space-y-1">
-          {probeStatus.resources.map((res) => (
-            <div key={res.relativePath} className="flex items-center gap-2">
-              {res.exists ? (
-                <CheckCircle2 className="h-3 w-3 text-green-600 dark:text-green-400" />
-              ) : (
-                <XCircle className="h-3 w-3 text-red-600 dark:text-red-400" />
-              )}
-              <span className="font-mono">{res.relativePath}</span>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <ResourceTree resources={probeStatus.resourceTree} />
     </div>
   );
 }
@@ -325,7 +409,11 @@ function DiagRow({label, value, error}: {label: string; value?: string | null; e
   );
 }
 
-function ResourceTree({resources}: {resources: ScannerOrtResourceTreeEntry[]}) {
+function ResourceTree({
+  resources,
+}: {
+  resources: ScannerOrtResourceTreeEntry[];
+}) {
   const {t} = useTranslation("commons", {keyPrefix: "scanner.diagnostics"});
   const fileCount = resources.filter((resource) => !resource.isDir).length;
   const directoryCount = resources.length - fileCount;
@@ -335,9 +423,9 @@ function ResourceTree({resources}: {resources: ScannerOrtResourceTreeEntry[]}) {
   );
 
   return (
-    <div className="space-y-2 pt-1">
+    <div className="space-y-2">
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-        <p className="font-medium text-muted-foreground">{t("resource-tree")}</p>
+        <p className="font-medium text-muted-foreground">{t("resources")}</p>
         <p className="text-muted-foreground">
           {t("resources-summary", {
             files: fileCount,
