@@ -19,6 +19,7 @@
     "tauri:build:frontend": "cross-env NEXT_PUBLIC_APP_TARGET=tauri-desktop TAURI_BUILD=true tsc --noEmit --pretty false && cross-env NEXT_PUBLIC_APP_TARGET=tauri-desktop TAURI_BUILD=true next build",
     "tauri:android:dev:frontend": "cross-env NEXT_PUBLIC_APP_TARGET=tauri-android next dev",
     "tauri:android:build:frontend": "cross-env NEXT_PUBLIC_APP_TARGET=tauri-android TAURI_BUILD=true tsc --noEmit --pretty false && cross-env NEXT_PUBLIC_APP_TARGET=tauri-android TAURI_BUILD=true next build",
+    "build:server": "pwsh scripts/build-server.ps1",
     "tauri:android:debug": "node scripts/gen-keystore-props.cjs && dotenv -- tauri android build --debug",
     "tauri:android:release": "node scripts/gen-keystore-props.cjs && dotenv -- tauri android build"
   },

@@ -68,6 +68,8 @@ src-tauri/target/
 src-tauri/gen/
 src-tauri/.tmp/
 src-tauri/validation-run/
+server/.gradle/
+server/build/
 
 # local AI Agent Settings
 .claude/
