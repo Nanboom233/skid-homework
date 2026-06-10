@@ -18,11 +18,11 @@ use tauri::{command, ipc::Channel, AppHandle, Manager};
 
 use crate::{scanner_platform, scanner_resource};
 
-const EXPECTED_SCANNER_ASSET_TAG: &str = "v0.1.0";
 const SCANNER_ASSETS_REPO_OWNER: &str = "Nanboom233";
 const SCANNER_ASSETS_REPO_NAME: &str = "skid-homework-assets";
 const MANIFEST_FILE_NAME: &str = "manifest.json";
 const ASSETS_DIR_NAME: &str = "assets";
+const CAMERA_SERVER_FILE_NAME: &str = "camera-server.jar";
 const CURRENT_DIR_NAME: &str = "current";
 const STAGING_DIR_NAME: &str = "staging";
 const BACKUP_DIR_NAME: &str = "current.previous";
@@ -144,9 +144,17 @@ pub struct ScannerAssetsProgress {
     pub error: Option<ScannerAssetsError>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AssetTarget {
+    Onnxruntime,
+    CameraServer,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScannerAssetsDownloadRequest {
+    pub target: AssetTarget,
     pub operation_id: String,
 }
 
@@ -159,7 +167,14 @@ pub struct ScannerAssetsCancelRequest {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScannerAssetsImportRequest {
+    pub target: AssetTarget,
     pub archive_path: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScannerAssetsClearRequest {
+    pub target: AssetTarget,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -175,8 +190,55 @@ pub struct ScannerAssetsManifestSummary {
 pub struct ScannerAssetsInstallResult {
     pub installed: bool,
     pub asset_version: String,
-    pub platform_target: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub platform_target: Option<String>,
     pub current_dir: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScannerCameraAssetSummary {
+    pub asset_version: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScannerCameraAssetStatus {
+    pub state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_dir: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub artifact: Option<ScannerCameraAssetSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<ScannerAssetsError>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScannerCameraAssetUpdateCheck {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_asset_version: Option<String>,
+    pub target_asset_tag: String,
+    pub update_available: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScannerAssetsStatusResponse {
+    pub onnxruntime: ScannerAssetsStatus,
+    #[serde(rename = "camera-server")]
+    pub camera_server: ScannerCameraAssetStatus,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScannerAssetsUpdateCheckResponse {
+    pub onnxruntime: ScannerAssetsUpdateCheck,
+    #[serde(rename = "camera-server")]
+    pub camera_server: ScannerCameraAssetUpdateCheck,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -184,8 +246,6 @@ pub struct ScannerAssetsInstallResult {
 pub struct ScannerAssetsStatus {
     pub state: String,
     pub platform_target: String,
-    pub expected_asset_tag: String,
-    pub default_asset_url: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub current_dir: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -242,7 +302,7 @@ struct ScannerAssetsDownloadTarget {
 #[derive(Debug, Clone, Deserialize)]
 struct GitHubRelease {
     tag_name: String,
-    draft: bool,
+    #[serde(default)]
     prerelease: bool,
     #[serde(default)]
     assets: Vec<GitHubReleaseAsset>,
@@ -254,13 +314,24 @@ struct GitHubReleaseAsset {
 }
 
 #[command]
-pub fn scanner_assets_status(app: AppHandle) -> Result<ScannerAssetsStatus, ScannerAssetsError> {
-    let paths = resolve_asset_paths(&app)?;
+pub fn scanner_assets_status(
+    app: AppHandle,
+) -> Result<ScannerAssetsStatusResponse, ScannerAssetsError> {
+    let ort = build_ort_status(&app)?;
+    let camera_server = build_camera_status(&app)?;
+    Ok(ScannerAssetsStatusResponse {
+        onnxruntime: ort,
+        camera_server,
+    })
+}
+
+fn build_ort_status(app: &AppHandle) -> Result<ScannerAssetsStatus, ScannerAssetsError> {
+    let paths = resolve_asset_paths(app)?;
     let operation = current_operation();
     let current_dir = Some(scanner_resource::path_to_string(&paths.current_dir));
     let mut manifest = None;
     let mut status_error = None;
-    let mut state = if paths.current_dir.exists() {
+    let mut state = if paths.current_dir.join(MANIFEST_FILE_NAME).is_file() {
         match inspect_current_install(&paths.current_dir) {
             Ok(summary) => {
                 manifest = Some(summary);
@@ -282,10 +353,41 @@ pub fn scanner_assets_status(app: AppHandle) -> Result<ScannerAssetsStatus, Scan
     Ok(ScannerAssetsStatus {
         state,
         platform_target: scanner_platform::platform_target().to_string(),
-        expected_asset_tag: EXPECTED_SCANNER_ASSET_TAG.to_string(),
-        default_asset_url: default_asset_url(),
         current_dir,
         manifest,
+        last_error: status_error.or_else(last_error),
+    })
+}
+
+fn build_camera_status(app: &AppHandle) -> Result<ScannerCameraAssetStatus, ScannerAssetsError> {
+    let paths = resolve_asset_paths(app)?;
+    let operation = current_operation();
+    let current_dir = Some(scanner_resource::path_to_string(&paths.current_dir));
+    let mut artifact = None;
+    let mut status_error = None;
+    let mut state = if paths.current_dir.join(CAMERA_SERVER_FILE_NAME).is_file() {
+        match inspect_camera_asset_install(&paths.current_dir) {
+            Ok(summary) => {
+                artifact = Some(summary);
+                "ready".to_string()
+            }
+            Err(error) => {
+                status_error = Some(error);
+                "invalid".to_string()
+            }
+        }
+    } else {
+        "missing".to_string()
+    };
+
+    if let Some(operation) = operation {
+        state = operation.state().to_string();
+    }
+
+    Ok(ScannerCameraAssetStatus {
+        state,
+        current_dir,
+        artifact,
         last_error: status_error.or_else(last_error),
     })
 }
@@ -296,10 +398,26 @@ pub async fn scanner_assets_download(
     request: ScannerAssetsDownloadRequest,
     progress_channel: Channel<ScannerAssetsProgress>,
 ) -> Result<ScannerAssetsInstallResult, ScannerAssetsError> {
-    scanner_assets_download_with_target(app, request, progress_channel, || async {
-        Ok(expected_download_target())
-    })
-    .await
+    match request.target {
+        AssetTarget::Onnxruntime => {
+            scanner_ort_download_with_target(
+                app,
+                request.operation_id,
+                progress_channel,
+                || async { latest_official_release_target().await },
+            )
+            .await
+        }
+        AssetTarget::CameraServer => {
+            scanner_camera_download_with_target(
+                app,
+                request.operation_id,
+                progress_channel,
+                || async { latest_official_camera_release_target().await },
+            )
+            .await
+        }
+    }
 }
 
 #[command]
@@ -314,9 +432,34 @@ pub fn scanner_assets_cancel(
 #[command]
 pub async fn scanner_assets_check_update(
     app: AppHandle,
+) -> Result<ScannerAssetsUpdateCheckResponse, ScannerAssetsError> {
+    let ort = build_ort_update_check(&app)
+        .await
+        .unwrap_or_else(|_| ScannerAssetsUpdateCheck {
+            platform_target: scanner_platform::platform_target().to_string(),
+            update_available: false,
+            current_asset_version: None,
+            target_asset_tag: String::new(),
+        });
+    let camera_server =
+        build_camera_update_check(&app)
+            .await
+            .unwrap_or_else(|_| ScannerCameraAssetUpdateCheck {
+                update_available: false,
+                current_asset_version: None,
+                target_asset_tag: String::new(),
+            });
+    Ok(ScannerAssetsUpdateCheckResponse {
+        onnxruntime: ort,
+        camera_server,
+    })
+}
+
+async fn build_ort_update_check(
+    app: &AppHandle,
 ) -> Result<ScannerAssetsUpdateCheck, ScannerAssetsError> {
-    let paths = resolve_asset_paths(&app)?;
-    let current_asset_version = if paths.current_dir.exists() {
+    let paths = resolve_asset_paths(app)?;
+    let current_asset_version = if paths.current_dir.join(MANIFEST_FILE_NAME).is_file() {
         inspect_current_install(&paths.current_dir)
             .map(|summary| summary.asset_version)
             .ok()
@@ -333,21 +476,29 @@ pub async fn scanner_assets_check_update(
     })
 }
 
-#[command]
-pub async fn scanner_assets_download_update(
-    app: AppHandle,
-    request: ScannerAssetsDownloadRequest,
-    progress_channel: Channel<ScannerAssetsProgress>,
-) -> Result<ScannerAssetsInstallResult, ScannerAssetsError> {
-    scanner_assets_download_with_target(app, request, progress_channel, || async {
-        latest_official_release_target().await
+async fn build_camera_update_check(
+    app: &AppHandle,
+) -> Result<ScannerCameraAssetUpdateCheck, ScannerAssetsError> {
+    let paths = resolve_asset_paths(app)?;
+    let current_asset_version = if paths.current_dir.join(CAMERA_SERVER_FILE_NAME).is_file() {
+        inspect_camera_asset_install(&paths.current_dir)
+            .map(|summary| summary.asset_version)
+            .ok()
+    } else {
+        None
+    };
+    let target = latest_official_camera_release_target().await?;
+
+    Ok(ScannerCameraAssetUpdateCheck {
+        update_available: is_update_available(current_asset_version.as_deref(), &target.asset_tag),
+        current_asset_version,
+        target_asset_tag: target.asset_tag,
     })
-    .await
 }
 
-async fn scanner_assets_download_with_target<F, Fut>(
+async fn scanner_camera_download_with_target<F, Fut>(
     app: AppHandle,
-    request: ScannerAssetsDownloadRequest,
+    operation_id: String,
     progress_channel: Channel<ScannerAssetsProgress>,
     resolve_target: F,
 ) -> Result<ScannerAssetsInstallResult, ScannerAssetsError>
@@ -355,7 +506,48 @@ where
     F: FnOnce() -> Fut,
     Fut: Future<Output = Result<ScannerAssetsDownloadTarget, ScannerAssetsError>>,
 {
-    let (guard, cancel_requested) = match try_acquire_download_operation(request.operation_id) {
+    let (guard, cancel_requested) = match try_acquire_download_operation(operation_id) {
+        Ok(operation) => operation,
+        Err(error) => {
+            send_failed_progress(&progress_channel, error.clone());
+            return Err(error);
+        }
+    };
+    let paths = match resolve_asset_paths(&app) {
+        Ok(paths) => paths,
+        Err(error) => {
+            send_failed_progress(&progress_channel, error.clone());
+            return Err(error);
+        }
+    };
+
+    let target = match resolve_target().await {
+        Ok(target) => target,
+        Err(error) => {
+            set_last_error(error.clone());
+            send_failed_progress(&progress_channel, error.clone());
+            return Err(error);
+        }
+    };
+
+    let _guard = guard;
+    finish_progress_operation(
+        &progress_channel,
+        download_and_install_camera_jar(paths, target, &progress_channel, cancel_requested).await,
+    )
+}
+
+async fn scanner_ort_download_with_target<F, Fut>(
+    app: AppHandle,
+    operation_id: String,
+    progress_channel: Channel<ScannerAssetsProgress>,
+    resolve_target: F,
+) -> Result<ScannerAssetsInstallResult, ScannerAssetsError>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<ScannerAssetsDownloadTarget, ScannerAssetsError>>,
+{
+    let (guard, cancel_requested) = match try_acquire_download_operation(operation_id) {
         Ok(operation) => operation,
         Err(error) => {
             send_failed_progress(&progress_channel, error.clone());
@@ -399,7 +591,12 @@ pub async fn scanner_assets_import(
             return Err(error);
         }
     };
-    let paths = match resolve_asset_paths(&app) {
+    let target = request.target;
+    let paths = match target {
+        AssetTarget::Onnxruntime => resolve_asset_paths(&app),
+        AssetTarget::CameraServer => resolve_asset_paths(&app),
+    };
+    let paths = match paths {
         Ok(paths) => paths,
         Err(error) => {
             send_failed_progress(&progress_channel, error.clone());
@@ -412,7 +609,14 @@ pub async fn scanner_assets_import(
         let _guard = guard;
         finish_progress_operation(
             &progress_channel_for_task,
-            import_archive(paths, request, &progress_channel_for_task),
+            match target {
+                AssetTarget::Onnxruntime => {
+                    import_ort_archive(paths, &request.archive_path, &progress_channel_for_task)
+                }
+                AssetTarget::CameraServer => {
+                    import_camera_jar(paths, &request.archive_path, &progress_channel_for_task)
+                }
+            },
         )
     })
     .await
@@ -432,12 +636,36 @@ pub async fn scanner_assets_import(
 }
 
 #[command]
-pub fn scanner_assets_clear(app: AppHandle) -> Result<(), ScannerAssetsError> {
+pub fn scanner_assets_clear(
+    app: AppHandle,
+    request: ScannerAssetsClearRequest,
+) -> Result<(), ScannerAssetsError> {
     let guard = try_acquire_operation(OperationKind::Clearing)?;
+    let target = request.target;
     let paths = resolve_asset_paths(&app)?;
     let _guard = guard;
 
-    match clear_installed_assets(&paths) {
+    let result: Result<(), ScannerAssetsError> = match target {
+        AssetTarget::Onnxruntime => clear_ort_assets(&paths),
+        AssetTarget::CameraServer => {
+            // Camera Server is a single jar file in the shared current directory.
+            let jar_path = paths.current_dir.join(CAMERA_SERVER_FILE_NAME);
+            remove_path_if_exists(&jar_path).map_err(|error| {
+                ScannerAssetsError::with_details(
+                    "assets.clear.removeFailed",
+                    true,
+                    format!(
+                        "Failed to remove installed camera-server jar at {}: {error}",
+                        scanner_resource::path_to_string(&jar_path)
+                    ),
+                )
+            })?;
+            cleanup_transient_asset_paths(&paths);
+            Ok(())
+        }
+    };
+
+    match result {
         Ok(()) => {
             clear_last_error();
             Ok(())
@@ -449,11 +677,39 @@ pub fn scanner_assets_clear(app: AppHandle) -> Result<(), ScannerAssetsError> {
     }
 }
 
+fn clear_ort_assets(paths: &ScannerAssetPaths) -> Result<(), ScannerAssetsError> {
+    let _ort_worker_guard = begin_ort_asset_mutation()?;
+    // ORT owns the manifest, model directory, and runtime directory under current.
+    for relative_path in [MANIFEST_FILE_NAME, "models", "onnxruntime"] {
+        let path = paths.current_dir.join(relative_path);
+        remove_path_if_exists(&path).map_err(|error| {
+            ScannerAssetsError::with_details(
+                "assets.clear.removeFailed",
+                true,
+                format!(
+                    "Failed to remove installed scanner asset path {}: {error}",
+                    scanner_resource::path_to_string(&path)
+                ),
+            )
+        })?;
+    }
+    cleanup_transient_asset_paths(paths);
+    Ok(())
+}
+
 pub fn installed_assets_current_dir_from_app(app: &AppHandle) -> Option<PathBuf> {
     app.path()
         .app_data_dir()
         .ok()
         .map(|dir| dir.join(ASSETS_DIR_NAME).join(CURRENT_DIR_NAME))
+}
+
+pub fn installed_camera_server_jar_from_app(app: &AppHandle) -> Option<PathBuf> {
+    app.path().app_data_dir().ok().map(|dir| {
+        dir.join(ASSETS_DIR_NAME)
+            .join(CURRENT_DIR_NAME)
+            .join(CAMERA_SERVER_FILE_NAME)
+    })
 }
 
 pub fn resolve_asset_paths(app: &AppHandle) -> Result<ScannerAssetPaths, ScannerAssetsError> {
@@ -485,10 +741,6 @@ fn platform_archive_extension() -> &'static str {
     }
 }
 
-fn platform_package_file_name() -> String {
-    platform_package_file_name_for_tag(EXPECTED_SCANNER_ASSET_TAG)
-}
-
 fn platform_package_file_name_for_tag(tag: &str) -> String {
     format!(
         "{}-{}.{}",
@@ -498,8 +750,8 @@ fn platform_package_file_name_for_tag(tag: &str) -> String {
     )
 }
 
-fn default_asset_url() -> String {
-    official_release_asset_url(EXPECTED_SCANNER_ASSET_TAG, &platform_package_file_name())
+fn camera_package_file_name_for_tag(tag: &str) -> String {
+    format!("camera-server-{tag}.jar")
 }
 
 fn official_release_asset_url(tag: &str, package_file_name: &str) -> String {
@@ -513,16 +765,6 @@ fn official_release_checksum_url(tag: &str, package_file_name: &str) -> String {
     official_release_asset_url(tag, &format!("{package_file_name}.sha256"))
 }
 
-fn expected_download_target() -> ScannerAssetsDownloadTarget {
-    let package_file_name = platform_package_file_name();
-    ScannerAssetsDownloadTarget {
-        asset_tag: EXPECTED_SCANNER_ASSET_TAG.to_string(),
-        asset_url: official_release_asset_url(EXPECTED_SCANNER_ASSET_TAG, &package_file_name),
-        checksum_url: official_release_checksum_url(EXPECTED_SCANNER_ASSET_TAG, &package_file_name),
-        package_file_name,
-    }
-}
-
 async fn latest_official_release_target() -> Result<ScannerAssetsDownloadTarget, ScannerAssetsError>
 {
     let releases = fetch_official_releases().await?;
@@ -531,8 +773,23 @@ async fn latest_official_release_target() -> Result<ScannerAssetsDownloadTarget,
             "assets.update.checkFailed",
             true,
             format!(
-                "No scanner asset release with {} and its checksum was found.",
+                "No scanner asset release with {} was found.",
                 platform_package_file_name_for_tag("<tag>")
+            ),
+        )
+    })
+}
+
+async fn latest_official_camera_release_target(
+) -> Result<ScannerAssetsDownloadTarget, ScannerAssetsError> {
+    let releases = fetch_official_releases().await?;
+    select_latest_camera_release_target(&releases).ok_or_else(|| {
+        ScannerAssetsError::with_details(
+            "assets.update.checkFailed",
+            true,
+            format!(
+                "No scanner asset release with {} and its checksum was found.",
+                camera_package_file_name_for_tag("<tag>")
             ),
         )
     })
@@ -587,28 +844,42 @@ async fn fetch_official_releases() -> Result<Vec<GitHubRelease>, ScannerAssetsEr
 }
 
 fn select_latest_release_target(releases: &[GitHubRelease]) -> Option<ScannerAssetsDownloadTarget> {
-    releases.iter().find_map(|release| {
-        if release.draft {
-            return None;
-        }
-        // GitHub's releases API returns prerelease entries; keep them
-        // eligible when their stable tag filename and checksum contract
-        // match this ORT target.
-        let _prerelease_is_eligible = release.prerelease;
-        parse_stable_semver_tag(&release.tag_name)?;
-        let package_file_name = platform_package_file_name_for_tag(&release.tag_name);
-        let checksum_file_name = format!("{package_file_name}.sha256");
-        if !release_has_asset(release, &package_file_name)
-            || !release_has_asset(release, &checksum_file_name)
-        {
-            return None;
-        }
-        Some(ScannerAssetsDownloadTarget {
-            asset_tag: release.tag_name.clone(),
-            asset_url: official_release_asset_url(&release.tag_name, &package_file_name),
-            checksum_url: official_release_checksum_url(&release.tag_name, &package_file_name),
-            package_file_name,
+    releases
+        .iter()
+        .find_map(|release| {
+            release_download_target(release, platform_package_file_name_for_tag(&release.tag_name))
         })
+}
+
+fn select_latest_camera_release_target(
+    releases: &[GitHubRelease],
+) -> Option<ScannerAssetsDownloadTarget> {
+    releases
+        .iter()
+        .find_map(|release| {
+            release_download_target(release, camera_package_file_name_for_tag(&release.tag_name))
+        })
+}
+
+fn release_download_target(
+    release: &GitHubRelease,
+    package_file_name: String,
+) -> Option<ScannerAssetsDownloadTarget> {
+    parse_stable_semver_tag(&release.tag_name)?;
+    // GitHub's releases API returns prerelease entries; keep them eligible
+    // when their stable tag filename and checksum contract match this target.
+    let _prerelease_is_eligible = release.prerelease;
+    let checksum_file_name = format!("{package_file_name}.sha256");
+    if !release_has_asset(release, &package_file_name)
+        || !release_has_asset(release, &checksum_file_name)
+    {
+        return None;
+    }
+    Some(ScannerAssetsDownloadTarget {
+        asset_tag: release.tag_name.clone(),
+        asset_url: official_release_asset_url(&release.tag_name, &package_file_name),
+        checksum_url: official_release_checksum_url(&release.tag_name, &package_file_name),
+        package_file_name,
     })
 }
 
@@ -766,6 +1037,39 @@ fn last_error() -> Option<ScannerAssetsError> {
         .clone()
 }
 
+#[cfg(not(test))]
+fn begin_ort_asset_mutation(
+) -> Result<crate::scanner_ort::ScannerOrtAssetMutationGuard, ScannerAssetsError> {
+    crate::scanner_ort::begin_ort_asset_mutation()
+}
+
+#[cfg(test)]
+struct OrtAssetMutationGuard;
+
+#[cfg(test)]
+static TEST_ORT_ASSET_MUTATION_CALLS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(test)]
+static TEST_ORT_ASSET_MUTATION_FAIL: AtomicBool = AtomicBool::new(false);
+
+#[cfg(test)]
+#[allow(dead_code)]
+static TEST_ORT_ASSET_MUTATION_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+#[cfg(test)]
+fn begin_ort_asset_mutation() -> Result<OrtAssetMutationGuard, ScannerAssetsError> {
+    TEST_ORT_ASSET_MUTATION_CALLS.fetch_add(1, Ordering::SeqCst);
+    if TEST_ORT_ASSET_MUTATION_FAIL.load(Ordering::SeqCst) {
+        return Err(ScannerAssetsError::with_details(
+            "runtime.worker.stopFailed",
+            true,
+            "Failed to stop scanner ORT worker before asset mutation.",
+        ));
+    }
+    Ok(OrtAssetMutationGuard)
+}
+
 fn send_progress(channel: &Channel<ScannerAssetsProgress>, progress: ScannerAssetsProgress) {
     let _ = channel.send(progress);
 }
@@ -896,6 +1200,85 @@ async fn download_and_install(
     };
 
     cleanup_failed_downloads(&paths, &[&archive_path, &checksum_path], result.is_err());
+    result
+}
+
+async fn download_and_install_camera_jar(
+    paths: ScannerAssetPaths,
+    target: ScannerAssetsDownloadTarget,
+    channel: &Channel<ScannerAssetsProgress>,
+    cancel_requested: Arc<AtomicBool>,
+) -> Result<ScannerAssetsInstallResult, ScannerAssetsError> {
+    fs::create_dir_all(&paths.assets_dir).map_err(|error| {
+        ScannerAssetsError::with_details(
+            "assets.download.fetch.writeFailed",
+            true,
+            format!(
+                "Failed to create camera asset directory {}: {error}",
+                scanner_resource::path_to_string(&paths.assets_dir)
+            ),
+        )
+    })?;
+
+    let jar_path = paths.assets_dir.join(format!(
+        ".download-{}",
+        target.package_file_name.replace('/', "-")
+    ));
+    let checksum_path = paths.assets_dir.join(format!(
+        ".download-{}.sha256",
+        target.package_file_name.replace('/', "-")
+    ));
+
+    let result =
+        match download_archive_to_path(&target.asset_url, &jar_path, channel, &cancel_requested)
+            .await
+        {
+            Ok(()) => match download_archive_to_path(
+                &target.checksum_url,
+                &checksum_path,
+                channel,
+                &cancel_requested,
+            )
+            .await
+            {
+                Ok(()) => match check_cancelled(&cancel_requested) {
+                    Ok(()) => {
+                        send_phase_progress(channel, "verifying");
+                        let expected_sha256 = read_sha256_sidecar_file(&checksum_path)?;
+                        verify_file_sha256(&jar_path, &expected_sha256)?;
+                        check_cancelled(&cancel_requested)?;
+
+                        let paths_for_install = paths.clone();
+                        let jar_path_for_install = jar_path.clone();
+                        let channel_for_install = channel.clone();
+                        let cancel_requested_for_install = Arc::clone(&cancel_requested);
+                        let target_asset_tag = target.asset_tag.clone();
+                        tauri::async_runtime::spawn_blocking(move || {
+                            install_camera_jar(
+                                &paths_for_install,
+                                &jar_path_for_install,
+                                &target_asset_tag,
+                                &channel_for_install,
+                                Some(cancel_requested_for_install.as_ref()),
+                            )
+                        })
+                        .await
+                        .map_err(|error| {
+                            ScannerAssetsError::with_details(
+                                "assets.operation.taskFailed",
+                                true,
+                                format!("Scanner camera asset install task failed: {error}"),
+                            )
+                        })?
+                    }
+                    Err(error) => Err(error),
+                },
+                Err(error) => Err(error),
+            },
+            Err(error) => Err(error),
+        };
+
+    cleanup_failed_downloads(&paths, &[&jar_path, &checksum_path], result.is_err());
     result
 }
 
@@ -1045,30 +1428,12 @@ async fn download_archive_to_path(
 }
 
 fn cleanup_failed_downloads(paths: &ScannerAssetPaths, download_paths: &[&Path], failed: bool) {
-    for path in download_paths {
-        let _ = fs::remove_file(path);
+    for download_path in download_paths {
+        let _ = fs::remove_file(download_path);
     }
     if failed {
         let _ = fs::remove_dir_all(&paths.staging_dir);
     }
-}
-
-fn clear_installed_assets(paths: &ScannerAssetPaths) -> Result<(), ScannerAssetsError> {
-    let _ort_worker_guard = begin_ort_asset_mutation()?;
-    remove_path_if_exists(&paths.current_dir).map_err(|error| {
-        ScannerAssetsError::with_details(
-            "assets.clear.removeFailed",
-            true,
-            format!(
-                "Failed to remove installed scanner assets at {}: {error}",
-                scanner_resource::path_to_string(&paths.current_dir)
-            ),
-        )
-    })?;
-
-    cleanup_transient_asset_paths(paths);
-    clear_last_error();
-    Ok(())
 }
 
 fn cleanup_transient_asset_paths(paths: &ScannerAssetPaths) {
@@ -1099,13 +1464,13 @@ fn remove_path_if_exists(path: &Path) -> io::Result<()> {
     }
 }
 
-fn import_archive(
+fn import_ort_archive(
     paths: ScannerAssetPaths,
-    request: ScannerAssetsImportRequest,
+    archive_path: &str,
     channel: &Channel<ScannerAssetsProgress>,
 ) -> Result<ScannerAssetsInstallResult, ScannerAssetsError> {
     let result = (|| {
-        let archive_path = PathBuf::from(request.archive_path.trim());
+        let archive_path = PathBuf::from(archive_path.trim());
         if archive_path.as_os_str().is_empty() {
             return Err(ScannerAssetsError::with_details(
                 "assets.import.archive.openFailed",
@@ -1138,6 +1503,137 @@ fn import_archive(
         let _ = fs::remove_dir_all(&paths.staging_dir);
     }
     result
+}
+
+fn import_camera_jar(
+    paths: ScannerAssetPaths,
+    jar_path: &str,
+    channel: &Channel<ScannerAssetsProgress>,
+) -> Result<ScannerAssetsInstallResult, ScannerAssetsError> {
+    let result = (|| {
+        let jar_path = PathBuf::from(jar_path.trim());
+        if jar_path.as_os_str().is_empty() {
+            return Err(ScannerAssetsError::with_details(
+                "assets.import.archive.openFailed",
+                false,
+                "Jar file path is required.",
+            ));
+        }
+        if !jar_path.is_file() {
+            return Err(ScannerAssetsError::with_details(
+                "assets.import.archive.openFailed",
+                false,
+                format!(
+                    "Camera server jar is not a file: {}",
+                    scanner_resource::path_to_string(&jar_path)
+                ),
+            ));
+        }
+        validate_jar_zip_magic(&jar_path)?;
+        verify_non_empty_file(&jar_path, "Imported camera-server jar")?;
+
+        send_phase_progress(channel, "verifying");
+
+        prepare_staging(&paths)?;
+        let staging_jar_path = paths.staging_dir.join(CAMERA_SERVER_FILE_NAME);
+        fs::copy(&jar_path, &staging_jar_path).map_err(|error| {
+            ScannerAssetsError::with_details(
+                "assets.install.activate.replaceFailed",
+                true,
+                format!(
+                    "Failed to stage camera-server jar at {}: {error}",
+                    scanner_resource::path_to_string(&staging_jar_path)
+                ),
+            )
+        })?;
+
+        let summary = inspect_camera_asset_install(&paths.staging_dir)?;
+
+        send_phase_progress(channel, "activating");
+        let installed_jar = paths.current_dir.join(CAMERA_SERVER_FILE_NAME);
+        let backup_jar = paths.assets_dir.join("camera-server.jar.previous");
+        fs::create_dir_all(&paths.current_dir).map_err(|error| {
+            ScannerAssetsError::with_details(
+                "assets.install.activate.replaceFailed",
+                true,
+                format!(
+                    "Failed to create scanner asset directory {}: {error}",
+                    scanner_resource::path_to_string(&paths.current_dir)
+                ),
+            )
+        })?;
+        let _ = remove_path_if_exists(&backup_jar);
+        let had_installed_jar = installed_jar.exists();
+        if had_installed_jar {
+            fs::rename(&installed_jar, &backup_jar).map_err(|error| {
+                ScannerAssetsError::with_details(
+                    "assets.install.activate.replaceFailed",
+                    true,
+                    format!(
+                        "Failed to back up existing camera-server jar {}: {error}",
+                        scanner_resource::path_to_string(&installed_jar)
+                    ),
+                )
+            })?;
+        }
+        if let Err(error) = fs::rename(&staging_jar_path, &installed_jar) {
+            if had_installed_jar {
+                let _ = fs::rename(&backup_jar, &installed_jar);
+            }
+            return Err(ScannerAssetsError::with_details(
+                "assets.install.activate.replaceFailed",
+                true,
+                format!(
+                    "Failed to activate camera-server jar at {}: {error}",
+                    scanner_resource::path_to_string(&installed_jar)
+                ),
+            ));
+        }
+        let _ = remove_path_if_exists(&backup_jar);
+        let _ = fs::remove_dir_all(&paths.staging_dir);
+
+        Ok(ScannerAssetsInstallResult {
+            installed: true,
+            asset_version: summary.asset_version,
+            platform_target: None,
+            current_dir: scanner_resource::path_to_string(&paths.current_dir),
+            path: Some(scanner_resource::path_to_string(&installed_jar)),
+        })
+    })();
+
+    if result.is_err() {
+        let _ = fs::remove_dir_all(&paths.staging_dir);
+    }
+    result
+}
+
+fn validate_jar_zip_magic(path: &Path) -> Result<(), ScannerAssetsError> {
+    let mut file = File::open(path).map_err(|error| {
+        ScannerAssetsError::with_details(
+            "assets.import.archive.openFailed",
+            false,
+            format!(
+                "Failed to open jar file {}: {error}",
+                scanner_resource::path_to_string(path)
+            ),
+        )
+    })?;
+    let mut magic = [0u8; 4];
+    io::Read::read_exact(&mut file, &mut magic).map_err(|error| {
+        ScannerAssetsError::with_details(
+            "assets.import.archive.formatMismatch",
+            false,
+            format!("Failed to read jar file header: {error}"),
+        )
+    })?;
+    if magic != [0x50, 0x4B, 0x03, 0x04] {
+        return Err(ScannerAssetsError::with_details(
+            "assets.import.archive.formatMismatch",
+            false,
+            "File is not a valid JAR/ZIP archive (invalid magic bytes).",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_archive_format(archive_path: &Path) -> Result<(), ScannerAssetsError> {
@@ -1178,6 +1674,21 @@ fn install_archive(
         }
         send_phase_progress(channel, "unpacking");
         extract_archive_for_current_platform(archive_path, &paths.staging_dir)?;
+        // ORT activation swaps the current directory; keep the camera jar in the shared current root.
+        let installed_camera_jar = paths.current_dir.join(CAMERA_SERVER_FILE_NAME);
+        if installed_camera_jar.is_file() {
+            let staging_camera_jar = paths.staging_dir.join(CAMERA_SERVER_FILE_NAME);
+            fs::copy(&installed_camera_jar, &staging_camera_jar).map_err(|error| {
+                ScannerAssetsError::with_details(
+                    "assets.install.activate.replaceFailed",
+                    true,
+                    format!(
+                        "Failed to preserve installed camera-server jar {}: {error}",
+                        scanner_resource::path_to_string(&installed_camera_jar)
+                    ),
+                )
+            })?;
+        }
 
         if let Some(cancel_requested) = cancel_requested {
             check_cancelled(cancel_requested)?;
@@ -1196,8 +1707,110 @@ fn install_archive(
         Ok(ScannerAssetsInstallResult {
             installed: true,
             asset_version: summary.asset_version,
-            platform_target: summary.platform_target,
+            platform_target: Some(summary.platform_target),
             current_dir: scanner_resource::path_to_string(&paths.current_dir),
+            path: None,
+        })
+    })();
+
+    if result.is_err() {
+        let _ = fs::remove_dir_all(&paths.staging_dir);
+    }
+
+    result
+}
+
+fn install_camera_jar(
+    paths: &ScannerAssetPaths,
+    jar_path: &Path,
+    asset_tag: &str,
+    channel: &Channel<ScannerAssetsProgress>,
+    cancel_requested: Option<&AtomicBool>,
+) -> Result<ScannerAssetsInstallResult, ScannerAssetsError> {
+    prepare_staging(paths)?;
+
+    let result = (|| {
+        if let Some(cancel_requested) = cancel_requested {
+            check_cancelled(cancel_requested)?;
+        }
+        send_phase_progress(channel, "verifying");
+        verify_non_empty_file(jar_path, "Downloaded camera-server jar")?;
+        let staging_jar_path = paths.staging_dir.join(CAMERA_SERVER_FILE_NAME);
+        fs::copy(jar_path, &staging_jar_path).map_err(|error| {
+            ScannerAssetsError::with_details(
+                "assets.install.activate.replaceFailed",
+                true,
+                format!(
+                    "Failed to stage camera-server jar at {}: {error}",
+                    scanner_resource::path_to_string(&staging_jar_path)
+                ),
+            )
+        })?;
+
+        let summary = inspect_camera_asset_install(&paths.staging_dir)?;
+        if summary.asset_version != asset_tag {
+            return Err(ScannerAssetsError::with_details(
+                "assets.install.manifest.versionMismatch",
+                false,
+                format!(
+                    "Camera asset version {} does not match expected tag {}.",
+                    summary.asset_version, asset_tag
+                ),
+            ));
+        }
+
+        if let Some(cancel_requested) = cancel_requested {
+            check_cancelled(cancel_requested)?;
+        }
+        send_phase_progress(channel, "activating");
+        let installed_jar = paths.current_dir.join(CAMERA_SERVER_FILE_NAME);
+        let backup_jar = paths.assets_dir.join("camera-server.jar.previous");
+        fs::create_dir_all(&paths.current_dir).map_err(|error| {
+            ScannerAssetsError::with_details(
+                "assets.install.activate.replaceFailed",
+                true,
+                format!(
+                    "Failed to create scanner asset directory {}: {error}",
+                    scanner_resource::path_to_string(&paths.current_dir)
+                ),
+            )
+        })?;
+        let _ = remove_path_if_exists(&backup_jar);
+        let had_installed_jar = installed_jar.exists();
+        if had_installed_jar {
+            fs::rename(&installed_jar, &backup_jar).map_err(|error| {
+                ScannerAssetsError::with_details(
+                    "assets.install.activate.replaceFailed",
+                    true,
+                    format!(
+                        "Failed to back up existing camera-server jar {}: {error}",
+                        scanner_resource::path_to_string(&installed_jar)
+                    ),
+                )
+            })?;
+        }
+        if let Err(error) = fs::rename(&staging_jar_path, &installed_jar) {
+            if had_installed_jar {
+                let _ = fs::rename(&backup_jar, &installed_jar);
+            }
+            return Err(ScannerAssetsError::with_details(
+                "assets.install.activate.replaceFailed",
+                true,
+                format!(
+                    "Failed to activate camera-server jar at {}: {error}",
+                    scanner_resource::path_to_string(&installed_jar)
+                ),
+            ));
+        }
+        let _ = remove_path_if_exists(&backup_jar);
+        let _ = fs::remove_dir_all(&paths.staging_dir);
+
+        Ok(ScannerAssetsInstallResult {
+            installed: true,
+            asset_version: summary.asset_version,
+            platform_target: None,
+            current_dir: scanner_resource::path_to_string(&paths.current_dir),
+            path: Some(scanner_resource::path_to_string(&installed_jar)),
         })
     })();
 
@@ -1543,6 +2156,94 @@ fn inspect_current_install(
     Ok(manifest_summary(&manifest))
 }
 
+fn inspect_camera_asset_install(
+    root: &Path,
+) -> Result<ScannerCameraAssetSummary, ScannerAssetsError> {
+    let jar_path = root.join(CAMERA_SERVER_FILE_NAME);
+    verify_non_empty_file(&jar_path, "Installed camera-server jar")?;
+    let asset_version = read_apk_version_name(&jar_path)?;
+
+    Ok(ScannerCameraAssetSummary {
+        asset_version,
+        path: scanner_resource::path_to_string(&jar_path),
+    })
+}
+
+fn read_apk_version_name(apk_path: &Path) -> Result<String, ScannerAssetsError> {
+    let file = File::open(apk_path).map_err(|error| {
+        ScannerAssetsError::with_details(
+            "assets.install.manifest.missing",
+            false,
+            format!(
+                "Failed to open camera-server jar at {}: {error}",
+                scanner_resource::path_to_string(apk_path)
+            ),
+        )
+    })?;
+    let mut archive = zip::ZipArchive::new(file).map_err(|error| {
+        ScannerAssetsError::with_details(
+            "assets.install.manifest.invalid",
+            false,
+            format!("Failed to read camera-server jar as zip: {error}"),
+        )
+    })?;
+    let manifest_entry = archive.by_name("AndroidManifest.xml").map_err(|_| {
+        ScannerAssetsError::with_details(
+            "assets.install.manifest.missing",
+            false,
+            "Camera-server jar is missing AndroidManifest.xml.",
+        )
+    })?;
+    let mut manifest_bytes = Vec::new();
+    io::Read::read_to_end(&mut io::BufReader::new(manifest_entry), &mut manifest_bytes).map_err(
+        |error| {
+            ScannerAssetsError::with_details(
+                "assets.install.manifest.invalid",
+                false,
+                format!("Failed to read AndroidManifest.xml: {error}"),
+            )
+        },
+    )?;
+
+    let doc = axmldecoder::parse(&mut io::Cursor::new(&manifest_bytes)).map_err(|error| {
+        ScannerAssetsError::with_details(
+            "assets.install.manifest.invalid",
+            false,
+            format!("Failed to parse AndroidManifest.xml: {error}"),
+        )
+    })?;
+    let root_element = match doc.get_root() {
+        Some(axmldecoder::Node::Element(el)) => el,
+        _ => {
+            return Err(ScannerAssetsError::with_details(
+                "assets.install.manifest.invalid",
+                false,
+                "AndroidManifest.xml has no root element.",
+            ));
+        }
+    };
+    let attrs = root_element.get_attributes();
+    let version_name = attrs
+        .get("versionName")
+        .or_else(|| attrs.get("android:versionName"))
+        .ok_or_else(|| {
+            ScannerAssetsError::with_details(
+                "assets.install.manifest.invalid",
+                false,
+                "AndroidManifest.xml is missing versionName attribute.",
+            )
+        })?;
+    let trimmed = version_name.trim();
+    if trimmed.is_empty() {
+        return Err(ScannerAssetsError::with_details(
+            "assets.install.manifest.invalid",
+            false,
+            "AndroidManifest.xml versionName is empty.",
+        ));
+    }
+    Ok(trimmed.to_string())
+}
+
 fn parse_manifest_file(path: &Path) -> Result<ScannerAssetManifest, ScannerAssetsError> {
     let file = File::open(path).map_err(|error| {
         ScannerAssetsError::with_details(
@@ -1800,6 +2501,27 @@ fn sha256_file_hex(path: &Path) -> Result<String, ScannerAssetsError> {
     Ok(hex_lower(&hasher.finalize()))
 }
 
+fn verify_non_empty_file(path: &Path, label: &str) -> Result<(), ScannerAssetsError> {
+    let metadata = fs::metadata(path).map_err(|error| {
+        ScannerAssetsError::with_details(
+            "assets.install.verify.fileMissing",
+            false,
+            format!(
+                "{label} is missing at {}: {error}",
+                scanner_resource::path_to_string(path)
+            ),
+        )
+    })?;
+    if !metadata.is_file() || metadata.len() == 0 {
+        return Err(ScannerAssetsError::with_details(
+            "assets.install.verify.fileMissing",
+            false,
+            format!("{label} is empty or not a file."),
+        ));
+    }
+    Ok(())
+}
+
 fn hex_lower(bytes: &[u8]) -> String {
     let mut output = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
@@ -1889,33 +2611,4 @@ fn manifest_summary(manifest: &ScannerAssetManifest) -> ScannerAssetsManifestSum
         asset_version: manifest.asset_version.clone(),
         platform_target: manifest.platform_target.clone(),
     }
-}
-
-#[cfg(not(test))]
-fn begin_ort_asset_mutation(
-) -> Result<crate::scanner_ort::ScannerOrtAssetMutationGuard, ScannerAssetsError> {
-    crate::scanner_ort::begin_ort_asset_mutation()
-}
-
-#[cfg(test)]
-struct OrtAssetMutationGuard;
-
-#[cfg(test)]
-thread_local! {
-    static TEST_ORT_ASSET_MUTATION_CALLS: std::cell::Cell<usize> = std::cell::Cell::new(0);
-    static TEST_ORT_ASSET_MUTATION_FAIL: std::cell::Cell<bool> = std::cell::Cell::new(false);
-}
-
-#[cfg(test)]
-fn begin_ort_asset_mutation() -> Result<OrtAssetMutationGuard, ScannerAssetsError> {
-    TEST_ORT_ASSET_MUTATION_CALLS.with(|calls| calls.set(calls.get() + 1));
-    let should_fail = TEST_ORT_ASSET_MUTATION_FAIL.with(|fail| fail.get());
-    if should_fail {
-        return Err(ScannerAssetsError::with_details(
-            "runtime.worker.stopFailed",
-            true,
-            "Failed to stop scanner ORT worker before asset mutation.",
-        ));
-    }
-    Ok(OrtAssetMutationGuard)
 }

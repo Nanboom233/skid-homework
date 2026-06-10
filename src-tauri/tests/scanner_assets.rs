@@ -16,6 +16,8 @@ mod scanner_assets_under_test {
     mod tests {
         use super::*;
 
+        const TEST_ASSET_TAG: &str = "v0.1.0";
+
         fn parse_manifest_bytes(bytes: &[u8]) -> Result<ScannerAssetManifest, ScannerAssetsError> {
             serde_json::from_slice(bytes).map_err(|error| {
                 ScannerAssetsError::with_details(
@@ -29,7 +31,7 @@ mod scanner_assets_under_test {
         fn manifest_with_files(files: Vec<ScannerAssetManifestFile>) -> ScannerAssetManifest {
             ScannerAssetManifest {
                 schema_version: 1,
-                asset_version: EXPECTED_SCANNER_ASSET_TAG.to_string(),
+                asset_version: TEST_ASSET_TAG.to_string(),
                 platform_target: scanner_platform::platform_target().to_string(),
                 files,
             }
@@ -45,7 +47,7 @@ mod scanner_assets_under_test {
         }
 
         fn write_complete_install_root(root: &Path) {
-            write_complete_install_root_with_version(root, EXPECTED_SCANNER_ASSET_TAG);
+            write_complete_install_root_with_version(root, TEST_ASSET_TAG);
         }
 
         fn write_complete_install_root_with_version(root: &Path, asset_version: &str) {
@@ -77,15 +79,21 @@ mod scanner_assets_under_test {
             .unwrap();
         }
 
-        fn github_release(
+        fn github_release(tag_name: &str, asset_names: &[String]) -> GitHubRelease {
+            github_release_with_prerelease(tag_name, false, asset_names)
+        }
+
+        fn github_prerelease(tag_name: &str, asset_names: &[String]) -> GitHubRelease {
+            github_release_with_prerelease(tag_name, true, asset_names)
+        }
+
+        fn github_release_with_prerelease(
             tag_name: &str,
-            draft: bool,
             prerelease: bool,
             asset_names: &[String],
         ) -> GitHubRelease {
             GitHubRelease {
                 tag_name: tag_name.to_string(),
-                draft,
                 prerelease,
                 assets: asset_names
                     .iter()
@@ -99,39 +107,19 @@ mod scanner_assets_under_test {
         }
 
         #[test]
-        fn package_file_name_and_default_url_use_expected_tag_without_prefix() {
-            let file_name = platform_package_file_name();
-            let expected_release_prefix = format!(
-                "https://github.com/{SCANNER_ASSETS_REPO_OWNER}/{SCANNER_ASSETS_REPO_NAME}/releases/download/{EXPECTED_SCANNER_ASSET_TAG}/"
-            );
-            assert!(file_name.contains(EXPECTED_SCANNER_ASSET_TAG));
-            assert!(!file_name.starts_with("scanner-assets-"));
-            assert!(default_asset_url().ends_with(&file_name));
-            assert!(default_asset_url().starts_with(&expected_release_prefix));
-            assert!(!default_asset_url().contains("/latest/"));
-        }
-
-        #[test]
-        fn release_target_selection_uses_first_suitable_platform_asset() {
+        fn release_target_selection_uses_first_suitable_stable_platform_asset() {
             let v010 = platform_package_file_name_for_tag("v0.1.0");
             let v020 = platform_package_file_name_for_tag("v0.2.0");
             let v100 = platform_package_file_name_for_tag("v1.0.0");
             let releases = vec![
                 github_release(
                     "v0.2.0-rc.1",
-                    false,
-                    true,
                     &asset_with_checksum(platform_package_file_name_for_tag("v0.2.0-rc.1")),
                 ),
-                github_release("v1.0.0", true, false, &[v100]),
-                github_release(
-                    "v0.10.0",
-                    false,
-                    false,
-                    &[platform_package_file_name_for_tag("other")],
-                ),
-                github_release("v0.2.0", false, false, &asset_with_checksum(v020.clone())),
-                github_release("v0.1.0", false, false, &asset_with_checksum(v010)),
+                github_release("v1.0.0", &[v100]),
+                github_release("v0.10.0", &[platform_package_file_name_for_tag("other")]),
+                github_release("v0.2.0", &asset_with_checksum(v020.clone())),
+                github_release("v0.1.0", &asset_with_checksum(v010)),
             ];
 
             let target = select_latest_release_target(&releases).unwrap();
@@ -149,51 +137,88 @@ mod scanner_assets_under_test {
         }
 
         #[test]
-        fn release_target_selection_skips_newer_releases_without_ort_assets() {
-            let other_asset = "camera-server-v0.3.0.jar".to_string();
-            let ort_asset = platform_package_file_name_for_tag("v0.2.0");
+        fn release_target_selection_skips_newer_camera_only_releases() {
+            let camera_only = camera_package_file_name_for_tag("v0.3.0");
+            let ort = platform_package_file_name_for_tag("v0.2.0");
             let releases = vec![
-                github_release("v0.3.0", false, false, &asset_with_checksum(other_asset)),
-                github_release(
-                    "v0.2.0",
-                    false,
-                    false,
-                    &asset_with_checksum(ort_asset.clone()),
-                ),
+                github_release("v0.3.0", &asset_with_checksum(camera_only)),
+                github_release("v0.2.0", &asset_with_checksum(ort.clone())),
             ];
 
             let target = select_latest_release_target(&releases).unwrap();
 
             assert_eq!(target.asset_tag, "v0.2.0");
-            assert_eq!(target.package_file_name, ort_asset);
+            assert_eq!(target.package_file_name, ort);
         }
 
         #[test]
         fn release_target_selection_allows_prerelease_release() {
-            let prerelease_asset = platform_package_file_name_for_tag("v0.3.0");
-            let stable_asset = platform_package_file_name_for_tag("v0.2.0");
+            let prerelease_ort = platform_package_file_name_for_tag("v0.3.0");
+            let stable_ort = platform_package_file_name_for_tag("v0.2.0");
             let releases = vec![
-                github_release(
-                    "v0.3.0",
-                    false,
-                    true,
-                    &asset_with_checksum(prerelease_asset.clone()),
-                ),
-                github_release("v0.2.0", false, false, &asset_with_checksum(stable_asset)),
+                github_prerelease("v0.3.0", &asset_with_checksum(prerelease_ort.clone())),
+                github_release("v0.2.0", &asset_with_checksum(stable_ort)),
             ];
 
             let target = select_latest_release_target(&releases).unwrap();
 
             assert_eq!(target.asset_tag, "v0.3.0");
-            assert_eq!(target.package_file_name, prerelease_asset);
+            assert_eq!(target.package_file_name, prerelease_ort);
         }
 
         #[test]
         fn release_target_selection_requires_archive_checksum_sidecar() {
             let file_name = platform_package_file_name_for_tag("v0.2.0");
-            let releases = vec![github_release("v0.2.0", false, false, &[file_name])];
+            let releases = vec![github_release("v0.2.0", &[file_name])];
 
             assert!(select_latest_release_target(&releases).is_none());
+        }
+
+        #[test]
+        fn camera_release_target_selection_uses_exact_jar_template_and_checksum() {
+            let v010 = camera_package_file_name_for_tag("v0.1.0");
+            let v020 = camera_package_file_name_for_tag("v0.2.0");
+            let releases = vec![
+                github_release("v0.3.0", &[format!("camera-server-other.jar")]),
+                github_release("v0.2.0", &asset_with_checksum(v020.clone())),
+                github_release("v0.1.0", &asset_with_checksum(v010)),
+            ];
+
+            let target = select_latest_camera_release_target(&releases).unwrap();
+
+            assert_eq!(target.asset_tag, "v0.2.0");
+            assert_eq!(target.package_file_name, v020);
+            assert_eq!(
+                target.asset_url,
+                official_release_asset_url("v0.2.0", &target.package_file_name)
+            );
+            assert_eq!(
+                target.checksum_url,
+                official_release_checksum_url("v0.2.0", &target.package_file_name)
+            );
+        }
+
+        #[test]
+        fn camera_release_target_selection_skips_newer_ort_only_releases() {
+            let ort_only = platform_package_file_name_for_tag("v0.3.0");
+            let camera = camera_package_file_name_for_tag("v0.2.0");
+            let releases = vec![
+                github_release("v0.3.0", &asset_with_checksum(ort_only)),
+                github_release("v0.2.0", &asset_with_checksum(camera.clone())),
+            ];
+
+            let target = select_latest_camera_release_target(&releases).unwrap();
+
+            assert_eq!(target.asset_tag, "v0.2.0");
+            assert_eq!(target.package_file_name, camera);
+        }
+
+        #[test]
+        fn camera_release_target_selection_requires_checksum_sidecar() {
+            let file_name = camera_package_file_name_for_tag("v0.2.0");
+            let releases = vec![github_release("v0.2.0", &[file_name])];
+
+            assert!(select_latest_camera_release_target(&releases).is_none());
         }
 
         #[test]
@@ -201,14 +226,10 @@ mod scanner_assets_under_test {
             let releases = vec![
                 github_release(
                     "v0.9.0",
-                    false,
-                    false,
                     &asset_with_checksum(platform_package_file_name_for_tag("v0.9.0")),
                 ),
                 github_release(
                     "v0.10.0",
-                    false,
-                    false,
                     &asset_with_checksum(platform_package_file_name_for_tag("v0.10.0")),
                 ),
             ];
@@ -270,7 +291,7 @@ mod scanner_assets_under_test {
         fn manifest_rejects_unsupported_schema_version() {
             let manifest = ScannerAssetManifest {
                 schema_version: 2,
-                asset_version: EXPECTED_SCANNER_ASSET_TAG.to_string(),
+                asset_version: TEST_ASSET_TAG.to_string(),
                 platform_target: scanner_platform::platform_target().to_string(),
                 files: vec![manifest_file("models/uvdoc-best-model.onnx", b"model")],
             };
@@ -306,7 +327,7 @@ mod scanner_assets_under_test {
         fn platform_mismatch_is_rejected() {
             let manifest = ScannerAssetManifest {
                 schema_version: 1,
-                asset_version: EXPECTED_SCANNER_ASSET_TAG.to_string(),
+                asset_version: TEST_ASSET_TAG.to_string(),
                 platform_target: "wrong-platform".to_string(),
                 files: vec![manifest_file("models/uvdoc-best-model.onnx", b"model")],
             };
@@ -327,7 +348,7 @@ mod scanner_assets_under_test {
 
             let error = verify_manifest_metadata(
                 &manifest,
-                ManifestVersionPolicy::RequireTag(EXPECTED_SCANNER_ASSET_TAG.to_string()),
+                ManifestVersionPolicy::RequireTag(TEST_ASSET_TAG.to_string()),
             )
             .expect_err("strict download validation must reject mismatched versions");
 
@@ -416,9 +437,10 @@ mod scanner_assets_under_test {
         }
 
         #[test]
-        fn clear_installed_assets_stops_worker_before_removing_current_paths() {
-            TEST_ORT_ASSET_MUTATION_CALLS.with(|calls| calls.set(0));
-            TEST_ORT_ASSET_MUTATION_FAIL.with(|fail| fail.set(false));
+        fn clear_ort_assets_stops_worker_before_removing_current_paths() {
+            let _lock = TEST_ORT_ASSET_MUTATION_TEST_LOCK.lock().unwrap();
+            TEST_ORT_ASSET_MUTATION_CALLS.store(0, Ordering::SeqCst);
+            TEST_ORT_ASSET_MUTATION_FAIL.store(false, Ordering::SeqCst);
             let temp_dir = tempfile::tempdir().unwrap();
             let paths = asset_paths_from_app_data_dir(temp_dir.path().to_path_buf());
             fs::create_dir_all(paths.current_dir.join("models")).unwrap();
@@ -431,18 +453,19 @@ mod scanner_assets_under_test {
             )
             .unwrap();
 
-            clear_installed_assets(&paths).unwrap();
+            clear_ort_assets(&paths).unwrap();
 
-            TEST_ORT_ASSET_MUTATION_CALLS.with(|calls| assert_eq!(calls.get(), 1));
+            assert_eq!(TEST_ORT_ASSET_MUTATION_CALLS.load(Ordering::SeqCst), 1);
             assert!(!paths.current_dir.join(MANIFEST_FILE_NAME).exists());
             assert!(!paths.current_dir.join("models").exists());
             assert!(!paths.current_dir.join("onnxruntime").exists());
         }
 
         #[test]
-        fn clear_installed_assets_preserves_current_when_worker_stop_fails() {
-            TEST_ORT_ASSET_MUTATION_CALLS.with(|calls| calls.set(0));
-            TEST_ORT_ASSET_MUTATION_FAIL.with(|fail| fail.set(true));
+        fn clear_ort_assets_preserves_current_when_worker_stop_fails() {
+            let _lock = TEST_ORT_ASSET_MUTATION_TEST_LOCK.lock().unwrap();
+            TEST_ORT_ASSET_MUTATION_CALLS.store(0, Ordering::SeqCst);
+            TEST_ORT_ASSET_MUTATION_FAIL.store(true, Ordering::SeqCst);
             let temp_dir = tempfile::tempdir().unwrap();
             let paths = asset_paths_from_app_data_dir(temp_dir.path().to_path_buf());
             fs::create_dir_all(paths.current_dir.join("models")).unwrap();
@@ -455,12 +478,11 @@ mod scanner_assets_under_test {
             )
             .unwrap();
 
-            let error =
-                clear_installed_assets(&paths).expect_err("worker stop failure must abort clear");
+            let error = clear_ort_assets(&paths).expect_err("worker stop failure must abort clear");
 
-            TEST_ORT_ASSET_MUTATION_FAIL.with(|fail| fail.set(false));
+            TEST_ORT_ASSET_MUTATION_FAIL.store(false, Ordering::SeqCst);
             assert_eq!(error.code, "runtime.worker.stopFailed");
-            TEST_ORT_ASSET_MUTATION_CALLS.with(|calls| assert_eq!(calls.get(), 1));
+            assert_eq!(TEST_ORT_ASSET_MUTATION_CALLS.load(Ordering::SeqCst), 1);
             assert!(paths.current_dir.join(MANIFEST_FILE_NAME).exists());
             assert!(paths.current_dir.join("models/model.onnx").exists());
             assert!(paths.current_dir.join("onnxruntime/runtime.dll").exists());
@@ -500,45 +522,13 @@ mod scanner_assets_under_test {
         }
 
         #[test]
-        fn clear_installed_assets_removes_current_and_transient_residue() {
-            let temp_dir = tempfile::tempdir().unwrap();
-            let paths = asset_paths_from_app_data_dir(temp_dir.path().to_path_buf());
-            fs::create_dir_all(&paths.current_dir).unwrap();
-            fs::write(paths.current_dir.join("marker"), b"current").unwrap();
-            fs::create_dir_all(&paths.staging_dir).unwrap();
-            fs::write(paths.staging_dir.join("marker"), b"staging").unwrap();
-            fs::create_dir_all(&paths.backup_dir).unwrap();
-            fs::write(paths.backup_dir.join("marker"), b"backup").unwrap();
-            let numbered_backup = paths.assets_dir.join("current.previous.1");
-            fs::create_dir_all(&numbered_backup).unwrap();
-            fs::write(numbered_backup.join("marker"), b"backup").unwrap();
-            let archive_path = paths.assets_dir.join(".download-test");
-            fs::write(&archive_path, b"download").unwrap();
-            set_last_error(ScannerAssetsError::with_details(
-                "assets.install.verify.fileMissing",
-                true,
-                "stale error",
-            ));
-
-            clear_installed_assets(&paths).unwrap();
-
-            assert!(paths.assets_dir.exists());
-            assert!(!paths.current_dir.exists());
-            assert!(!paths.staging_dir.exists());
-            assert!(!paths.backup_dir.exists());
-            assert!(!numbered_backup.exists());
-            assert!(!archive_path.exists());
-            assert!(last_error().is_none());
-        }
-
-        #[test]
         fn strict_install_root_rejects_different_asset_version() {
             let temp_dir = tempfile::tempdir().unwrap();
             write_complete_install_root_with_version(temp_dir.path(), "v9.9.9");
 
             let error = load_and_verify_install_root(
                 temp_dir.path(),
-                ManifestVersionPolicy::RequireTag(EXPECTED_SCANNER_ASSET_TAG.to_string()),
+                ManifestVersionPolicy::RequireTag(TEST_ASSET_TAG.to_string()),
             )
             .expect_err("download install validation must reject mismatched versions");
 
@@ -569,6 +559,34 @@ mod scanner_assets_under_test {
             assert_eq!(summary.schema_version, 1);
             assert_eq!(summary.asset_version, "v9.9.9");
             assert_eq!(summary.platform_target, scanner_platform::platform_target());
+        }
+
+        #[test]
+        fn inspect_camera_install_requires_valid_apk_with_version() {
+            let resource_jar = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("resources")
+                .join(CAMERA_SERVER_FILE_NAME);
+            if !resource_jar.is_file() {
+                // Skip when resource jar is unavailable (CI without bundled resource).
+                return;
+            }
+            let temp_dir = tempfile::tempdir().unwrap();
+            let paths = asset_paths_from_app_data_dir(temp_dir.path().to_path_buf());
+            assert_eq!(
+                paths.current_dir,
+                temp_dir.path().join(ASSETS_DIR_NAME).join(CURRENT_DIR_NAME)
+            );
+            fs::create_dir_all(&paths.current_dir).unwrap();
+            fs::copy(
+                &resource_jar,
+                paths.current_dir.join(CAMERA_SERVER_FILE_NAME),
+            )
+            .unwrap();
+
+            let summary = inspect_camera_asset_install(&paths.current_dir).unwrap();
+
+            assert!(!summary.asset_version.is_empty());
+            assert!(summary.path.ends_with(CAMERA_SERVER_FILE_NAME));
         }
 
         #[test]
@@ -608,7 +626,7 @@ mod scanner_assets_under_test {
 
             let summary = inspect_current_install(&paths.current_dir).unwrap();
             assert_eq!(summary.schema_version, 1);
-            assert_eq!(summary.asset_version, EXPECTED_SCANNER_ASSET_TAG);
+            assert_eq!(summary.asset_version, TEST_ASSET_TAG);
             assert_eq!(summary.platform_target, scanner_platform::platform_target());
             assert_eq!(
                 fs::read(&paths.backup_dir).unwrap(),
@@ -637,6 +655,38 @@ mod scanner_assets_under_test {
                 b"locked-backup-placeholder"
             );
             assert!(!paths.assets_dir.join("current.previous.1").exists());
+        }
+
+        #[test]
+        fn validate_jar_zip_magic_accepts_valid_jar() {
+            let temp_dir = tempfile::tempdir().unwrap();
+            let jar_path = temp_dir.path().join("test.jar");
+            let mut contents = vec![0x50, 0x4B, 0x03, 0x04];
+            contents.extend_from_slice(b"fake jar content");
+            fs::write(&jar_path, &contents).unwrap();
+
+            assert!(validate_jar_zip_magic(&jar_path).is_ok());
+        }
+
+        #[test]
+        fn validate_jar_zip_magic_rejects_non_zip() {
+            let temp_dir = tempfile::tempdir().unwrap();
+            let jar_path = temp_dir.path().join("not-a-jar.txt");
+            fs::write(&jar_path, b"this is not a jar file").unwrap();
+
+            let error =
+                validate_jar_zip_magic(&jar_path).expect_err("non-zip file must be rejected");
+            assert_eq!(error.code, "assets.import.archive.formatMismatch");
+        }
+
+        #[test]
+        fn validate_jar_zip_magic_rejects_empty_file() {
+            let temp_dir = tempfile::tempdir().unwrap();
+            let jar_path = temp_dir.path().join("empty.jar");
+            fs::write(&jar_path, b"").unwrap();
+
+            let error = validate_jar_zip_magic(&jar_path).expect_err("empty file must be rejected");
+            assert_eq!(error.code, "assets.import.archive.formatMismatch");
         }
     }
 }
