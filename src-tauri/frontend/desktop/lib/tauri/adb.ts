@@ -1,4 +1,7 @@
-import {isTauri} from "./platform";
+import {
+  invokeTauriBinaryChannelCommand,
+  invokeTauriCommand,
+} from "./ipc";
 
 export interface TauriAdbDevice {
   serial: string;
@@ -16,130 +19,44 @@ export interface TauriAdbPairRequest {
   pairingCode: string;
 }
 
-type TauriRawChannelPayload = string | ArrayBuffer | Uint8Array | number[];
-
-const invokeTauriCommand = async <T>(
-  command: string,
-  payload?: Record<string, unknown>,
-): Promise<T> => {
-  if (!isTauri()) {
-    throw new Error("Native ADB is only available in Tauri desktop builds.");
-  }
-
-  const { invoke } = await import("@tauri-apps/api/core");
-  return await invoke<T>(command, payload);
-};
-
-const decodeBase64ToUint8Array = (base64: string): Uint8Array => {
-  const normalized = base64.replace(/\s+/g, "");
-  const binary = atob(normalized);
-  const bytes = new Uint8Array(binary.length);
-
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
-  }
-
-  return bytes;
-};
-
-const normalizeTauriRawChannelPayload = (payload: TauriRawChannelPayload): Uint8Array => {
-  if (typeof payload === "string") {
-    return decodeBase64ToUint8Array(payload);
-  }
-
-  if (payload instanceof ArrayBuffer) {
-    return new Uint8Array(payload);
-  }
-
-  if (payload instanceof Uint8Array) {
-    return payload;
-  }
-
-  if (Array.isArray(payload)) {
-    return Uint8Array.from(payload);
-  }
-
-  throw new Error("Invalid binary payload from Tauri channel.");
-};
-
-const invokeTauriBinaryChannelCommand = async (
-  command: string,
-  payload?: Record<string, unknown>,
-  channelKey: string = "payloadChannel",
-): Promise<Uint8Array> => {
-  if (!isTauri()) {
-    throw new Error("Native binary channel IPC is only available in Tauri desktop builds.");
-  }
-
-  const { invoke, Channel } = await import("@tauri-apps/api/core");
-
-  return await new Promise<Uint8Array>((resolve, reject) => {
-    let settled = false;
-
-    const settleResolve = (bytes: Uint8Array): void => {
-      if (settled) {
-        return;
-      }
-
-      settled = true;
-      resolve(bytes);
+export type ForwardRequest =
+  | {
+      mode: "add";
+      serial: string;
+      localPort: number;
+      remoteSocketName: string;
+    }
+  | {
+      mode: "remove";
+      serial: string;
+      localPort: number;
     };
 
-    const settleReject = (error: unknown): void => {
-      if (settled) {
-        return;
-      }
-
-      settled = true;
-      reject(error instanceof Error ? error : new Error(String(error)));
-    };
-
-    const payloadChannel = new Channel<TauriRawChannelPayload>((message) => {
-      try {
-        settleResolve(normalizeTauriRawChannelPayload(message));
-      } catch (error) {
-        settleReject(error);
-      }
-    });
-
-    void invoke<void>(command, {
-      ...(payload ?? {}),
-      [channelKey]: payloadChannel,
-    }).catch((error) => {
-      settleReject(error);
-    });
-  });
-};
-
-export const listTauriAdbDevices = async (): Promise<TauriAdbDevice[]> => {
+export const listDevices = async (): Promise<TauriAdbDevice[]> => {
   return await invokeTauriCommand<TauriAdbDevice[]>("tauri_adb_list_devices");
 };
 
-export const pairTauriAdbDevice = async (
+export const pairDevice = async (
   request: TauriAdbPairRequest,
 ): Promise<string> => {
-  return await invokeTauriCommand<string>("tauri_adb_pair", { request });
+  return await invokeTauriCommand<string>("tauri_adb_pair", {request});
 };
 
-export const connectTauriAdbDevice = async (
+export const connectDevice = async (
   address: string,
 ): Promise<TauriAdbConnectResult> => {
   return await invokeTauriCommand<TauriAdbConnectResult>("tauri_adb_connect", {
-    request: { address },
+    request: {address},
   });
 };
 
-export const captureTauriAdbScreenshot = async (
-  serial: string,
-): Promise<Uint8Array> => {
+export const screenshot = async (serial: string): Promise<Uint8Array> => {
   return await invokeTauriBinaryChannelCommand("tauri_adb_screenshot", {
     serial,
   });
 };
 
-// --- Generic ADB primitives for future desktop integrations ---
-
-export const pushTauriAdbFile = async (
+export const push = async (
   serial: string,
   localPath: string,
   remotePath: string,
@@ -151,24 +68,17 @@ export const pushTauriAdbFile = async (
   });
 };
 
-export const forwardTauriAdbPort = async (
-  serial: string,
-  localPort: number,
-  remoteSocketName: string,
-): Promise<string> => {
-  return await invokeTauriCommand<string>("tauri_adb_forward", {
-    serial,
-    localPort,
-    remoteSocketName,
-  });
-};
+export const forward = async (request: ForwardRequest): Promise<string> => {
+  if (request.mode === "add") {
+    return await invokeTauriCommand<string>("tauri_adb_forward", {
+      serial: request.serial,
+      localPort: request.localPort,
+      remoteSocketName: request.remoteSocketName,
+    });
+  }
 
-export const removeForwardTauriAdbPort = async (
-  serial: string,
-  localPort: number,
-): Promise<string> => {
   return await invokeTauriCommand<string>("tauri_adb_remove_forward", {
-    serial,
-    localPort,
+    serial: request.serial,
+    localPort: request.localPort,
   });
 };

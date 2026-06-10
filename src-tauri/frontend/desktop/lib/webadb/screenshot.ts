@@ -1,10 +1,10 @@
 import type {Adb} from "@yume-chan/adb";
 import {AdbDaemonWebUsbDevice} from "@yume-chan/adb-daemon-webusb";
 import {
-  captureTauriAdbScreenshot,
-  connectTauriAdbDevice,
-  listTauriAdbDevices,
-  pairTauriAdbDevice,
+  connectDevice,
+  listDevices,
+  pairDevice,
+  screenshot,
   type TauriAdbDevice,
 } from "../tauri/adb";
 import {isTauri} from "../tauri/platform";
@@ -160,7 +160,7 @@ export async function listDesktopAdbDevices(): Promise<TauriAdbDevice[]> {
     );
   }
 
-  return await listTauriAdbDevices();
+  return await listDevices();
 }
 
 export async function selectDesktopAdbDevice(serial: string): Promise<string> {
@@ -220,7 +220,7 @@ export async function connectRemoteAdbDevice(address: string): Promise<string> {
     );
   }
 
-  const result = await connectTauriAdbDevice(address);
+  const result = await connectDevice(address);
   selectedTauriSerial = result.serial;
   return result.serial;
 }
@@ -234,7 +234,7 @@ export async function pairRemoteAdbDevice(
     );
   }
 
-  return await pairTauriAdbDevice({
+  return await pairDevice({
     address: request.pairingAddress,
     pairingCode: request.pairingCode,
   });
@@ -278,7 +278,7 @@ export async function captureAdbScreenshotWithMetadata(options?: {
 
   if (isTauri()) {
     const serial = await resolveActiveTauriSerial(options?.preferredDesktopSerial);
-    const screenshotBytes = await captureTauriAdbScreenshot(serial);
+    const screenshotBytes = await screenshot(serial);
     const blobCompatibleBytes = new Uint8Array(screenshotBytes.byteLength);
     blobCompatibleBytes.set(screenshotBytes);
     const dimensions = readPngDimensions(blobCompatibleBytes);

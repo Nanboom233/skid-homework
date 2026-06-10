@@ -1,0 +1,1851 @@
+import {
+  captureStill,
+  captureStillStream,
+  deployServer,
+  startDecodeStream,
+  startServer,
+  stopDecodeStream,
+  stopServer,
+  type DecodeStreamHandle,
+  type DecodeStreamLifecycleEvent,
+} from "./tauri-camera-transport";
+import {forward} from "../tauri/adb";
+
+import {
+  decodeFramePacketToRgba,
+  FRAME_PACKET_HEADER_SIZE,
+  FRAME_PACKET_TELEMETRY_SIZE,
+} from "./frame-codec";
+
+export interface ScannerDiagnostic {
+  collectedAt: number;
+  startedAt: number | null;
+  runtimeMs: number;
+  targetPreviewFps: number;
+  totalFrames: number;
+  totalPolls: number;
+  emptyPolls: number;
+  consecutiveEmptyPolls: number;
+  latestPayloadBytes: number;
+  latestIpcMs: number;
+  latestDecodeMs: number;
+  previewFps: number;
+  recentWindowFps: number;
+  effectiveFps: number;
+  stallCount: number;
+  reconnect: {
+    count: number;
+    inProgress: boolean;
+    totalDowntimeMs: number;
+    lastDowntimeMs: number | null;
+  };
+}
+
+export interface ScannerState {
+  status:
+    | "idle"
+    | "starting"
+    | "streaming"
+    | "reconnecting"
+    | "stopping"
+    | "stopped"
+    | "error";
+  statusUpdatedAt: number;
+  stopReason: string | null;
+  lastError: string | null;
+  reconnectAttempt: number;
+  nextReconnectDelayMs: number | null;
+  previewWidth: number | null;
+  previewHeight: number | null;
+  lastFrameAt: number | null;
+  diagnostic: ScannerDiagnostic;
+}
+
+type ScannerStatus = ScannerState["status"];
+
+export interface ScannerStillCapture {
+  file: File;
+  width: number | null;
+  height: number | null;
+  capturedAt: number;
+  source: "tauri-camera-still";
+  serial: string;
+  previewWidth: number | null;
+  previewHeight: number | null;
+  transport: string;
+}
+
+type DecoderLifecycleState = "starting" | "connected" | "connecting" | "reconnecting" | "ready" | "error" | "stopped";
+
+type DecoderLifecycleEvent = DecodeStreamLifecycleEvent & {
+  state: DecoderLifecycleState;
+};
+
+/** Configuration for the camera server connection. */
+export interface ScannerConfig {
+  serial: string;
+  serverJarPath?: string;
+  remoteJarPath: string;
+  socketName: string;
+  localPort: number;
+  width: number;
+  height: number;
+  bitrate: number;
+  framerate: number;
+  cameraId: string;
+}
+/**
+ * Compute a reasonable H.264 bitrate from resolution and framerate.
+ * Targets roughly 0.10 bits per pixel per frame — tuned for 1080p30 over ADB
+ * tunnel where bandwidth is precious but document edge detection only needs
+ * moderate quality.  Clamps to [500_000, 8_000_000].
+ */
+export const computeScannerBitrate = (width: number, height: number, framerate: number): number => {
+  const bitsPerPixelPerFrame = 0.10;
+  const raw = Math.round(width * height * framerate * bitsPerPixelPerFrame);
+  return Math.max(500_000, Math.min(8_000_000, raw));
+};
+
+/** Default scanner configuration values. */
+export const DEFAULT_SCANNER_CONFIG: Omit<ScannerConfig, "serial"> = {
+  remoteJarPath: "/data/local/tmp/camera-server.jar",
+  socketName: "scanner",
+  localPort: 27184,
+  width: 640,
+  height: 360,
+  bitrate: computeScannerBitrate(640, 360, 30),
+  framerate: 30,
+  cameraId: "0",
+};
+
+/**
+ * Build a scanner config by merging settings store values over defaults.
+ * Bitrate is always dynamically computed from width × height × framerate.
+ */
+export const makeScannerConfigFromSettings = (
+  settings: { scannerPreviewWidth: number; scannerPreviewHeight: number; scannerFramerate: number; scannerCameraId: string },
+): Omit<ScannerConfig, "serial"> => {
+  const width = settings.scannerPreviewWidth;
+  const height = settings.scannerPreviewHeight;
+  const framerate = settings.scannerFramerate;
+  return {
+    ...DEFAULT_SCANNER_CONFIG,
+    width,
+    height,
+    framerate,
+    bitrate: computeScannerBitrate(width, height, framerate),
+    cameraId: settings.scannerCameraId,
+  };
+};
+
+const SERVER_MAIN_CLASS = "com.skidhomework.server.Server";
+const STILL_CAPTURE_SOCKET_SUFFIX = "-still";
+const STILL_STREAM_SOCKET_SUFFIX = "-still-stream";
+const STILL_FORWARD_PORT_OFFSET = 1000;
+const DECODE_RESTART_DELAY_MS = 125;
+const WATCHDOG_INTERVAL_MS = 1000;
+const STARTUP_FRAME_GRACE_MS = 9000;
+
+const getStillCaptureSocketName = (socketName: string): string => {
+  return `${socketName}${STILL_CAPTURE_SOCKET_SUFFIX}`;
+};
+
+const getStillStreamSocketName = (socketName: string): string => {
+  return `${socketName}${STILL_STREAM_SOCKET_SUFFIX}`;
+};
+
+const buildStillForwardPreferredPort = (previewPort: number): number => {
+  const basePort = Number.isInteger(previewPort) && previewPort > 0
+    ? previewPort
+    : DEFAULT_SCANNER_CONFIG.localPort;
+  return Math.min(MAX_TCP_PORT, Math.max(1, basePort + STILL_FORWARD_PORT_OFFSET));
+};
+
+const JPEG_SOI_MARKER = 0xffd8;
+const JPEG_SEGMENT_MARKER_PREFIX = 0xff;
+const JPEG_START_OF_SCAN_MARKER = 0xda;
+const JPEG_START_OF_FRAME_MARKERS = new Set([
+  0xc0, 0xc1, 0xc2, 0xc3,
+  0xc5, 0xc6, 0xc7,
+  0xc9, 0xca, 0xcb,
+  0xcd, 0xce, 0xcf,
+]);
+
+const readBigEndianMarker = (bytes: Uint8Array, index: number): number | null => {
+  if (index < 0 || index + 1 >= bytes.byteLength) {
+    return null;
+  }
+
+  return (bytes[index] << 8) | bytes[index + 1];
+};
+
+const readNextJpegMarker = (
+  bytes: Uint8Array,
+  offset: number,
+): { marker: number; markerStart: number; nextOffset: number } | null => {
+  if (offset < 0 || offset >= bytes.byteLength || bytes[offset] !== JPEG_SEGMENT_MARKER_PREFIX) {
+    return null;
+  }
+
+  const markerStart = offset;
+  while (offset < bytes.byteLength && bytes[offset] === JPEG_SEGMENT_MARKER_PREFIX) {
+    offset += 1;
+  }
+
+  if (offset >= bytes.byteLength) {
+    return null;
+  }
+
+  return {
+    marker: bytes[offset],
+    markerStart,
+    nextOffset: offset + 1,
+  };
+};
+
+const scanJpegEntropyData = (
+  bytes: Uint8Array,
+  offset: number,
+): { nextMarkerOffset: number; end: number | null } | null => {
+  while (offset + 1 < bytes.byteLength) {
+    if (bytes[offset] !== JPEG_SEGMENT_MARKER_PREFIX) {
+      offset += 1;
+      continue;
+    }
+
+    const marker = readNextJpegMarker(bytes, offset);
+    if (!marker) {
+      return null;
+    }
+
+    if (marker.marker === 0x00) {
+      offset = marker.nextOffset;
+      continue;
+    }
+
+    if (marker.marker >= 0xd0 && marker.marker <= 0xd7) {
+      offset = marker.nextOffset;
+      continue;
+    }
+
+    if (marker.marker === 0xd9) {
+      return {
+        nextMarkerOffset: marker.markerStart,
+        end: marker.nextOffset,
+      };
+    }
+
+    return {
+      nextMarkerOffset: marker.markerStart,
+      end: null,
+    };
+  }
+
+  return null;
+};
+
+const findJpegPayloadBoundsFrom = (
+  bytes: Uint8Array,
+  startIndex: number,
+): { start: number; end: number } | null => {
+  if (readBigEndianMarker(bytes, startIndex) !== JPEG_SOI_MARKER) {
+    return null;
+  }
+
+  let offset = startIndex + 2;
+
+  while (offset + 1 < bytes.byteLength) {
+    const markerInfo = readNextJpegMarker(bytes, offset);
+    if (!markerInfo) {
+      return null;
+    }
+
+    const marker = markerInfo.marker;
+    offset = markerInfo.nextOffset;
+
+    if (marker === 0xd9) {
+      return { start: startIndex, end: offset };
+    }
+
+    if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) {
+      continue;
+    }
+
+    if (offset + 1 >= bytes.byteLength) {
+      return null;
+    }
+
+    const segmentLength = readBigEndianMarker(bytes, offset);
+    if (segmentLength === null || segmentLength < 2 || offset + segmentLength > bytes.byteLength) {
+      return null;
+    }
+
+    offset += segmentLength;
+
+    if (marker !== JPEG_START_OF_SCAN_MARKER) {
+      continue;
+    }
+
+    // Some vendors emit multi-scan/progressive JPEGs. When the entropy-coded
+    // segment ends at another marker instead of EOI, continue parsing until we
+    // reach the real end-of-image marker.
+    const entropyScan = scanJpegEntropyData(bytes, offset);
+    if (!entropyScan) {
+      return null;
+    }
+
+    if (entropyScan.end !== null) {
+      return { start: startIndex, end: entropyScan.end };
+    }
+
+    offset = entropyScan.nextMarkerOffset;
+  }
+
+  return null;
+};
+
+const extractJpegPayload = (bytes: Uint8Array): Uint8Array => {
+  for (let index = 0; index < bytes.byteLength - 1; index += 1) {
+    if (readBigEndianMarker(bytes, index) !== JPEG_SOI_MARKER) {
+      continue;
+    }
+
+    const bounds = findJpegPayloadBoundsFrom(bytes, index);
+    if (bounds) {
+      return bytes.slice(bounds.start, bounds.end);
+    }
+  }
+
+  return bytes;
+};
+
+const readJpegDimensions = (
+  bytes: Uint8Array,
+): { width: number; height: number } | null => {
+  if (readBigEndianMarker(bytes, 0) !== JPEG_SOI_MARKER) {
+    return null;
+  }
+
+  let offset = 2;
+  while (offset + 3 < bytes.byteLength) {
+    while (offset < bytes.byteLength && bytes[offset] === JPEG_SEGMENT_MARKER_PREFIX) {
+      offset += 1;
+    }
+
+    if (offset >= bytes.byteLength) {
+      break;
+    }
+
+    const marker = bytes[offset];
+    offset += 1;
+
+    if (marker === 0x01) {
+      continue;
+    }
+
+    if (marker === 0xd9 || marker === JPEG_START_OF_SCAN_MARKER) {
+      break;
+    }
+
+    if (offset + 1 >= bytes.byteLength) {
+      break;
+    }
+
+    const segmentLength = readBigEndianMarker(bytes, offset);
+    if (segmentLength === null || segmentLength < 2 || offset + segmentLength > bytes.byteLength) {
+      break;
+    }
+
+    if (JPEG_START_OF_FRAME_MARKERS.has(marker)) {
+      if (segmentLength < 7) {
+        return null;
+      }
+
+      const height = readBigEndianMarker(bytes, offset + 3);
+      const width = readBigEndianMarker(bytes, offset + 5);
+      if (width === null || height === null) {
+        return null;
+      }
+
+      return { width, height };
+    }
+
+    offset += segmentLength;
+  }
+
+  return null;
+};
+
+const findMarkerOffset = (
+  bytes: Uint8Array,
+  marker: number,
+  fromEnd: boolean = false,
+): number | null => {
+  if (fromEnd) {
+    for (let index = bytes.byteLength - 2; index >= 0; index -= 1) {
+      if (readBigEndianMarker(bytes, index) === marker) {
+        return index;
+      }
+    }
+    return null;
+  }
+
+  for (let index = 0; index < bytes.byteLength - 1; index += 1) {
+    if (readBigEndianMarker(bytes, index) === marker) {
+      return index;
+    }
+  }
+
+  return null;
+};
+
+const describeHexWindow = (
+  bytes: Uint8Array,
+  count: number,
+  fromEnd: boolean = false,
+): string => {
+  if (bytes.byteLength === 0) {
+    return "∅";
+  }
+
+  const safeCount = Math.max(1, Math.min(count, bytes.byteLength));
+  const slice = fromEnd
+    ? bytes.slice(bytes.byteLength - safeCount)
+    : bytes.slice(0, safeCount);
+  return [...slice].map((value) => value.toString(16).padStart(2, "0")).join(" ");
+};
+
+const describeStillPayloadDiagnostics = (
+  bytes: Uint8Array,
+  mimeType: string,
+): Record<string, unknown> => {
+  const startsWithSoi = mimeType === "image/jpeg"
+    ? readBigEndianMarker(bytes, 0) === JPEG_SOI_MARKER
+    : null;
+  const firstSoiOffset = mimeType === "image/jpeg"
+    ? findMarkerOffset(bytes, JPEG_SOI_MARKER)
+    : null;
+  const lastEoiOffset = mimeType === "image/jpeg"
+    ? findMarkerOffset(bytes, 0xffd9, true)
+    : null;
+  const dimensions = mimeType === "image/jpeg"
+    ? readJpegDimensions(bytes)
+    : null;
+
+  return {
+    mimeType,
+    byteLength: bytes.byteLength,
+    headHex: describeHexWindow(bytes, 16),
+    tailHex: describeHexWindow(bytes, 16, true),
+    startsWithSoi,
+    firstSoiOffset,
+    lastEoiOffset,
+    dimensions,
+  };
+};
+
+const formatStillPayloadDiagnostics = (payload: Record<string, unknown>): string => {
+  return JSON.stringify(payload);
+};
+
+const buildStillCaptureFile = (
+  bytes: Uint8Array,
+  mimeType = "image/jpeg",
+): File => {
+  const extension = mimeType === "image/png" ? "png" : "jpg";
+  const fileName = `camera_still_${new Date().toISOString().replace(/[:.]/g, "-")}.${extension}`;
+  const blob = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+  return new File([blob], fileName, {type: mimeType});
+};
+const BENCHMARK_EMIT_INTERVAL_MS = 250;
+const BENCHMARK_WINDOW_SIZE = 240;
+const INITIAL_RECONNECT_DELAY_MS = 250;
+const MAX_RECONNECT_DELAY_MS = 5000;
+const RECONNECT_BACKOFF_MULTIPLIER = 1.6;
+const DECODE_RESTART_MAX_ATTEMPTS = 2;
+const MAX_CONNECTION_LOOP_ATTEMPTS = 10;
+const RECOVERY_EVENT_SUPPRESSION_MS = 2500;
+const STEADY_STATE_STALL_MIN_GRACE_MS = 4500;
+const STEADY_STATE_STALL_FRAME_MULTIPLIER = 48;
+const MAX_TCP_PORT = 65535;
+const FORWARD_PORT_FALLBACK_OFFSETS = [0, 1, 2, 3, 4, 5, 10, 20, 50, 100, 200, 500];
+
+type RecoveryMode =
+  | "cold-start"
+  | "decode-restart"
+  | "full-restart";
+
+interface CleanupTransportOptions {
+  stopDecoder: boolean;
+  stopServer: boolean;
+  removeForward: boolean;
+}
+
+interface BenchmarkAccumulator {
+  startedAt: number | null;
+  firstFrameAt: number | null;
+  totalFrames: number;
+  totalPolls: number;
+  totalEmptyPolls: number;
+  lastFrameAt: number | null;
+  ipcSamples: number[];
+  decodeSamples: number[];
+  payloadSamples: number[];
+  frameIntervalSamples: number[];
+  reconnectCount: number;
+  reconnectStartedAt: number | null;
+  totalReconnectDowntimeMs: number;
+  lastReconnectDowntimeMs: number | null;
+}
+
+const nowMs = (): number => {
+  return performance.now();
+};
+
+const nowEpochMs = (): number => {
+  return performance.timeOrigin + performance.now();
+};
+
+const sleep = async (delayMs: number): Promise<void> => {
+  await new Promise((resolve) => setTimeout(resolve, delayMs));
+};
+
+const toErrorMessage = (error: unknown): string => {
+  return error instanceof Error ? error.message : String(error);
+};
+
+const isLocalForwardBindError = (error: unknown): boolean => {
+  // Check structured error codes first (preferred over localized strings)
+  if (typeof error === "object" && error !== null) {
+    const code = (error as Record<string, unknown>).code;
+    if (typeof code === "string") {
+      const bindErrorCodes = ["EADDRINUSE", "EACCES", "EPERM", "WSAEADDRINUSE", "WSAEACCES"];
+      if (bindErrorCodes.includes(code)) return true;
+    }
+  }
+
+  // Fallback: match against known error message patterns (covers ADB relay errors)
+  const message = toErrorMessage(error).toLowerCase();
+  return [
+    "cannot bind listener",
+    "cannot bind to 127.0.0.1",
+    "10013",
+    "10048",
+    "access permissions",
+    "only one usage of each socket address",
+  ].some((pattern) => message.includes(pattern));
+};
+
+const buildForwardPortCandidates = (preferredPort: number): number[] => {
+  const basePort = Number.isInteger(preferredPort) && preferredPort > 0
+    ? preferredPort
+    : DEFAULT_SCANNER_CONFIG.localPort;
+
+  const candidates = new Set<number>();
+  for (const offset of FORWARD_PORT_FALLBACK_OFFSETS) {
+    const candidate = basePort + offset;
+    if (candidate > 0 && candidate <= MAX_TCP_PORT) {
+      candidates.add(candidate);
+    }
+  }
+
+  return [...candidates];
+};
+
+const pushWindowSample = (samples: number[], value: number): void => {
+  samples.push(value);
+  if (samples.length >= BENCHMARK_WINDOW_SIZE * 2) {
+    samples.splice(0, samples.length - BENCHMARK_WINDOW_SIZE);
+  }
+};
+
+
+
+const computeRecentWindowFps = (
+  frameIntervalSamples: number[],
+  desiredWindowMs: number,
+): number => {
+  if (frameIntervalSamples.length === 0) {
+    return 0;
+  }
+
+  let accumulatedMs = 0;
+  let intervalCount = 0;
+
+  for (let index = frameIntervalSamples.length - 1; index >= 0; index -= 1) {
+    const sample = frameIntervalSamples[index];
+    accumulatedMs += sample;
+    intervalCount += 1;
+
+    if (accumulatedMs >= desiredWindowMs) {
+      break;
+    }
+  }
+
+  if (accumulatedMs <= 0 || intervalCount === 0) {
+    return 0;
+  }
+
+  return (intervalCount * 1000) / accumulatedMs;
+};
+
+const computeActiveStreamingFps = (
+  totalFrames: number,
+  firstFrameAt: number | null,
+  lastFrameAt: number | null,
+  totalReconnectDowntimeMs: number,
+): number => {
+  if (totalFrames <= 0 || firstFrameAt === null || lastFrameAt === null || lastFrameAt <= firstFrameAt) {
+    return 0;
+  }
+
+  const activeRuntimeMs = Math.max(0, (lastFrameAt - firstFrameAt) - totalReconnectDowntimeMs);
+  if (activeRuntimeMs <= 0) {
+    return 0;
+  }
+
+  return totalFrames / (activeRuntimeMs / 1000);
+};
+
+
+
+const computeLatestFrameFps = (frameIntervalSamples: number[]): number => {
+  if (frameIntervalSamples.length === 0) {
+    return 0;
+  }
+
+  const latestIntervalMs = frameIntervalSamples[frameIntervalSamples.length - 1] ?? 0;
+  if (latestIntervalMs <= 0) {
+    return 0;
+  }
+
+  return 1000 / latestIntervalMs;
+};
+
+const clampMetric = (value: number): number => {
+  return Number.isFinite(value) && value > 0 ? value : 0;
+};
+
+const roundMetric = (value: number): number => {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+
+  return Math.round(value * 10) / 10;
+};
+
+const computeFpsMetrics = (benchmark: BenchmarkAccumulator): {
+  previewFps: number;
+  recentWindowFps: number;
+  effectiveFps: number;
+  runtimeMs: number;
+} => {
+  return {
+    previewFps: roundMetric(clampMetric(computeLatestFrameFps(benchmark.frameIntervalSamples))),
+    recentWindowFps: roundMetric(clampMetric(computeRecentWindowFps(benchmark.frameIntervalSamples, 3000))),
+    effectiveFps: roundMetric(clampMetric(computeActiveStreamingFps(
+      benchmark.totalFrames,
+      benchmark.firstFrameAt,
+      benchmark.lastFrameAt,
+      benchmark.totalReconnectDowntimeMs,
+    ))),
+    runtimeMs: benchmark.startedAt === null ? 0 : Math.max(0, nowMs() - benchmark.startedAt),
+  };
+};
+
+const pushBenchmarkFrameInterval = (
+  benchmark: BenchmarkAccumulator,
+  currentTimestamp: number,
+  previousTimestamp: number,
+): void => {
+  pushWindowSample(benchmark.frameIntervalSamples, currentTimestamp - previousTimestamp);
+};
+
+const computeReconnectDelay = (attempt: number): number => {
+  if (attempt <= 0) {
+    return 0;
+  }
+
+  const delay = INITIAL_RECONNECT_DELAY_MS * (RECONNECT_BACKOFF_MULTIPLIER ** (attempt - 1));
+  return Math.round(Math.min(MAX_RECONNECT_DELAY_MS, delay));
+};
+
+const computeWatchdogThresholdMs = (
+  lastFrameAt: number | null,
+  targetPreviewFps: number,
+): number => {
+  if (lastFrameAt === null) {
+    return STARTUP_FRAME_GRACE_MS;
+  }
+
+  return Math.max(
+    STEADY_STATE_STALL_MIN_GRACE_MS,
+    Math.round((1000 / Math.max(1, targetPreviewFps)) * STEADY_STATE_STALL_FRAME_MULTIPLIER),
+  );
+};
+
+const looksLikePreviewSizedStillCapture = (
+  previewWidth: number | null,
+  previewHeight: number | null,
+  stillWidth: number | null,
+  stillHeight: number | null,
+): boolean => {
+  if (
+    previewWidth === null
+    || previewHeight === null
+    || stillWidth === null
+    || stillHeight === null
+  ) {
+    return false;
+  }
+
+  const previewLongEdge = Math.max(previewWidth, previewHeight);
+  const previewShortEdge = Math.min(previewWidth, previewHeight);
+  const stillLongEdge = Math.max(stillWidth, stillHeight);
+  const stillShortEdge = Math.min(stillWidth, stillHeight);
+
+  return stillLongEdge <= previewLongEdge * 1.2
+    && stillShortEdge <= previewShortEdge * 1.2;
+};
+
+const selectRecoveryMode = (
+  stopReason: string,
+  attempt: number,
+  hasReceivedFrames: boolean,
+): RecoveryMode => {
+  if (attempt <= 0) {
+    return "cold-start";
+  }
+
+  if (
+    !hasReceivedFrames
+    && (
+      stopReason === "scanner-error"
+      || stopReason === "scanner-stopped"
+      || stopReason === "poll-error"
+    )
+  ) {
+    return "full-restart";
+  }
+
+  if (attempt <= DECODE_RESTART_MAX_ATTEMPTS) {
+    return "decode-restart";
+  }
+
+  return "full-restart";
+};
+
+const createInitialDiagnostic = (): ScannerDiagnostic => {
+  return {
+    collectedAt: nowMs(),
+    startedAt: null,
+    runtimeMs: 0,
+    targetPreviewFps: DEFAULT_SCANNER_CONFIG.framerate,
+    totalFrames: 0,
+    totalPolls: 0,
+    emptyPolls: 0,
+    consecutiveEmptyPolls: 0,
+    latestPayloadBytes: 0,
+    latestIpcMs: 0,
+    latestDecodeMs: 0,
+    previewFps: 0,
+    recentWindowFps: 0,
+    effectiveFps: 0,
+    stallCount: 0,
+    reconnect: {
+      count: 0,
+      inProgress: false,
+      totalDowntimeMs: 0,
+      lastDowntimeMs: null,
+    },
+  };
+};
+
+const createInitialState = (): ScannerState => {
+  return {
+    status: "idle",
+    statusUpdatedAt: nowMs(),
+    stopReason: null,
+    lastError: null,
+    reconnectAttempt: 0,
+    nextReconnectDelayMs: null,
+    previewWidth: null,
+    previewHeight: null,
+    lastFrameAt: null,
+    diagnostic: createInitialDiagnostic(),
+  };
+};
+
+/**
+ * Scanner session that receives Rust-decoded preview frames via Tauri IPC.
+ *
+ * The live preview path is intentionally optimized for low latency, while
+ * single-frame high-quality extraction is delegated to a dedicated Camera2
+ * still-capture path so export quality no longer depends on preview transport.
+ */
+export class ScannerSession {
+  private config: ScannerConfig;
+  private frameCallback: ((frame: ImageData) => void) | null = null;
+  private errorCallback: ((error: string) => void) | null = null;
+  private readonly stateCallbacks = new Set<(state: ScannerState) => void>();
+  private readonly benchmark: BenchmarkAccumulator = {
+    startedAt: null,
+    firstFrameAt: null,
+    totalFrames: 0,
+    totalPolls: 0,
+    totalEmptyPolls: 0,
+    lastFrameAt: null,
+    ipcSamples: [],
+    decodeSamples: [],
+    payloadSamples: [],
+    frameIntervalSamples: [],
+    reconnectCount: 0,
+    reconnectStartedAt: null,
+    totalReconnectDowntimeMs: 0,
+    lastReconnectDowntimeMs: null,
+  };
+  private state: ScannerState = createInitialState();
+  private desiredRunning = false;
+  private streamActive = false;
+  private previewPauseDepth = 0;
+  private previewPauseStartedAt: number | null = null;
+  private forwardActive = false;
+  private stillForwardActive = false;
+  private serverRunning = false;
+  private decoderRunning = false;
+  private suppressUnexpectedEventsUntil = 0;
+  private reconnectLoopPromise: Promise<void> | null = null;
+  private watchdogTimeoutId: ReturnType<typeof setTimeout> | null = null;
+  private decoderStreamHandle: DecodeStreamHandle | null = null;
+  private lastStateEmitAt = 0;
+  private recoveryErrorReported = false;
+  private streamStartedAt: number | null = null;
+  private decodeTargetRgba: Uint8ClampedArray | null = null;
+  private stillLocalPort: number;
+  private queuedStreamPacket: ArrayBuffer | Uint8Array | null = null;
+  private streamPacketDrainScheduled = false;
+  private streamPacketDrainTimerId: ReturnType<typeof setTimeout> | null = null;
+
+  constructor(config: ScannerConfig) {
+    this.config = config;
+    this.stillLocalPort = buildStillForwardPreferredPort(config.localPort);
+  }
+
+  onFrame(callback: (frame: ImageData) => void): void {
+    this.frameCallback = callback;
+  }
+
+  onError(callback: (error: string) => void): void {
+    this.errorCallback = callback;
+  }
+
+  onStateChange(callback: (state: ScannerState) => void): () => void {
+    this.stateCallbacks.add(callback);
+    callback(this.getState());
+    return () => {
+      this.stateCallbacks.delete(callback);
+    };
+  }
+
+  getState(): ScannerState {
+    const diagnostic = this.createDiagnosticSnapshot();
+
+    return {
+      ...this.state,
+      diagnostic: {
+        ...diagnostic,
+        reconnect: {...diagnostic.reconnect},
+      },
+    };
+  }
+
+  private createDiagnosticSnapshot(): ScannerDiagnostic {
+    const snapshotMetrics = computeFpsMetrics(this.benchmark);
+
+    return {
+      collectedAt: nowMs(),
+      startedAt: this.benchmark.startedAt,
+      runtimeMs: snapshotMetrics.runtimeMs,
+      targetPreviewFps: this.config.framerate,
+      totalFrames: this.benchmark.totalFrames,
+      totalPolls: this.benchmark.totalPolls,
+      emptyPolls: this.benchmark.totalEmptyPolls,
+      consecutiveEmptyPolls: this.state.diagnostic.consecutiveEmptyPolls,
+      latestPayloadBytes: this.state.diagnostic.latestPayloadBytes,
+      latestIpcMs: this.state.diagnostic.latestIpcMs,
+      latestDecodeMs: this.state.diagnostic.latestDecodeMs,
+      previewFps: snapshotMetrics.previewFps,
+      recentWindowFps: snapshotMetrics.recentWindowFps,
+      effectiveFps: snapshotMetrics.effectiveFps,
+      stallCount: this.state.diagnostic.stallCount,
+      reconnect: {
+        count: this.benchmark.reconnectCount,
+        inProgress: this.benchmark.reconnectStartedAt !== null,
+        totalDowntimeMs: this.benchmark.totalReconnectDowntimeMs,
+        lastDowntimeMs: this.benchmark.lastReconnectDowntimeMs,
+      },
+    };
+  }
+
+  async captureStillFrame(): Promise<ScannerStillCapture> {
+    const capturedAt = nowMs();
+    this.pausePreviewDelivery();
+    try {
+      let stillPayload = null;
+      if (!this.stillForwardActive) {
+        try {
+          await this.ensureStillForward();
+        } catch (error) {
+          console.warn(
+            `[Scanner][StillDiag] Still-stream forward failed for port ${this.stillLocalPort}: `
+            + `${error instanceof Error ? error.message : String(error)}. `
+            + `Falling back to device-file transfer.`
+          );
+        }
+      }
+
+      if (this.stillForwardActive) {
+        try {
+          stillPayload = await captureStillStream(this.stillLocalPort);
+        } catch (error) {
+          await this.invalidateStillForward();
+          console.warn(
+            `[Scanner][StillDiag] Still-stream capture failed on tcp://127.0.0.1:${this.stillLocalPort}: `
+            + `${error instanceof Error ? error.message : String(error)}. `
+            + `Falling back to device-file transfer via adb shell.`
+          );
+        }
+      }
+
+      if (!stillPayload) {
+        stillPayload = await captureStill({
+          serial: this.config.serial,
+          classpath: this.config.remoteJarPath,
+          socketName: getStillCaptureSocketName(this.config.socketName),
+        });
+      }
+      const stillBytes = stillPayload.mimeType === "image/jpeg"
+        ? extractJpegPayload(stillPayload.bytes)
+        : stillPayload.bytes;
+      const dimensions = stillPayload.mimeType === "image/jpeg"
+        ? readJpegDimensions(stillBytes)
+        : null;
+      const previewWidth = this.state.previewWidth;
+      const previewHeight = this.state.previewHeight;
+
+      if (looksLikePreviewSizedStillCapture(
+        previewWidth,
+        previewHeight,
+        dimensions?.width ?? null,
+        dimensions?.height ?? null,
+      )) {
+        console.warn(
+          `[Scanner][StillDiag] Still capture is preview-sized `
+          + `(${dimensions?.width ?? 0}x${dimensions?.height ?? 0} vs preview ${previewWidth ?? 0}x${previewHeight ?? 0}). `
+          + `Using captured still as-is to avoid mixing in unrelated preview frames.`,
+        );
+      }
+
+      console.info(
+        `[Scanner][StillDiag] Captured high-quality still payload: ${formatStillPayloadDiagnostics({
+          serial: this.config.serial,
+          transport: stillPayload.transport,
+          raw: describeStillPayloadDiagnostics(stillPayload.bytes, stillPayload.mimeType),
+          extracted: describeStillPayloadDiagnostics(stillBytes, stillPayload.mimeType),
+          extractionTrimmedBytes: stillPayload.bytes.byteLength - stillBytes.byteLength,
+          previewDimensions: {
+            width: this.state.previewWidth,
+            height: this.state.previewHeight,
+          },
+          capturedAt,
+        })}`,
+      );
+
+      return {
+        file: buildStillCaptureFile(stillBytes, stillPayload.mimeType),
+        width: dimensions?.width ?? null,
+        height: dimensions?.height ?? null,
+        capturedAt,
+        source: "tauri-camera-still",
+        serial: this.config.serial,
+        previewWidth: this.state.previewWidth,
+        previewHeight: this.state.previewHeight,
+        transport: stillPayload.transport,
+      };
+    } finally {
+      this.resumePreviewDelivery();
+    }
+  }
+
+  async start(): Promise<void> {
+    if (this.desiredRunning) {
+      return;
+    }
+
+    this.desiredRunning = true;
+    this.recoveryErrorReported = false;
+    this.resetRuntimeMetrics();
+    try {
+      await this.ensureStreaming("manual-start");
+    } catch (error) {
+      this.desiredRunning = false;
+      this.streamActive = false;
+      this.clearTimers();
+      await this.cleanupTransport({
+        stopDecoder: true,
+        stopServer: true,
+        removeForward: true,
+      });
+      this.reconnectLoopPromise = null;
+      throw error;
+    }
+  }
+
+  async stop(): Promise<void> {
+    if (!this.desiredRunning && !this.streamActive) {
+      return;
+    }
+
+    this.desiredRunning = false;
+    this.streamActive = false;
+    this.suppressUnexpectedEvents(800);
+    this.clearTimers();
+    this.updateState(
+      {
+        status: "stopping",
+        stopReason: "manual-stop",
+        nextReconnectDelayMs: null,
+        reconnectAttempt: 0,
+      },
+      true,
+    );
+
+    await this.cleanupTransport({
+      stopDecoder: true,
+      stopServer: true,
+      removeForward: true,
+    });
+    this.reconnectLoopPromise = null;
+    this.updateState(
+      {
+        status: "stopped",
+        stopReason: "manual-stop",
+        nextReconnectDelayMs: null,
+        reconnectAttempt: 0,
+      },
+      true,
+    );
+  }
+
+  private async handleDecoderLifecycleEvent(event: DecoderLifecycleEvent): Promise<void> {
+    if (!this.desiredRunning) {
+      return;
+    }
+
+    switch (event.state) {
+      case "reconnecting":
+        this.markReconnectStarted();
+        this.suppressUnexpectedEvents(RECOVERY_EVENT_SUPPRESSION_MS);
+        this.updateState(
+          {
+            status: "reconnecting",
+            lastError: event.detail,
+            stopReason: "decoder-reconnecting",
+            reconnectAttempt: Math.max(1, event.reconnectAttempt, this.state.reconnectAttempt),
+            nextReconnectDelayMs: null,
+          },
+          true,
+        );
+        return;
+      case "connected":
+        this.suppressUnexpectedEvents(RECOVERY_EVENT_SUPPRESSION_MS);
+        return;
+      case "ready":
+        this.activateReadyStream();
+        return;
+      case "error":
+      case "stopped":
+        await this.handleUnexpectedStop(event.detail, `decoder-${event.state}`);
+        return;
+      default:
+        return;
+    }
+  }
+
+  private createServerArgs(): string[] {
+    return [
+      "--socket", this.config.socketName,
+      "--still-socket", getStillCaptureSocketName(this.config.socketName),
+      "--still-stream-socket", getStillStreamSocketName(this.config.socketName),
+      "--width", String(this.config.width),
+      "--height", String(this.config.height),
+      "--bitrate", String(this.config.bitrate),
+      "--fps", String(this.config.framerate),
+      "--camera", this.config.cameraId,
+    ];
+  }
+
+  private async ensureServerJarDeployed(): Promise<void> {
+    if (this.config.serverJarPath) {
+      await deployServer({
+        serial: this.config.serial,
+        remotePath: this.config.remoteJarPath,
+        localPath: this.config.serverJarPath,
+      });
+      return;
+    }
+
+    await deployServer({
+      serial: this.config.serial,
+      remotePath: this.config.remoteJarPath,
+    });
+  }
+
+  private async ensureForward(): Promise<void> {
+    if (this.forwardActive) {
+      return;
+    }
+
+    const preferredPort = this.config.localPort;
+    const candidates = buildForwardPortCandidates(preferredPort);
+    let bindFailureSeen = false;
+    let lastError: unknown = null;
+
+    for (const candidatePort of candidates) {
+      try {
+        await forward({
+          mode: "add",
+          serial: this.config.serial,
+          localPort: candidatePort,
+          remoteSocketName: this.config.socketName,
+        });
+        this.config.localPort = candidatePort;
+        this.forwardActive = true;
+
+        if (bindFailureSeen && candidatePort !== preferredPort) {
+          console.warn(
+            `[Scanner] Preferred local forward port ${preferredPort} was unavailable; switched preview transport to ${candidatePort}.`,
+          );
+        }
+        return;
+      } catch (error) {
+        lastError = error;
+        if (!isLocalForwardBindError(error) || candidatePort === candidates[candidates.length - 1]) {
+          throw error;
+        }
+        bindFailureSeen = true;
+      }
+    }
+
+    throw lastError instanceof Error ? lastError : new Error(toErrorMessage(lastError));
+  }
+
+  private async ensureStillForward(): Promise<void> {
+    if (this.stillForwardActive) {
+      return;
+    }
+
+    const preferredPort = this.stillLocalPort;
+    const candidates = buildForwardPortCandidates(preferredPort);
+    let bindFailureSeen = false;
+    let lastError: unknown = null;
+
+    for (const candidatePort of candidates) {
+      try {
+        await forward({
+          mode: "add",
+          serial: this.config.serial,
+          localPort: candidatePort,
+          remoteSocketName: getStillStreamSocketName(this.config.socketName),
+        });
+        this.stillLocalPort = candidatePort;
+        this.stillForwardActive = true;
+
+        if (bindFailureSeen && candidatePort !== preferredPort) {
+          console.warn(
+            `[Scanner] Preferred local still-stream forward port ${preferredPort} was unavailable; switched still transport to ${candidatePort}.`,
+          );
+        }
+        return;
+      } catch (error) {
+        lastError = error;
+        if (!isLocalForwardBindError(error) || candidatePort === candidates[candidates.length - 1]) {
+          throw error;
+        }
+        bindFailureSeen = true;
+      }
+    }
+
+    throw lastError instanceof Error ? lastError : new Error(toErrorMessage(lastError));
+  }
+
+  private async ensureStillForwardBestEffort(): Promise<void> {
+    try {
+      await this.ensureStillForward();
+    } catch (error) {
+      this.stillForwardActive = false;
+      console.warn(
+        "[Scanner] Still-stream forward is unavailable; continuing with one-shot still fallback.",
+        error,
+      );
+    }
+  }
+
+  private async invalidateStillForward(): Promise<void> {
+    const stillLocalPort = this.stillLocalPort;
+    this.stillForwardActive = false;
+
+    try {
+      await forward({
+        mode: "remove",
+        serial: this.config.serial,
+        localPort: stillLocalPort,
+      });
+    } catch {
+      // Ignore stale forward cleanup failures so still capture can fall back immediately.
+    }
+  }
+
+  private async ensureServerRunning(): Promise<void> {
+    if (this.serverRunning) {
+      return;
+    }
+
+    await this.ensureServerJarDeployed();
+
+    await startServer({
+      serial: this.config.serial,
+      classpath: this.config.remoteJarPath,
+      mainClass: SERVER_MAIN_CLASS,
+      serverArgs: this.createServerArgs(),
+    });
+
+    this.serverRunning = true;
+  }
+
+  private async ensureDecodeStream(forceRestart: boolean = false): Promise<void> {
+    if (forceRestart) {
+      this.suppressUnexpectedEvents(RECOVERY_EVENT_SUPPRESSION_MS);
+      await this.stopDecodeStream();
+      await sleep(DECODE_RESTART_DELAY_MS);
+    }
+
+    if (this.decoderRunning && this.decoderStreamHandle) {
+      return;
+    }
+
+    this.decoderStreamHandle = await startDecodeStream(
+      this.config.localPort,
+      (framePacket) => {
+        this.enqueueLatestStreamPacket(framePacket);
+      },
+      (event) => {
+        void this.handleDecoderLifecycleEvent(event);
+      },
+      {
+        maxPreviewWidth: this.config.width,
+        maxPreviewHeight: this.config.height,
+      },
+    );
+    this.decoderRunning = true;
+  }
+
+  private releaseDecodeStreamHandle(): void {
+    this.decoderStreamHandle?.dispose();
+    this.decoderStreamHandle = null;
+  }
+
+  private activateReadyStream(): void {
+    if (!this.desiredRunning) {
+      return;
+    }
+
+    const shouldRefreshStreamingState = !this.streamActive
+      || this.state.status !== "streaming"
+      || this.benchmark.reconnectStartedAt !== null;
+
+    if (!shouldRefreshStreamingState) {
+      return;
+    }
+
+    this.decoderRunning = true;
+    this.recoveryErrorReported = false;
+    this.finishReconnectDowntime();
+    this.suppressUnexpectedEvents(RECOVERY_EVENT_SUPPRESSION_MS);
+
+    if (!this.streamActive) {
+      this.streamStartedAt = nowMs();
+      this.state.lastFrameAt = null;
+      this.state.diagnostic.consecutiveEmptyPolls = 0;
+      this.clearTimers();
+      this.streamActive = true;
+      this.startWatchdog();
+    }
+
+    this.updateState(
+      {
+        status: "streaming",
+        stopReason: null,
+        lastError: null,
+        nextReconnectDelayMs: null,
+        reconnectAttempt: 0,
+      },
+      true,
+    );
+  }
+
+  private async performRecovery(mode: RecoveryMode): Promise<void> {
+    this.suppressUnexpectedEvents(RECOVERY_EVENT_SUPPRESSION_MS);
+
+    switch (mode) {
+      case "decode-restart":
+        await this.ensureDecodeStream(true);
+        return;
+      case "full-restart":
+        await this.stopDecodeStream();
+        await this.cleanupTransport({
+          stopDecoder: false,
+          stopServer: true,
+          removeForward: true,
+        });
+        await this.ensureForward();
+        await this.ensureStillForwardBestEffort();
+        await this.ensureServerRunning();
+        await this.ensureDecodeStream();
+        return;
+      case "cold-start":
+      default:
+        await this.ensureForward();
+        await this.ensureStillForwardBestEffort();
+        await this.ensureServerRunning();
+        await this.ensureDecodeStream();
+        return;
+    }
+  }
+
+  private async ensureStreaming(reason: string): Promise<void> {
+    if (this.reconnectLoopPromise) {
+      await this.reconnectLoopPromise;
+      return;
+    }
+
+    this.reconnectLoopPromise = this.connectionLoop(reason).finally(() => {
+      this.reconnectLoopPromise = null;
+    });
+    await this.reconnectLoopPromise;
+  }
+
+  private async connectionLoop(reason: string): Promise<void> {
+    while (this.desiredRunning) {
+      const attempt = this.state.reconnectAttempt;
+
+      if (attempt >= MAX_CONNECTION_LOOP_ATTEMPTS) {
+        const message = `Recovery failed after ${attempt} attempts. Last reason: ${reason}`;
+        console.error(`[ScannerSession] ${message}`);
+        this.updateState(
+          { status: "error", lastError: message, stopReason: reason },
+          true,
+        );
+        return;
+      }
+
+      const reconnectDelayMs = computeReconnectDelay(attempt);
+      const nextStatus: ScannerStatus = attempt === 0 ? "starting" : "reconnecting";
+      const recoveryMode = selectRecoveryMode(
+        reason,
+        attempt,
+        this.benchmark.totalFrames > 0,
+      );
+
+      this.updateState(
+        {
+          status: nextStatus,
+          stopReason: reason,
+          nextReconnectDelayMs: reconnectDelayMs > 0 ? reconnectDelayMs : null,
+        },
+        true,
+      );
+
+      if (reconnectDelayMs > 0) {
+        await sleep(reconnectDelayMs);
+        if (!this.desiredRunning) {
+          return;
+        }
+      }
+
+      this.suppressUnexpectedEvents(RECOVERY_EVENT_SUPPRESSION_MS);
+      if (!this.desiredRunning) {
+        return;
+      }
+
+      try {
+        await this.performRecovery(recoveryMode);
+        return;
+      } catch (error) {
+        const message = toErrorMessage(error);
+        const nextAttempt = attempt + 1;
+
+        this.markReconnectStarted();
+        this.state.reconnectAttempt = nextAttempt;
+        this.streamActive = false;
+        this.decoderRunning = false;
+        this.releaseDecodeStreamHandle();
+        this.updateState(
+          {
+            status: "reconnecting",
+            lastError: message,
+            stopReason: reason,
+            reconnectAttempt: nextAttempt,
+            nextReconnectDelayMs: computeReconnectDelay(nextAttempt),
+          },
+          true,
+        );
+        if (recoveryMode === "full-restart") {
+          this.serverRunning = false;
+        }
+        this.emitRecoverableError(message);
+      }
+    }
+  }
+
+  private enqueueLatestStreamPacket(framePacket: ArrayBuffer | Uint8Array): void {
+    if (!this.desiredRunning) {
+      return;
+    }
+
+    this.queuedStreamPacket = framePacket;
+    this.scheduleQueuedStreamPacketDrain();
+  }
+
+  private scheduleQueuedStreamPacketDrain(): void {
+    if (this.streamPacketDrainScheduled || !this.desiredRunning) {
+      return;
+    }
+
+    // Yield one macrotask before decode so queued channel callbacks can collapse
+    // to the freshest preview packet instead of decoding every stale frame in order.
+    this.streamPacketDrainScheduled = true;
+    this.streamPacketDrainTimerId = setTimeout(() => {
+      this.streamPacketDrainTimerId = null;
+      void this.drainQueuedStreamPacket();
+    }, 0);
+  }
+
+  private async drainQueuedStreamPacket(): Promise<void> {
+    this.streamPacketDrainScheduled = false;
+
+    if (!this.desiredRunning) {
+      this.queuedStreamPacket = null;
+      return;
+    }
+
+    const framePacket = this.queuedStreamPacket;
+    this.queuedStreamPacket = null;
+    if (!framePacket) {
+      return;
+    }
+
+    await this.handleStreamPacket(framePacket);
+
+    if (this.queuedStreamPacket !== null) {
+      this.scheduleQueuedStreamPacketDrain();
+    }
+  }
+
+  private clearQueuedStreamPacket(): void {
+    this.queuedStreamPacket = null;
+    this.streamPacketDrainScheduled = false;
+
+    if (this.streamPacketDrainTimerId !== null) {
+      clearTimeout(this.streamPacketDrainTimerId);
+      this.streamPacketDrainTimerId = null;
+    }
+  }
+
+  private async handleStreamPacket(framePacket: ArrayBuffer | Uint8Array): Promise<void> {
+    if (!this.desiredRunning) {
+      return;
+    }
+
+    const packetByteLength = framePacket.byteLength;
+    if (packetByteLength <= FRAME_PACKET_HEADER_SIZE) {
+      return;
+    }
+
+    try {
+      this.activateReadyStream();
+      if (this.previewPauseDepth > 0) {
+        this.benchmark.totalPolls += 1;
+        return;
+      }
+
+      const receivedAtEpochMs = nowEpochMs();
+      const decodeStart = nowMs();
+      const { width, height, rgba, telemetry } = decodeFramePacketToRgba(
+        framePacket,
+        this.decodeTargetRgba ?? undefined,
+      );
+      this.decodeTargetRgba = rgba;
+      const decodeMs = nowMs() - decodeStart;
+      const payloadBytes = packetByteLength - FRAME_PACKET_HEADER_SIZE - (telemetry ? FRAME_PACKET_TELEMETRY_SIZE : 0);
+      const ipcMs = telemetry
+        ? Math.max(0, receivedAtEpochMs - telemetry.sentAtEpochMs)
+        : 0;
+
+      this.benchmark.totalPolls += 1;
+      const imageDataRgba = new Uint8ClampedArray(
+        rgba.buffer as ArrayBuffer,
+        rgba.byteOffset,
+        rgba.byteLength,
+      );
+
+      this.handlePreviewFrame(
+        new ImageData(imageDataRgba, width, height),
+        width,
+        height,
+        payloadBytes,
+        ipcMs,
+        decodeMs,
+      );
+    } catch (error) {
+      const message = `Preview frame delivery failed: ${toErrorMessage(error)}`;
+      this.markReconnectStarted();
+      this.emitRecoverableError(message);
+      await this.handleUnexpectedStop(message, "stream-packet-error");
+    }
+  }
+
+  private pausePreviewDelivery(): void {
+    this.previewPauseDepth += 1;
+    if (this.previewPauseDepth === 1) {
+      this.previewPauseStartedAt = nowMs();
+      this.clearWatchdog();
+    }
+  }
+
+  private resumePreviewDelivery(): void {
+    if (this.previewPauseDepth === 0) {
+      return;
+    }
+
+    this.previewPauseDepth -= 1;
+    if (this.previewPauseDepth === 0 && this.desiredRunning && this.streamActive) {
+      this.refreshWatchdogReferenceAfterPreviewPause();
+      this.startWatchdog();
+    }
+  }
+
+  private refreshWatchdogReferenceAfterPreviewPause(): void {
+    const pauseStartedAt = this.previewPauseStartedAt;
+    if (pauseStartedAt === null) {
+      return;
+    }
+
+    const resumedAt = nowMs();
+    this.streamStartedAt = resumedAt;
+    if (this.benchmark.totalFrames > 0) {
+      this.benchmark.lastFrameAt = resumedAt;
+      this.state.lastFrameAt = resumedAt;
+    } else {
+      this.benchmark.lastFrameAt = null;
+      this.state.lastFrameAt = null;
+    }
+    this.state.diagnostic.consecutiveEmptyPolls = 0;
+    this.previewPauseStartedAt = null;
+    const pauseDurationMs = Math.max(0, resumedAt - pauseStartedAt);
+    this.suppressUnexpectedEvents(
+      Math.max(
+        computeWatchdogThresholdMs(this.state.lastFrameAt, this.config.framerate),
+        Math.min(STARTUP_FRAME_GRACE_MS, pauseDurationMs),
+      ),
+    );
+  }
+
+  private startWatchdog(): void {
+    this.clearWatchdog();
+
+    const tick = async (): Promise<void> => {
+      if (!this.desiredRunning || !this.streamActive) {
+        return;
+      }
+
+      const currentTime = nowMs();
+      const referenceTime = this.state.lastFrameAt ?? this.streamStartedAt;
+      const thresholdMs = computeWatchdogThresholdMs(
+        this.state.lastFrameAt,
+        this.config.framerate,
+      );
+
+      if (referenceTime !== null && currentTime - referenceTime > thresholdMs) {
+        this.state.diagnostic.stallCount += 1;
+        this.markReconnectStarted();
+        await this.handleUnexpectedStop(
+          `Preview stream stalled for ${Math.round(currentTime - referenceTime)}ms.`,
+          "watchdog-stall",
+        );
+        return;
+      }
+
+      this.watchdogTimeoutId = setTimeout(() => {
+        void tick();
+      }, WATCHDOG_INTERVAL_MS);
+    };
+
+    this.watchdogTimeoutId = setTimeout(() => {
+      void tick();
+    }, WATCHDOG_INTERVAL_MS);
+  }
+
+  private handlePreviewFrame(
+    frame: ImageData,
+    width: number,
+    height: number,
+    payloadBytes: number,
+    ipcMs: number,
+    decodeMs: number,
+  ): void {
+    const timestamp = nowMs();
+    const previousFrameAt = this.benchmark.lastFrameAt;
+
+    this.benchmark.totalFrames += 1;
+    this.benchmark.lastFrameAt = timestamp;
+    if (this.benchmark.firstFrameAt === null) {
+      this.benchmark.firstFrameAt = timestamp;
+    }
+    pushWindowSample(this.benchmark.ipcSamples, ipcMs);
+    pushWindowSample(this.benchmark.decodeSamples, decodeMs);
+    pushWindowSample(this.benchmark.payloadSamples, payloadBytes);
+
+    if (previousFrameAt !== null) {
+      pushBenchmarkFrameInterval(this.benchmark, timestamp, previousFrameAt);
+    }
+
+    this.state.diagnostic.consecutiveEmptyPolls = 0;
+    this.state.diagnostic.latestPayloadBytes = Math.max(0, payloadBytes);
+    this.state.diagnostic.latestIpcMs = roundMetric(Math.max(0, ipcMs));
+    this.state.diagnostic.latestDecodeMs = roundMetric(Math.max(0, decodeMs));
+    this.state.previewWidth = width;
+    this.state.previewHeight = height;
+    this.state.lastFrameAt = timestamp;
+
+    this.updateDiagnosticFromBenchmark();
+    this.emitState(false);
+    this.frameCallback?.(frame);
+  }
+
+  private async handleUnexpectedStop(
+    reason: string,
+    stopReason: string,
+  ): Promise<void> {
+    if (!this.desiredRunning) {
+      return;
+    }
+
+    if (nowMs() < this.suppressUnexpectedEventsUntil) {
+      return;
+    }
+
+    this.streamActive = false;
+    this.decoderRunning = false;
+    this.releaseDecodeStreamHandle();
+    this.clearTimers();
+    this.markReconnectStarted();
+    this.emitRecoverableError(reason);
+
+    if (this.reconnectLoopPromise) {
+      return;
+    }
+
+    this.state.reconnectAttempt = Math.max(1, this.state.reconnectAttempt || 1);
+    this.updateState(
+      {
+        status: "reconnecting",
+        lastError: reason,
+        stopReason,
+        reconnectAttempt: this.state.reconnectAttempt,
+        nextReconnectDelayMs: computeReconnectDelay(this.state.reconnectAttempt),
+      },
+      true,
+    );
+
+    await this.ensureStreaming(stopReason);
+  }
+
+  private updateDiagnosticFromBenchmark(): void {
+    this.state.diagnostic = this.createDiagnosticSnapshot();
+  }
+
+  private updateState(
+    partial: Partial<Omit<ScannerState, "diagnostic">> & {
+      reconnectAttempt?: number;
+    },
+    forceEmit: boolean,
+  ): void {
+    if (partial.status) {
+      this.state.status = partial.status;
+    }
+    if (partial.lastError !== undefined) {
+      this.state.lastError = partial.lastError;
+    }
+    if (partial.stopReason !== undefined) {
+      this.state.stopReason = partial.stopReason;
+    }
+    if (partial.nextReconnectDelayMs !== undefined) {
+      this.state.nextReconnectDelayMs = partial.nextReconnectDelayMs;
+    }
+    if (partial.reconnectAttempt !== undefined) {
+      this.state.reconnectAttempt = partial.reconnectAttempt;
+    }
+
+    this.state.statusUpdatedAt = nowMs();
+    this.updateDiagnosticFromBenchmark();
+    this.emitState(forceEmit);
+  }
+
+  private emitState(force: boolean): void {
+    const currentTime = nowMs();
+    if (!force && currentTime - this.lastStateEmitAt < BENCHMARK_EMIT_INTERVAL_MS) {
+      return;
+    }
+
+    this.lastStateEmitAt = currentTime;
+    const snapshot = this.getState();
+    for (const callback of this.stateCallbacks) {
+      callback(snapshot);
+    }
+  }
+
+  private emitRecoverableError(message: string): void {
+    if (this.recoveryErrorReported) {
+      return;
+    }
+
+    this.recoveryErrorReported = true;
+    this.errorCallback?.(message);
+  }
+
+  private suppressUnexpectedEvents(windowMs: number): void {
+    this.suppressUnexpectedEventsUntil = Math.max(
+      this.suppressUnexpectedEventsUntil,
+      nowMs() + windowMs,
+    );
+  }
+
+  private markReconnectStarted(): void {
+    if (this.benchmark.reconnectStartedAt !== null) {
+      return;
+    }
+
+    this.benchmark.reconnectCount += 1;
+    this.benchmark.reconnectStartedAt = nowMs();
+  }
+
+  private finishReconnectDowntime(): void {
+    if (this.benchmark.reconnectStartedAt === null) {
+      return;
+    }
+
+    const downtimeMs = Math.max(0, nowMs() - this.benchmark.reconnectStartedAt);
+    this.benchmark.totalReconnectDowntimeMs += downtimeMs;
+    this.benchmark.lastReconnectDowntimeMs = downtimeMs;
+    this.benchmark.reconnectStartedAt = null;
+  }
+
+  private clearTimers(): void {
+    this.clearQueuedStreamPacket();
+    this.clearWatchdog();
+  }
+
+  private clearWatchdog(): void {
+    if (this.watchdogTimeoutId) {
+      clearTimeout(this.watchdogTimeoutId);
+      this.watchdogTimeoutId = null;
+    }
+  }
+
+  private async stopDecodeStream(): Promise<void> {
+    this.streamActive = false;
+    this.decoderRunning = false;
+    this.releaseDecodeStreamHandle();
+    this.suppressUnexpectedEvents(RECOVERY_EVENT_SUPPRESSION_MS);
+
+    try {
+      await stopDecodeStream();
+    } catch {
+      // Ignore decoder shutdown errors so recovery can proceed.
+    }
+  }
+
+  private async cleanupTransport(options: CleanupTransportOptions): Promise<void> {
+    const { serial, localPort } = this.config;
+    const stillLocalPort = this.stillLocalPort;
+    this.streamActive = false;
+    this.clearTimers();
+    this.suppressUnexpectedEvents(RECOVERY_EVENT_SUPPRESSION_MS);
+
+    if (options.stopDecoder) {
+      await this.stopDecodeStream();
+    }
+
+    if (options.stopServer) {
+      try {
+        await stopServer(serial);
+      } catch {
+        // Ignore server shutdown errors so recovery can proceed.
+      }
+      this.serverRunning = false;
+    }
+
+    if (options.removeForward) {
+      try {
+        await forward({
+          mode: "remove",
+          serial,
+          localPort,
+        });
+      } catch {
+        // Ignore forward removal errors so recovery can proceed.
+      }
+      this.forwardActive = false;
+      try {
+        await forward({
+          mode: "remove",
+          serial,
+          localPort: stillLocalPort,
+        });
+      } catch {
+        // Ignore still forward removal errors so recovery can proceed.
+      }
+      this.stillForwardActive = false;
+    }
+  }
+
+  private resetRuntimeMetrics(): void {
+    this.state = createInitialState();
+    this.benchmark.startedAt = nowMs();
+    this.benchmark.firstFrameAt = null;
+    this.benchmark.totalFrames = 0;
+    this.benchmark.totalPolls = 0;
+    this.benchmark.totalEmptyPolls = 0;
+    this.benchmark.lastFrameAt = null;
+    this.benchmark.ipcSamples = [];
+    this.benchmark.decodeSamples = [];
+    this.benchmark.payloadSamples = [];
+    this.benchmark.frameIntervalSamples = [];
+    this.benchmark.reconnectCount = 0;
+    this.benchmark.reconnectStartedAt = null;
+    this.benchmark.totalReconnectDowntimeMs = 0;
+    this.benchmark.lastReconnectDowntimeMs = null;
+    this.lastStateEmitAt = 0;
+    this.streamStartedAt = null;
+    this.previewPauseStartedAt = null;
+    this.decodeTargetRgba = null;
+    this.clearQueuedStreamPacket();
+    this.releaseDecodeStreamHandle();
+    this.streamActive = false;
+    this.forwardActive = false;
+    this.serverRunning = false;
+    this.decoderRunning = false;
+    this.updateDiagnosticFromBenchmark();
+  }
+}
