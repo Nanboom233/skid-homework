@@ -844,21 +844,20 @@ async fn fetch_official_releases() -> Result<Vec<GitHubRelease>, ScannerAssetsEr
 }
 
 fn select_latest_release_target(releases: &[GitHubRelease]) -> Option<ScannerAssetsDownloadTarget> {
-    releases
-        .iter()
-        .find_map(|release| {
-            release_download_target(release, platform_package_file_name_for_tag(&release.tag_name))
-        })
+    releases.iter().find_map(|release| {
+        release_download_target(
+            release,
+            platform_package_file_name_for_tag(&release.tag_name),
+        )
+    })
 }
 
 fn select_latest_camera_release_target(
     releases: &[GitHubRelease],
 ) -> Option<ScannerAssetsDownloadTarget> {
-    releases
-        .iter()
-        .find_map(|release| {
-            release_download_target(release, camera_package_file_name_for_tag(&release.tag_name))
-        })
+    releases.iter().find_map(|release| {
+        release_download_target(release, camera_package_file_name_for_tag(&release.tag_name))
+    })
 }
 
 fn release_download_target(
