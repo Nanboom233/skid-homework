@@ -5,6 +5,8 @@ mod scanner_assets;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 mod scanner_ort;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
+mod scanner_ort_protocol;
+#[cfg(any(target_os = "windows", target_os = "linux"))]
 mod scanner_platform;
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 mod scanner_resource;

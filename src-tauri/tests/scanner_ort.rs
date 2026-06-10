@@ -1,5 +1,7 @@
 #![cfg(any(target_os = "windows", target_os = "linux"))]
 
+#[path = "../src/scanner_ort_protocol.rs"]
+mod scanner_ort_protocol;
 #[path = "../src/scanner_platform.rs"]
 mod scanner_platform;
 #[path = "../src/scanner_resource.rs"]
@@ -9,6 +11,23 @@ mod scanner_assets {
     #![allow(dead_code)]
 
     include!("../src/scanner_assets.rs");
+}
+
+mod scanner_ort_worker_under_test {
+    #![allow(dead_code)]
+
+    include!("../src/scanner_ort_worker_impl.rs");
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn execution_providers_always_include_cpu_fallback() {
+            let providers = build_scanner_execution_providers(&[]);
+            assert!(!providers.is_empty());
+        }
+    }
 }
 
 mod scanner_ort_under_test {
@@ -32,16 +51,48 @@ mod scanner_ort_under_test {
         }
 
         #[test]
-        fn execution_providers_always_include_cpu_fallback() {
-            let providers = build_scanner_execution_providers(&[]);
-            assert!(!providers.is_empty());
-        }
-
-        #[test]
         fn current_platform_interesting_paths_include_models() {
             let paths = interesting_paths_for_current_platform();
             assert!(paths.contains(&"models/docaligner-fastvit_sa24.onnx"));
             assert!(paths.contains(&"models/uvdoc-best-model.onnx"));
+        }
+
+        #[test]
+        fn current_resource_tree_recursively_lists_entries_with_sizes() {
+            let temp_dir = tempfile::tempdir().unwrap();
+            let current_dir = temp_dir.path();
+            std::fs::create_dir_all(current_dir.join("models")).unwrap();
+            std::fs::create_dir_all(current_dir.join("onnxruntime/windows")).unwrap();
+            std::fs::write(current_dir.join("models/model.onnx"), [1_u8, 2, 3]).unwrap();
+            std::fs::write(
+                current_dir.join("onnxruntime/windows/runtime.dll"),
+                [4_u8, 5],
+            )
+            .unwrap();
+
+            let tree = build_current_resource_tree(Some(current_dir));
+            let model_dir = tree
+                .iter()
+                .find(|entry| entry.relative_path == "models")
+                .expect("models directory should be listed");
+            let model_file = tree
+                .iter()
+                .find(|entry| entry.relative_path == "models/model.onnx")
+                .expect("model file should be listed");
+            let runtime_dir = tree
+                .iter()
+                .find(|entry| entry.relative_path == "onnxruntime/windows")
+                .expect("nested runtime directory should be listed");
+
+            assert!(model_dir.is_dir);
+            assert_eq!(model_dir.depth, 0);
+            assert_eq!(model_dir.size_bytes, Some(3));
+            assert!(!model_file.is_dir);
+            assert_eq!(model_file.depth, 1);
+            assert_eq!(model_file.size_bytes, Some(3));
+            assert!(runtime_dir.is_dir);
+            assert_eq!(runtime_dir.depth, 1);
+            assert_eq!(runtime_dir.size_bytes, Some(2));
         }
 
         #[test]
@@ -69,13 +120,13 @@ mod scanner_ort_under_test {
             let selected = PathBuf::from("assets/current/onnxruntime/runtime.dll");
             let loaded = PathBuf::from("assets/old-current/onnxruntime/runtime.dll");
             let runtime_error = runtime_path_mismatch_error(Some(&selected), Some(&loaded));
-            let snapshot = OrtRuntimeSnapshot {
+            let snapshot = ScannerOrtWorkerRuntimeStatus {
                 ready: true,
                 runtime_error: runtime_error.clone(),
                 ort_build_info: Some("ort-test".to_string()),
                 available_providers: vec!["CPU".to_string()],
-                selected_runtime_library_path: Some(selected),
-                loaded_runtime_library_path: Some(loaded),
+                selected_runtime_library_path: Some(scanner_resource::path_to_string(&selected)),
+                loaded_runtime_library_path: Some(scanner_resource::path_to_string(&loaded)),
                 runtime_path_mismatch: true,
             };
 
@@ -89,13 +140,13 @@ mod scanner_ort_under_test {
         fn runtime_library_path_status_texts_keep_loaded_path_as_compat_field() {
             let selected = PathBuf::from("assets/current/onnxruntime/runtime.dll");
             let loaded = PathBuf::from("assets/old-current/onnxruntime/runtime.dll");
-            let snapshot = OrtRuntimeSnapshot {
+            let snapshot = ScannerOrtWorkerRuntimeStatus {
                 ready: true,
                 runtime_error: None,
                 ort_build_info: Some("ort-test".to_string()),
                 available_providers: vec!["CPU".to_string()],
-                selected_runtime_library_path: Some(selected.clone()),
-                loaded_runtime_library_path: Some(loaded.clone()),
+                selected_runtime_library_path: Some(scanner_resource::path_to_string(&selected)),
+                loaded_runtime_library_path: Some(scanner_resource::path_to_string(&loaded)),
                 runtime_path_mismatch: true,
             };
 

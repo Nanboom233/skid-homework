@@ -342,6 +342,57 @@ mod scanner_assets_under_test {
         }
 
         #[test]
+        fn clear_installed_assets_stops_worker_before_removing_current_paths() {
+            TEST_ORT_ASSET_MUTATION_CALLS.with(|calls| calls.set(0));
+            TEST_ORT_ASSET_MUTATION_FAIL.with(|fail| fail.set(false));
+            let temp_dir = tempfile::tempdir().unwrap();
+            let paths = asset_paths_from_app_data_dir(temp_dir.path().to_path_buf());
+            fs::create_dir_all(paths.current_dir.join("models")).unwrap();
+            fs::create_dir_all(paths.current_dir.join("onnxruntime")).unwrap();
+            fs::write(paths.current_dir.join(MANIFEST_FILE_NAME), b"manifest").unwrap();
+            fs::write(paths.current_dir.join("models/model.onnx"), b"model").unwrap();
+            fs::write(
+                paths.current_dir.join("onnxruntime/runtime.dll"),
+                b"runtime",
+            )
+            .unwrap();
+
+            clear_installed_assets(&paths).unwrap();
+
+            TEST_ORT_ASSET_MUTATION_CALLS.with(|calls| assert_eq!(calls.get(), 1));
+            assert!(!paths.current_dir.join(MANIFEST_FILE_NAME).exists());
+            assert!(!paths.current_dir.join("models").exists());
+            assert!(!paths.current_dir.join("onnxruntime").exists());
+        }
+
+        #[test]
+        fn clear_installed_assets_preserves_current_when_worker_stop_fails() {
+            TEST_ORT_ASSET_MUTATION_CALLS.with(|calls| calls.set(0));
+            TEST_ORT_ASSET_MUTATION_FAIL.with(|fail| fail.set(true));
+            let temp_dir = tempfile::tempdir().unwrap();
+            let paths = asset_paths_from_app_data_dir(temp_dir.path().to_path_buf());
+            fs::create_dir_all(paths.current_dir.join("models")).unwrap();
+            fs::create_dir_all(paths.current_dir.join("onnxruntime")).unwrap();
+            fs::write(paths.current_dir.join(MANIFEST_FILE_NAME), b"manifest").unwrap();
+            fs::write(paths.current_dir.join("models/model.onnx"), b"model").unwrap();
+            fs::write(
+                paths.current_dir.join("onnxruntime/runtime.dll"),
+                b"runtime",
+            )
+            .unwrap();
+
+            let error =
+                clear_installed_assets(&paths).expect_err("worker stop failure must abort clear");
+
+            TEST_ORT_ASSET_MUTATION_FAIL.with(|fail| fail.set(false));
+            assert_eq!(error.code, "runtime.worker.stopFailed");
+            TEST_ORT_ASSET_MUTATION_CALLS.with(|calls| assert_eq!(calls.get(), 1));
+            assert!(paths.current_dir.join(MANIFEST_FILE_NAME).exists());
+            assert!(paths.current_dir.join("models/model.onnx").exists());
+            assert!(paths.current_dir.join("onnxruntime/runtime.dll").exists());
+        }
+
+        #[test]
         fn cancellation_error_is_not_retryable() {
             let cancel_requested = AtomicBool::new(true);
             let error = check_cancelled(&cancel_requested).expect_err("cancelled must fail");

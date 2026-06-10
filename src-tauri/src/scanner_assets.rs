@@ -66,7 +66,11 @@ pub struct ScannerAssetsError {
 }
 
 impl ScannerAssetsError {
-    fn new(code: impl Into<String>, retryable: bool, details: impl Into<Option<String>>) -> Self {
+    pub(crate) fn new(
+        code: impl Into<String>,
+        retryable: bool,
+        details: impl Into<Option<String>>,
+    ) -> Self {
         Self {
             code: code.into(),
             retryable,
@@ -74,7 +78,11 @@ impl ScannerAssetsError {
         }
     }
 
-    fn with_details(code: impl Into<String>, retryable: bool, details: impl Into<String>) -> Self {
+    pub(crate) fn with_details(
+        code: impl Into<String>,
+        retryable: bool,
+        details: impl Into<String>,
+    ) -> Self {
         Self::new(code, retryable, Some(details.into()))
     }
 }
@@ -964,6 +972,7 @@ fn cleanup_failed_download(paths: &ScannerAssetPaths, archive_path: &Path, faile
 }
 
 fn clear_installed_assets(paths: &ScannerAssetPaths) -> Result<(), ScannerAssetsError> {
+    let _ort_worker_guard = begin_ort_asset_mutation()?;
     remove_path_if_exists(&paths.current_dir).map_err(|error| {
         ScannerAssetsError::with_details(
             "assets.clear.removeFailed",
@@ -1099,6 +1108,7 @@ fn install_archive(
             check_cancelled(cancel_requested)?;
         }
         send_phase_progress(channel, "activating");
+        let _ort_worker_guard = begin_ort_asset_mutation()?;
         activate_staging(paths)?;
 
         Ok(ScannerAssetsInstallResult {
@@ -1819,4 +1829,33 @@ fn manifest_summary(manifest: &ScannerAssetManifest) -> ScannerAssetsManifestSum
         asset_version: manifest.asset_version.clone(),
         platform_target: manifest.platform_target.clone(),
     }
+}
+
+#[cfg(not(test))]
+fn begin_ort_asset_mutation(
+) -> Result<crate::scanner_ort::ScannerOrtAssetMutationGuard, ScannerAssetsError> {
+    crate::scanner_ort::begin_ort_asset_mutation()
+}
+
+#[cfg(test)]
+struct OrtAssetMutationGuard;
+
+#[cfg(test)]
+thread_local! {
+    static TEST_ORT_ASSET_MUTATION_CALLS: std::cell::Cell<usize> = std::cell::Cell::new(0);
+    static TEST_ORT_ASSET_MUTATION_FAIL: std::cell::Cell<bool> = std::cell::Cell::new(false);
+}
+
+#[cfg(test)]
+fn begin_ort_asset_mutation() -> Result<OrtAssetMutationGuard, ScannerAssetsError> {
+    TEST_ORT_ASSET_MUTATION_CALLS.with(|calls| calls.set(calls.get() + 1));
+    let should_fail = TEST_ORT_ASSET_MUTATION_FAIL.with(|fail| fail.get());
+    if should_fail {
+        return Err(ScannerAssetsError::with_details(
+            "runtime.worker.stopFailed",
+            true,
+            "Failed to stop scanner ORT worker before asset mutation.",
+        ));
+    }
+    Ok(OrtAssetMutationGuard)
 }
