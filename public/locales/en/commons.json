@@ -816,8 +816,8 @@
   "scanner": {
     "init": {
       "title": "Scanner Setup",
-      "description": "SkidHomework uses local ONNX models for document scanning. Download or import the scanner assets to enable this feature.",
-      "missing-description": "Scanner assets are not yet installed. Download them now or import a local package. You can also skip this step and set it up later in Settings."
+      "description": "Install Camera Server to continue. OnnxRuntime + Model can be added here or later in Settings.",
+      "missing-description": "Camera Server is not installed yet. Download it or import a local package; OnnxRuntime + Model can be added later."
     },
     "status": {
       "ready": "Scanner Ready",
@@ -832,6 +832,7 @@
     "actions": {
       "download": "Download",
       "update": "Update",
+      "update-all": "Update All",
       "check-update": "Check for Updates",
       "up-to-date": "Already up to date",
       "update-to": "Update to {{version}}",
@@ -912,22 +913,22 @@
     "import": {
       "filter-label": "Scanner Asset Package"
     },
+    "target": {
+      "camera": "Camera Server",
+      "ort": "OnnxRuntime + Model"
+    },
     "settings": {
-      "title": "Scanner",
-      "description": "Manage ONNX Runtime and scanner model assets."
+      "title": "Scanner Resource Management",
+      "description": "Manage Camera Server and OnnxRuntime + Model.",
+      "ready": "Ready"
     },
     "diagnostics": {
       "title": "Advanced Diagnostics",
-      "resource-base-dir": "Resource Directory",
-      "selected-runtime-path": "Selected Runtime Library Path",
-      "loaded-runtime-path": "Loaded Runtime Library Path",
-      "compat-runtime-path": "Runtime Library Path (Compatibility)",
-      "build-info": "ORT Build Info",
-      "providers": "Available Providers",
-      "runtime-error": "Runtime Error",
-      "models": "Models",
+      "server-path": "Server Path",
+      "onnxruntime-path": "OnnxRuntime Path",
+      "onnxruntime-build-info": "OnnxRuntime Build Info",
+      "onnxruntime-providers": "OnnxRuntime Available Providers",
       "resources": "Resources",
-      "resource-tree": "Installed Resource Tree",
       "resources-summary": "{{files}} files / {{directories}} folders / {{size}}",
       "empty-resource-tree": "No installed resources found"
     }

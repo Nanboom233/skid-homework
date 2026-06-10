@@ -1,5 +1,7 @@
 import {isTauri} from "./platform";
 
+export type AssetTarget = "onnxruntime" | "camera-server";
+
 export interface ScannerAssetsError {
   code: string;
   retryable: boolean;
@@ -12,14 +14,47 @@ export interface ScannerAssetsManifestSummary {
   platformTarget: string;
 }
 
-export interface ScannerAssetsStatus {
+export interface ScannerCameraAssetSummary {
+  assetVersion: string;
+  path: string;
+}
+
+export interface OrtAssetStatus {
   state: string;
   platformTarget: string;
-  expectedAssetTag: string;
-  defaultAssetUrl: string;
   currentDir?: string;
   manifest?: ScannerAssetsManifestSummary;
   lastError?: ScannerAssetsError;
+}
+
+export interface CameraAssetStatus {
+  state: string;
+  currentDir?: string;
+  artifact?: ScannerCameraAssetSummary;
+  lastError?: ScannerAssetsError;
+}
+
+export interface ScannerAssetsStatusResponse {
+  onnxruntime: OrtAssetStatus;
+  "camera-server": CameraAssetStatus;
+}
+
+export interface OrtUpdateCheck {
+  platformTarget: string;
+  currentAssetVersion?: string;
+  targetAssetTag: string;
+  updateAvailable: boolean;
+}
+
+export interface CameraUpdateCheck {
+  currentAssetVersion?: string;
+  targetAssetTag: string;
+  updateAvailable: boolean;
+}
+
+export interface ScannerAssetsUpdateCheckResponse {
+  onnxruntime: OrtUpdateCheck;
+  "camera-server": CameraUpdateCheck;
 }
 
 export interface ScannerAssetsProgress {
@@ -32,15 +67,9 @@ export interface ScannerAssetsProgress {
 export interface ScannerAssetsInstallResult {
   installed: boolean;
   assetVersion: string;
-  platformTarget: string;
+  platformTarget?: string;
   currentDir: string;
-}
-
-export interface ScannerAssetsUpdateCheck {
-  platformTarget: string;
-  currentAssetVersion?: string;
-  targetAssetTag: string;
-  updateAvailable: boolean;
+  path?: string;
 }
 
 export interface ScannerOrtOutletStatus {
@@ -112,19 +141,20 @@ const invokeTauriCommand = async <T>(
   return await invoke<T>(command, payload);
 };
 
-export async function fetchScannerAssetsStatus(): Promise<ScannerAssetsStatus> {
-  return invokeTauriCommand<ScannerAssetsStatus>("scanner_assets_status");
+export async function fetchScannerAssetsStatus(): Promise<ScannerAssetsStatusResponse> {
+  return invokeTauriCommand<ScannerAssetsStatusResponse>("scanner_assets_status");
 }
 
 export async function fetchScannerOrtProbe(): Promise<ScannerOrtProbeStatus> {
   return invokeTauriCommand<ScannerOrtProbeStatus>("scanner_probe_ort");
 }
 
-export async function checkScannerAssetsUpdate(): Promise<ScannerAssetsUpdateCheck> {
-  return invokeTauriCommand<ScannerAssetsUpdateCheck>("scanner_assets_check_update");
+export async function checkScannerAssetsUpdate(): Promise<ScannerAssetsUpdateCheckResponse> {
+  return invokeTauriCommand<ScannerAssetsUpdateCheckResponse>("scanner_assets_check_update");
 }
 
-export async function startScannerAssetsDownload(
+export async function startScannerAssetDownload(
+  target: AssetTarget,
   operationId: string,
   onProgress: (progress: ScannerAssetsProgress) => void,
 ): Promise<ScannerAssetsInstallResult> {
@@ -135,38 +165,13 @@ export async function startScannerAssetsDownload(
   const channel = new Channel<ScannerAssetsProgress>();
   channel.onmessage = onProgress;
   return await invoke<ScannerAssetsInstallResult>("scanner_assets_download", {
-    request: {operationId},
+    request: {target, operationId},
     progressChannel: channel,
   });
 }
 
-export async function startScannerAssetsUpdateDownload(
-  operationId: string,
-  onProgress: (progress: ScannerAssetsProgress) => void,
-): Promise<ScannerAssetsInstallResult> {
-  if (!isTauri()) {
-    throw new Error("Scanner commands are only available in Tauri desktop builds.");
-  }
-  const {invoke, Channel} = await import("@tauri-apps/api/core");
-  const channel = new Channel<ScannerAssetsProgress>();
-  channel.onmessage = onProgress;
-  return await invoke<ScannerAssetsInstallResult>("scanner_assets_download_update", {
-    request: {operationId},
-    progressChannel: channel,
-  });
-}
-
-export async function cancelScannerAssetsOperation(operationId: string): Promise<void> {
-  return await invokeTauriCommand<void>("scanner_assets_cancel", {
-    request: {operationId},
-  });
-}
-
-export async function clearScannerAssets(): Promise<void> {
-  return await invokeTauriCommand<void>("scanner_assets_clear");
-}
-
-export async function startScannerAssetsImport(
+export async function startScannerAssetImport(
+  target: AssetTarget,
   archivePath: string,
   onProgress: (progress: ScannerAssetsProgress) => void,
 ): Promise<ScannerAssetsInstallResult> {
@@ -177,8 +182,20 @@ export async function startScannerAssetsImport(
   const channel = new Channel<ScannerAssetsProgress>();
   channel.onmessage = onProgress;
   return await invoke<ScannerAssetsInstallResult>("scanner_assets_import", {
-    request: {archivePath},
+    request: {target, archivePath},
     progressChannel: channel,
+  });
+}
+
+export async function cancelScannerAssetOperation(operationId: string): Promise<void> {
+  return await invokeTauriCommand<void>("scanner_assets_cancel", {
+    request: {operationId},
+  });
+}
+
+export async function clearScannerAssets(target: AssetTarget): Promise<void> {
+  return await invokeTauriCommand<void>("scanner_assets_clear", {
+    request: {target},
   });
 }
 

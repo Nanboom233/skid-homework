@@ -1,0 +1,498 @@
+package com.skidhomework.server.camera;
+
+import android.content.Context;
+import android.graphics.ImageFormat;
+import android.graphics.SurfaceTexture;
+import android.hardware.Camera;
+import android.os.Handler;
+import android.os.HandlerThread;
+
+import com.skidhomework.server.StopReason;
+import com.skidhomework.server.encoder.Nv21Encoder;
+
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.OutputStream;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
+
+@SuppressWarnings("deprecation")
+public final class Camera1Session implements ICameraSession {
+
+    private static final int CAMERA_START_TIMEOUT_SECONDS = 5;
+    private static final int CALLBACK_BUFFER_COUNT = 3;
+
+    private final String cameraId;
+    private final int targetWidth;
+    private final int targetHeight;
+    private final Consumer<StopReason> stopCallback;
+    private final HandlerThread cameraThread;
+    private final Handler cameraHandler;
+    private final AtomicBoolean stopping = new AtomicBoolean(false);
+    private final AtomicBoolean stopReported = new AtomicBoolean(false);
+
+    private Camera camera;
+    private SurfaceTexture surfaceTexture;
+    private int previewWidth;
+    private int previewHeight;
+    private volatile Nv21Encoder encoder;
+
+    public Camera1Session(
+            String cameraId,
+            int targetWidth,
+            int targetHeight,
+            Consumer<StopReason> stopCallback
+    ) {
+        this.cameraId = cameraId;
+        this.targetWidth = targetWidth;
+        this.targetHeight = targetHeight;
+        this.stopCallback = stopCallback;
+
+        cameraThread = new HandlerThread("LegacyCameraThread");
+        cameraThread.start();
+        cameraHandler = new Handler(cameraThread.getLooper());
+    }
+
+    @Override
+    public void start() throws Exception {
+        CountDownLatch startLatch = new CountDownLatch(1);
+        AtomicReference<Throwable> failureRef = new AtomicReference<>();
+
+        cameraHandler.post(() -> {
+            try {
+                startLegacyCameraOnThread();
+            } catch (Throwable throwable) {
+                failureRef.set(throwable);
+            } finally {
+                startLatch.countDown();
+            }
+        });
+
+        if (!startLatch.await(CAMERA_START_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+            throw new RuntimeException(
+                    "legacy camera start timed out after " + CAMERA_START_TIMEOUT_SECONDS + "s"
+            );
+        }
+
+        Throwable failure = failureRef.get();
+        if (failure != null) {
+            if (failure instanceof Exception) {
+                throw (Exception) failure;
+            }
+            throw new RuntimeException(failure);
+        }
+    }
+
+    @Override
+    public byte[] captureStillJpeg() throws Exception {
+        if (camera == null) {
+            System.err.println("[LegacyCamera] Cannot capture still JPEG: Camera object is null (not active).");
+            throw new IllegalStateException("Legacy camera is not active.");
+        }
+
+        System.out.println("[LegacyCamera] Requesting HQ still capture via takePicture()...");
+        CountDownLatch latch = new CountDownLatch(1);
+        AtomicReference<byte[]> imageBytesRef = new AtomicReference<>();
+        AtomicReference<Exception> errorRef = new AtomicReference<>();
+
+        cameraHandler.post(() -> {
+            try {
+                camera.takePicture(null, null, (data, activeCamera) -> {
+                    if (data != null && data.length > 0) {
+                        System.out.println("[LegacyCamera] takePicture() succeeded. Received " + data.length + " bytes.");
+                        imageBytesRef.set(data);
+                    } else {
+                        System.err.println("[LegacyCamera] takePicture() returned a null or empty byte array.");
+                        errorRef.set(new IllegalStateException("Legacy camera takePicture returned empty data."));
+                    }
+                    try {
+                        System.out.println("[LegacyCamera] Restarting preview after takePicture()...");
+                        activeCamera.startPreview();
+                    } catch (RuntimeException e) {
+                        System.err.println("[LegacyCamera] Failed to restart preview after takePicture: " + e.getMessage());
+                        e.printStackTrace(System.err);
+                    }
+                    latch.countDown();
+                });
+            } catch (RuntimeException e) {
+                System.err.println("[LegacyCamera] RuntimeException thrown while calling takePicture(): " + e.getMessage());
+                e.printStackTrace(System.err);
+                errorRef.set(e);
+                latch.countDown();
+            }
+        });
+
+        if (!latch.await(10, TimeUnit.SECONDS)) {
+            System.err.println("[LegacyCamera] Timed out waiting 10s for takePicture() callback!");
+            throw new RuntimeException("Legacy camera still capture timed out.");
+        }
+
+        Exception error = errorRef.get();
+        if (error != null) {
+            System.err.println("[LegacyCamera] takePicture() operation failed with an exception: " + error.getMessage());
+            throw error;
+        }
+
+        byte[] imageBytes = imageBytesRef.get();
+        if (imageBytes == null || imageBytes.length == 0) {
+            System.err.println("[LegacyCamera] Final validation failed: returned HQ still frame is empty.");
+            throw new IllegalStateException("Legacy preview fallback failed to produce a still frame.");
+        }
+
+        return imageBytes;
+    }
+
+    @Override
+    public void streamStillJpeg(OutputStream outputStream) throws Exception {
+        byte[] imageBytes = captureStillJpeg();
+        outputStream.write(imageBytes);
+        outputStream.flush();
+    }
+
+    @Override
+    public void stop() {
+        if (!stopping.compareAndSet(false, true)) {
+            return;
+        }
+
+        CountDownLatch cleanupLatch = new CountDownLatch(1);
+        cameraHandler.post(() -> {
+            try {
+                cleanupCameraLocked();
+            } finally {
+                cleanupLatch.countDown();
+            }
+        });
+
+        try {
+            cleanupLatch.await(2L, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+
+        cameraThread.quitSafely();
+        try {
+            cameraThread.join(1_000L);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    public void attachEncoder(Nv21Encoder encoder) {
+        this.encoder = encoder;
+    }
+
+    public int getPreviewWidth() {
+        return previewWidth;
+    }
+
+    public int getPreviewHeight() {
+        return previewHeight;
+    }
+
+    private void startLegacyCameraOnThread() throws Exception {
+        int numericCameraId = Integer.parseInt(cameraId);
+        System.out.println(
+                "[LegacyCamera] Starting shell-only preview fallback for camera "
+                        + numericCameraId
+                        + "."
+        );
+
+        Context shellContext = CameraSupport.createShellContext();
+        if (shellContext == null) {
+            throw new IllegalStateException("Failed to create shell context.");
+        }
+
+        int rotationOverride = CameraSupport.callWithTemporarilyShellApplication(
+                () -> Integer.valueOf(resolveRotationOverride(shellContext))
+        ).intValue();
+
+        camera = openLegacyCamera(numericCameraId, shellContext, rotationOverride);
+        if (camera == null) {
+            throw new IllegalStateException("Camera.open returned null.");
+        }
+
+        camera.setErrorCallback((error, activeCamera) -> {
+            if (stopping.get()) {
+                return;
+            }
+            System.err.println("[LegacyCamera] Camera error callback code=" + error + ".");
+            requestStop(StopReason.cameraError(error));
+        });
+
+        CameraParametersResult configuredParameters = configureLegacyCamera(camera);
+        previewWidth = configuredParameters.previewWidth;
+        previewHeight = configuredParameters.previewHeight;
+
+        surfaceTexture = new SurfaceTexture(0);
+        surfaceTexture.setDefaultBufferSize(previewWidth, previewHeight);
+        camera.setPreviewTexture(surfaceTexture);
+
+        int callbackBufferSize = configuredParameters.previewFrameByteCount;
+        camera.setPreviewCallbackWithBuffer((data, activeCamera) -> {
+            if (data != null && data.length >= callbackBufferSize) {
+                Nv21Encoder activeEncoder = encoder;
+                if (activeEncoder != null) {
+                    activeEncoder.queueNv21Frame(data, System.nanoTime());
+                }
+            }
+
+            if (!stopping.get() && data != null) {
+                try {
+                    activeCamera.addCallbackBuffer(data);
+                } catch (RuntimeException ignored) {
+                    // Ignore buffer recycle failures during shutdown.
+                }
+            }
+        });
+
+        for (int index = 0; index < CALLBACK_BUFFER_COUNT; index++) {
+            camera.addCallbackBuffer(new byte[callbackBufferSize]);
+        }
+
+        camera.startPreview();
+        System.out.println(
+                "[LegacyCamera] Preview fallback started at "
+                        + previewWidth
+                        + "x"
+                        + previewHeight
+                        + "."
+        );
+    }
+
+    private CameraParametersResult configureLegacyCamera(Camera activeCamera) {
+        Camera.Parameters parameters = activeCamera.getParameters();
+
+        List<String> supportedFocusModes = parameters.getSupportedFocusModes();
+        if (supportedFocusModes != null
+                && supportedFocusModes.contains(Camera.Parameters.FOCUS_MODE_CONTINUOUS_VIDEO)) {
+            parameters.setFocusMode(Camera.Parameters.FOCUS_MODE_CONTINUOUS_VIDEO);
+        } else if (supportedFocusModes != null
+                && supportedFocusModes.contains(Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE)) {
+            parameters.setFocusMode(Camera.Parameters.FOCUS_MODE_CONTINUOUS_PICTURE);
+        }
+
+        if (parameters.getSupportedPreviewFormats() != null
+                && parameters.getSupportedPreviewFormats().contains(ImageFormat.NV21)) {
+            parameters.setPreviewFormat(ImageFormat.NV21);
+        } else {
+            throw new IllegalStateException("Legacy preview fallback requires NV21 preview support.");
+        }
+
+        double targetAspect = CameraSupport.normalizedAspectRatio(targetWidth, targetHeight);
+
+        List<Camera.Size> supportedPictureSizes = parameters.getSupportedPictureSizes();
+        Camera.Size bestPictureSize = null;
+        if (supportedPictureSizes != null && !supportedPictureSizes.isEmpty()) {
+            bestPictureSize = supportedPictureSizes.get(0);
+            double bestAspectDelta = Double.MAX_VALUE;
+            long bestArea = -1L;
+            for (Camera.Size candidate : supportedPictureSizes) {
+                long area = (long) candidate.width * (long) candidate.height;
+                double candidateAspect = CameraSupport.normalizedAspectRatio(
+                        candidate.width, candidate.height);
+                double aspectDelta = Math.abs(candidateAspect - targetAspect);
+                if (aspectDelta < bestAspectDelta - 0.001d
+                        || (Math.abs(aspectDelta - bestAspectDelta) <= 0.001d
+                            && area > bestArea)) {
+                    bestPictureSize = candidate;
+                    bestAspectDelta = aspectDelta;
+                    bestArea = area;
+                }
+            }
+            parameters.setPictureSize(bestPictureSize.width, bestPictureSize.height);
+            System.out.println(
+                    "[LegacyCamera] Picture size="
+                            + bestPictureSize.width
+                            + "x"
+                            + bestPictureSize.height
+                            + "."
+            );
+        }
+
+        double sensorAspect = targetAspect;
+
+        long targetArea = (long) Math.max(1, targetWidth) * (long) Math.max(1, targetHeight);
+
+        Camera.Size selectedPreviewSize = selectPreviewSize(
+                parameters.getSupportedPreviewSizes(),
+                sensorAspect,
+                targetArea
+        );
+        if (selectedPreviewSize == null) {
+            throw new IllegalStateException(
+                    "Legacy preview fallback could not select a preview size. Supported sizes: "
+                            + describePreviewSizes(parameters.getSupportedPreviewSizes())
+            );
+        }
+        parameters.setPreviewSize(selectedPreviewSize.width, selectedPreviewSize.height);
+
+        try {
+            parameters.setRecordingHint(true);
+        } catch (RuntimeException ignored) {
+            // Ignore vendor-specific recording-hint failures.
+        }
+
+        activeCamera.setParameters(parameters);
+        Camera.Parameters appliedParameters = activeCamera.getParameters();
+        Camera.Size appliedPreviewSize = appliedParameters.getPreviewSize();
+        int appliedPreviewFormat = appliedParameters.getPreviewFormat();
+        int bitsPerPixel = ImageFormat.getBitsPerPixel(appliedPreviewFormat);
+        int previewFrameByteCount = bitsPerPixel > 0
+                ? (appliedPreviewSize.width * appliedPreviewSize.height * bitsPerPixel) / 8
+                : (appliedPreviewSize.width * appliedPreviewSize.height * 3) / 2;
+
+        System.out.println(
+                "[LegacyCamera] Preview size="
+                        + appliedPreviewSize.width
+                        + "x"
+                        + appliedPreviewSize.height
+                        + ", format="
+                        + appliedPreviewFormat
+                        + ", frameBytes="
+                        + previewFrameByteCount
+                        + "."
+        );
+
+        return new CameraParametersResult(
+                appliedPreviewSize.width,
+                appliedPreviewSize.height,
+                previewFrameByteCount
+        );
+    }
+
+    private Camera.Size selectPreviewSize(
+            List<Camera.Size> sizes,
+            double targetAspect,
+            long targetArea
+    ) {
+        if (sizes == null || sizes.isEmpty()) {
+            return null;
+        }
+
+        Camera.Size bestSize = sizes.get(0);
+        double bestAspectDelta = Double.MAX_VALUE;
+        long bestAreaDelta = Long.MAX_VALUE;
+
+        for (Camera.Size candidate : sizes) {
+            long candidateArea = (long) candidate.width * (long) candidate.height;
+            double candidateAspect = CameraSupport.normalizedAspectRatio(
+                    candidate.width,
+                    candidate.height
+            );
+            double aspectDelta = Math.abs(candidateAspect - targetAspect);
+            long areaDelta = Math.abs(candidateArea - targetArea);
+
+            if (aspectDelta < bestAspectDelta - 0.000_001d) {
+                bestSize = candidate;
+                bestAspectDelta = aspectDelta;
+                bestAreaDelta = areaDelta;
+                continue;
+            }
+
+            if (Math.abs(aspectDelta - bestAspectDelta) <= 0.000_001d && areaDelta < bestAreaDelta) {
+                bestSize = candidate;
+                bestAreaDelta = areaDelta;
+            }
+        }
+
+        return bestSize;
+    }
+
+    private String describePreviewSizes(List<Camera.Size> sizes) {
+        if (sizes == null || sizes.isEmpty()) {
+            return "none";
+        }
+
+        StringBuilder builder = new StringBuilder();
+        for (int index = 0; index < sizes.size(); index++) {
+            if (index > 0) {
+                builder.append(", ");
+            }
+            Camera.Size size = sizes.get(index);
+            builder.append(size.width).append('x').append(size.height);
+        }
+        return builder.toString();
+    }
+
+    private void cleanupCameraLocked() {
+        if (camera != null) {
+            try {
+                camera.setPreviewCallbackWithBuffer(null);
+            } catch (RuntimeException ignored) {
+                // Ignore cleanup failures during shutdown.
+            }
+            try {
+                camera.stopPreview();
+            } catch (RuntimeException ignored) {
+                // Ignore cleanup failures during shutdown.
+            }
+            try {
+                camera.release();
+            } catch (RuntimeException ignored) {
+                // Ignore cleanup failures during shutdown.
+            }
+            camera = null;
+        }
+
+        if (surfaceTexture != null) {
+            try {
+                surfaceTexture.release();
+            } catch (RuntimeException ignored) {
+                // Ignore cleanup failures during shutdown.
+            }
+            surfaceTexture = null;
+        }
+    }
+
+    private void requestStop(StopReason reason) {
+        if (stopReported.compareAndSet(false, true)) {
+            stopCallback.accept(reason);
+        }
+    }
+
+    private static int resolveRotationOverride(Context context) throws Exception {
+        Class<?> cameraManagerClass = Class.forName("android.hardware.camera2.CameraManager");
+        java.lang.reflect.Method method = cameraManagerClass.getDeclaredMethod(
+                "getRotationOverride",
+                Context.class
+        );
+        method.setAccessible(true);
+        return ((Integer) method.invoke(null, context)).intValue();
+    }
+
+    private static Camera openLegacyCamera(
+            int cameraId,
+            Context context,
+            int rotationOverride
+    ) throws Exception {
+        java.lang.reflect.Method method = Camera.class.getDeclaredMethod(
+                "open",
+                int.class,
+                Context.class,
+                int.class
+        );
+        method.setAccessible(true);
+        return (Camera) method.invoke(null, cameraId, context, rotationOverride);
+    }
+
+    private static final class CameraParametersResult {
+        final int previewWidth;
+        final int previewHeight;
+        final int previewFrameByteCount;
+
+        CameraParametersResult(
+                int previewWidth,
+                int previewHeight,
+                int previewFrameByteCount
+        ) {
+            this.previewWidth = previewWidth;
+            this.previewHeight = previewHeight;
+            this.previewFrameByteCount = previewFrameByteCount;
+        }
+    }
+}

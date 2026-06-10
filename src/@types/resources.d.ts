@@ -365,21 +365,17 @@ export default interface Resources {
         "retry": "重试",
         "up-to-date": "已是最新版本",
         "update": "更新",
+        "update-all": "全部更新",
         "update-to": "更新到 {{version}}"
       },
       "diagnostics": {
-        "build-info": "ORT 构建信息",
-        "compat-runtime-path": "运行时库路径（兼容）",
         "empty-resource-tree": "未发现已安装资源",
-        "loaded-runtime-path": "已加载的运行时库路径",
-        "models": "模型",
-        "providers": "可用提供者",
-        "resource-base-dir": "资源目录",
-        "resource-tree": "已安装资源树",
+        "onnxruntime-build-info": "OnnxRuntime 构建信息",
+        "onnxruntime-path": "OnnxRuntime 路径",
+        "onnxruntime-providers": "OnnxRuntime 可用提供者",
         "resources": "资源",
         "resources-summary": "{{files}} 个文件 / {{directories}} 个文件夹 / {{size}}",
-        "runtime-error": "运行时错误",
-        "selected-runtime-path": "选中的运行时库路径",
+        "server-path": "Server 路径",
         "title": "高级诊断"
       },
       "error": {
@@ -445,8 +441,8 @@ export default interface Resources {
         "filter-label": "扫描器资源包"
       },
       "init": {
-        "description": "SkidHomework 使用本地 ONNX 模型进行文档扫描。请下载或导入扫描器资源以启用此功能。",
-        "missing-description": "扫描器资源尚未安装。立即下载或导入本地包。你也可以跳过此步骤，稍后在设置中配置。",
+        "description": "需要先安装 Camera Server 才能进入下一步；OnnxRuntime + Model 可在这里或稍后设置中补充。",
+        "missing-description": "Camera Server 尚未安装。请下载或导入本地包；OnnxRuntime + Model 可稍后再补充。",
         "title": "扫描器配置"
       },
       "phases": {
@@ -458,18 +454,23 @@ export default interface Resources {
         "verifying": "正在校验完整性..."
       },
       "settings": {
-        "description": "管理 ONNX Runtime 和扫描器模型资源。",
-        "title": "扫描器"
+        "description": "管理 Camera Server 和 OnnxRuntime + Model。",
+        "ready": "就绪",
+        "title": "扫描器资源管理"
       },
       "status": {
         "clearing": "清理中...",
         "cpu-fallback": "CPU",
         "downloading": "下载中...",
-        "importing": "导入中...",
+        "importing": "正在导入...",
         "invalid": "无效",
         "missing": "未安装",
         "ready": "扫描器就绪",
         "version": "版本 {{version}}"
+      },
+      "target": {
+        "camera": "Camera Server",
+        "ort": "OnnxRuntime + Model"
       }
     },
     "settings-page": {

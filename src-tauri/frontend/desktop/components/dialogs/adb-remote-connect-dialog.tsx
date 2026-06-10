@@ -13,7 +13,7 @@ import {
 } from "@/components/ui/dialog";
 import {Input} from "@/components/ui/input";
 import {Label} from "@/components/ui/label";
-import {listTauriAdbDevices, type TauriAdbDevice} from "../../lib/tauri/adb";
+import {listDevices, type TauriAdbDevice} from "../../lib/tauri/adb";
 import {cn} from "@/lib/utils";
 import {Tabs, TabsContent, TabsList, TabsTrigger} from "@/components/ui/tabs";
 
@@ -56,7 +56,7 @@ export const AdbRemoteConnectDialog = ({
   const loadDevices = useCallback(async () => {
     setDevicesLoading(true);
     try {
-      setDevices(await listTauriAdbDevices());
+      setDevices(await listDevices());
     } catch (error) {
       console.error("Failed to load desktop ADB devices", error);
       setDevices([]);

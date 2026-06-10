@@ -1,68 +1,71 @@
 import {create} from "zustand";
 import type {
+  AssetTarget,
   ScannerAssetsError,
   ScannerAssetsProgress,
-  ScannerAssetsStatus,
+  ScannerAssetsStatusResponse,
+  ScannerAssetsUpdateCheckResponse,
   ScannerOrtProbeStatus,
 } from "../lib/tauri/scanner";
 import {
-  cancelScannerAssetsOperation,
+  cancelScannerAssetOperation,
   checkScannerAssetsUpdate,
   clearScannerAssets,
   fetchScannerAssetsStatus,
   fetchScannerOrtProbe,
-  startScannerAssetsDownload,
-  startScannerAssetsImport,
-  startScannerAssetsUpdateDownload,
+  startScannerAssetDownload,
+  startScannerAssetImport,
 } from "../lib/tauri/scanner";
 
 const CANCELLED_ERROR_CODE = "assets.operation.cancelled";
 
 export type ScannerOperationContext =
-  | {kind: "download"; operationId: string; source: "default" | "update"}
-  | {kind: "import"; archivePath: string}
-  | {kind: "clear"};
+  | {kind: "download"; target: AssetTarget; operationId: string}
+  | {kind: "import"; target: AssetTarget; archivePath: string}
+  | {kind: "clear"; target: AssetTarget};
 
-export type ScannerUpdateCheckResult =
-  | {kind: "up-to-date"; version: string}
-  | {kind: "update-available"; version: string}
-  | {kind: "install-available"; version: string};
-
-export interface ScannerStore {
-  assetsStatus: ScannerAssetsStatus | null;
-  probeStatus: ScannerOrtProbeStatus | null;
+export interface ScannerOperationState {
   progress: ScannerAssetsProgress | null;
   isOperating: boolean;
-  activeOperation: ScannerOperationContext | null;
-  operationError: ScannerAssetsError | null;
-  retryOperation: ScannerOperationContext | null;
-  canRetryLastOperation: boolean;
-  canCancelCurrentOperation: boolean;
-  updateCheckResult: ScannerUpdateCheckResult | null;
+  active: ScannerOperationContext | null;
+  error: ScannerAssetsError | null;
+  retry: ScannerOperationContext | null;
+  canRetry: boolean;
+  canCancel: boolean;
+}
+
+export interface ScannerStore {
+  assetsStatus: ScannerAssetsStatusResponse | null;
+  probeStatus: ScannerOrtProbeStatus | null;
+  operation: ScannerOperationState;
+  updateCheckResult: ScannerAssetsUpdateCheckResponse | null;
 
   fetchStatus: () => Promise<void>;
   fetchProbe: () => Promise<void>;
-  startDownload: () => Promise<void>;
-  startUpdateDownload: () => Promise<void>;
-  startImport: (archivePath: string) => Promise<void>;
-  checkForAssetUpdate: () => Promise<void>;
-  clearInstalledAssets: () => Promise<void>;
+  checkForUpdate: () => Promise<void>;
+  startDownload: (target: AssetTarget) => Promise<void>;
+  startImport: (target: AssetTarget, archivePath: string) => Promise<void>;
+  startUpdateAll: () => Promise<void>;
+  clearAssets: (target: AssetTarget) => Promise<void>;
   cancelCurrentOperation: () => Promise<void>;
   retryLastOperation: () => Promise<void>;
   clearError: () => void;
-  clearUpdateCheckResult: () => void;
 }
+
+const initialOperationState: ScannerOperationState = {
+  progress: null,
+  isOperating: false,
+  active: null,
+  error: null,
+  retry: null,
+  canRetry: false,
+  canCancel: false,
+};
 
 export const useScannerStore = create<ScannerStore>()((set, get) => ({
   assetsStatus: null,
   probeStatus: null,
-  progress: null,
-  isOperating: false,
-  activeOperation: null,
-  operationError: null,
-  retryOperation: null,
-  canRetryLastOperation: false,
-  canCancelCurrentOperation: false,
+  operation: {...initialOperationState},
   updateCheckResult: null,
 
   fetchStatus: async () => {
@@ -71,7 +74,7 @@ export const useScannerStore = create<ScannerStore>()((set, get) => ({
       set({assetsStatus: status});
     } catch (error) {
       const scannerError = asScannerError(error);
-      set(displayOnlyErrorState(scannerError));
+      set({operation: displayOnlyErrorState(scannerError)});
     }
   },
 
@@ -81,320 +84,399 @@ export const useScannerStore = create<ScannerStore>()((set, get) => ({
       set({probeStatus: probe});
     } catch (error) {
       const scannerError = asScannerError(error);
-      set(displayOnlyErrorState(scannerError));
+      set({operation: displayOnlyErrorState(scannerError)});
     }
   },
 
-  startDownload: async () => {
-    if (get().isOperating) return;
-    const operation = {
-      kind: "download",
-      operationId: createOperationId(),
-      source: "default",
-    } as const;
-    set({
-      isOperating: true,
-      activeOperation: operation,
-      operationError: null,
-      progress: null,
-      retryOperation: null,
-      canRetryLastOperation: false,
-      canCancelCurrentOperation: true,
-      updateCheckResult: null,
-    });
-    try {
-      await startScannerAssetsDownload(operation.operationId, (progress) => {
-        if (!operationMatches(get().activeOperation, operation)) return;
-        set({progress});
-        if (progress.phase === "failed" && progress.error) {
-          if (isCancellationError(progress.error)) {
-            set(operationCancelledState());
-            return;
-          }
-          set(operationFailureState(progress.error, operation));
-        }
-      });
-      if (!operationMatches(get().activeOperation, operation)) return;
-      set(operationSuccessState());
-      await get().fetchStatus();
-      await get().fetchProbe();
-    } catch (error) {
-      if (!operationMatches(get().activeOperation, operation)) return;
-      const scannerError = asScannerError(error);
-      if (isCancellationError(scannerError)) {
-        set(operationCancelledState());
-        return;
-      }
-      set(operationFailureState(scannerError, operation));
-    }
-  },
-
-  startUpdateDownload: async () => {
-    if (get().isOperating) return;
-    const operation = {
-      kind: "download",
-      operationId: createOperationId(),
-      source: "update",
-    } as const;
-    set({
-      isOperating: true,
-      activeOperation: operation,
-      operationError: null,
-      progress: null,
-      retryOperation: null,
-      canRetryLastOperation: false,
-      canCancelCurrentOperation: true,
-      updateCheckResult: null,
-    });
-    try {
-      await startScannerAssetsUpdateDownload(operation.operationId, (progress) => {
-        if (!operationMatches(get().activeOperation, operation)) return;
-        set({progress});
-        if (progress.phase === "failed" && progress.error) {
-          if (isCancellationError(progress.error)) {
-            set(operationCancelledState());
-            return;
-          }
-          set(operationFailureState(progress.error, operation));
-        }
-      });
-      if (!operationMatches(get().activeOperation, operation)) return;
-      set(operationSuccessState());
-      await get().fetchStatus();
-      await get().fetchProbe();
-    } catch (error) {
-      if (!operationMatches(get().activeOperation, operation)) return;
-      const scannerError = asScannerError(error);
-      if (isCancellationError(scannerError)) {
-        set(operationCancelledState());
-        return;
-      }
-      set(operationFailureState(scannerError, operation));
-    }
-  },
-
-  startImport: async (archivePath: string) => {
-    if (get().isOperating) return;
-    const operation = {kind: "import", archivePath} as const;
-    set({
-      isOperating: true,
-      activeOperation: operation,
-      operationError: null,
-      progress: null,
-      retryOperation: null,
-      canRetryLastOperation: false,
-      canCancelCurrentOperation: false,
-      updateCheckResult: null,
-    });
-    try {
-      await startScannerAssetsImport(archivePath, (progress) => {
-        if (!operationMatches(get().activeOperation, operation)) return;
-        set({progress});
-        if (progress.phase === "failed" && progress.error) {
-          set(operationFailureState(progress.error, operation));
-        }
-      });
-      if (!operationMatches(get().activeOperation, operation)) return;
-      set(operationSuccessState());
-      await get().fetchStatus();
-      await get().fetchProbe();
-    } catch (error) {
-      if (!operationMatches(get().activeOperation, operation)) return;
-      const scannerError = asScannerError(error);
-      set(operationFailureState(scannerError, operation));
-    }
-  },
-
-  checkForAssetUpdate: async () => {
-    if (get().isOperating) return;
+  checkForUpdate: async () => {
+    if (get().operation.isOperating) return;
     try {
       const status = await fetchScannerAssetsStatus();
       const update = await checkScannerAssetsUpdate();
       set({
         assetsStatus: status,
-        operationError: null,
-        progress: null,
-        retryOperation: null,
-        canRetryLastOperation: false,
-        canCancelCurrentOperation: false,
-      });
-
-      if (
-        !update.updateAvailable
-      ) {
-        set({updateCheckResult: {kind: "up-to-date", version: update.targetAssetTag}});
-        return;
-      }
-
-      if (status.state === "ready" && status.manifest) {
-        set({
-          updateCheckResult: {
-            kind: "update-available",
-            version: update.targetAssetTag,
-          },
-        });
-        return;
-      }
-
-      set({
-        updateCheckResult: {
-          kind: "install-available",
-          version: update.targetAssetTag,
-        },
+        updateCheckResult: update,
+        operation: {...initialOperationState},
       });
     } catch (error) {
       const scannerError = asScannerError(error);
-      set({...displayOnlyErrorState(scannerError), updateCheckResult: null});
+      set({
+        operation: displayOnlyErrorState(scannerError),
+      });
     }
   },
 
-  clearInstalledAssets: async () => {
-    if (get().isOperating) return;
-    const operation = {kind: "clear"} as const;
+  startDownload: async (target: AssetTarget) => {
+    if (get().operation.isOperating) return;
+    const operation: ScannerOperationContext = {
+      kind: "download",
+      target,
+      operationId: createOperationId(),
+    };
     set({
-      isOperating: true,
-      activeOperation: operation,
-      operationError: null,
-      progress: null,
-      retryOperation: null,
-      canRetryLastOperation: false,
-      canCancelCurrentOperation: false,
-      updateCheckResult: null,
+      operation: {
+        ...initialOperationState,
+        isOperating: true,
+        active: operation,
+        canCancel: true,
+      },
     });
     try {
-      await clearScannerAssets();
-      if (!operationMatches(get().activeOperation, operation)) return;
-      set(operationSuccessState());
-      await get().fetchStatus();
+      const result = await startScannerAssetDownload(target, operation.operationId, (progress) => {
+        if (!operationMatches(get().operation.active, operation)) return;
+        set({operation: {...get().operation, progress}});
+        if (progress.phase === "failed" && progress.error) {
+          if (isCancellationError(progress.error)) {
+            set({operation: operationCancelledState()});
+            return;
+          }
+          set({operation: operationFailureState(progress.error, operation)});
+        }
+      });
+      if (!operationMatches(get().operation.active, operation)) return;
+      set((state) => ({
+        assetsStatus: mergeInstalledAssetStatus(state.assetsStatus, target, result),
+        updateCheckResult: markTargetCurrent(state.updateCheckResult, target, result.assetVersion),
+        operation: operationSuccessState(),
+      }));
+      await get().checkForUpdate();
       await get().fetchProbe();
     } catch (error) {
-      if (!operationMatches(get().activeOperation, operation)) return;
+      if (!operationMatches(get().operation.active, operation)) return;
       const scannerError = asScannerError(error);
-      set(operationFailureState(scannerError, operation));
+      if (isCancellationError(scannerError)) {
+        set({operation: operationCancelledState()});
+        return;
+      }
+      set({operation: operationFailureState(scannerError, operation)});
+    }
+  },
+
+  startImport: async (target: AssetTarget, archivePath: string) => {
+    if (get().operation.isOperating) return;
+    const operation: ScannerOperationContext = {kind: "import", target, archivePath};
+    set({
+      operation: {
+        ...initialOperationState,
+        isOperating: true,
+        active: operation,
+      },
+    });
+    try {
+      const result = await startScannerAssetImport(target, archivePath, (progress) => {
+        if (!operationMatches(get().operation.active, operation)) return;
+        set({operation: {...get().operation, progress}});
+        if (progress.phase === "failed" && progress.error) {
+          set({operation: operationFailureState(progress.error, operation)});
+        }
+      });
+      if (!operationMatches(get().operation.active, operation)) return;
+      set((state) => ({
+        assetsStatus: mergeInstalledAssetStatus(state.assetsStatus, target, result),
+        operation: operationSuccessState(),
+      }));
+      await get().checkForUpdate();
+      await get().fetchProbe();
+    } catch (error) {
+      if (!operationMatches(get().operation.active, operation)) return;
+      const scannerError = asScannerError(error);
+      set({operation: operationFailureState(scannerError, operation)});
+    }
+  },
+
+  startUpdateAll: async () => {
+    if (get().operation.isOperating) return;
+    const check = get().updateCheckResult;
+    if (!check) return;
+
+    const queue: AssetTarget[] = [];
+    if (check["camera-server"].updateAvailable) queue.push("camera-server");
+    if (check.onnxruntime.updateAvailable) queue.push("onnxruntime");
+    if (queue.length === 0) return;
+
+    for (const target of queue) {
+      if (get().operation.error) break;
+      const operation: ScannerOperationContext = {
+        kind: "download",
+        target,
+        operationId: createOperationId(),
+      };
+      set({
+        operation: {
+          ...initialOperationState,
+          isOperating: true,
+          active: operation,
+          canCancel: true,
+        },
+      });
+      try {
+        const result = await startScannerAssetDownload(target, operation.operationId, (progress) => {
+          if (!operationMatches(get().operation.active, operation)) return;
+          set({operation: {...get().operation, progress}});
+          if (progress.phase === "failed" && progress.error) {
+            if (isCancellationError(progress.error)) {
+              set({operation: operationCancelledState()});
+              return;
+            }
+            set({operation: operationFailureState(progress.error, operation)});
+          }
+        });
+        if (!operationMatches(get().operation.active, operation)) break;
+        set((state) => ({
+          assetsStatus: mergeInstalledAssetStatus(state.assetsStatus, target, result),
+          updateCheckResult: markTargetCurrent(state.updateCheckResult, target, result.assetVersion),
+          operation: operationSuccessState(),
+        }));
+      } catch (error) {
+        if (!operationMatches(get().operation.active, operation)) break;
+        const scannerError = asScannerError(error);
+        if (isCancellationError(scannerError)) {
+          set({operation: operationCancelledState()});
+          break;
+        }
+        set({operation: operationFailureState(scannerError, operation)});
+        break;
+      }
+    }
+    if (get().operation.error) {
+      await get().fetchStatus();
+    } else {
+      await get().checkForUpdate();
+    }
+    await get().fetchProbe();
+  },
+
+  clearAssets: async (target: AssetTarget) => {
+    if (get().operation.isOperating) return;
+    const operation: ScannerOperationContext = {kind: "clear", target};
+    set({
+      operation: {
+        ...initialOperationState,
+        isOperating: true,
+        active: operation,
+      },
+    });
+    try {
+      await clearScannerAssets(target);
+      if (!operationMatches(get().operation.active, operation)) return;
+      set((state) => ({
+        assetsStatus: markTargetMissing(state.assetsStatus, target),
+        updateCheckResult: markTargetMissingForUpdate(state.updateCheckResult, target),
+        operation: operationSuccessState(),
+      }));
+      await get().checkForUpdate();
+      await get().fetchProbe();
+    } catch (error) {
+      if (!operationMatches(get().operation.active, operation)) return;
+      const scannerError = asScannerError(error);
+      set({operation: operationFailureState(scannerError, operation)});
     }
   },
 
   cancelCurrentOperation: async () => {
-    const operation = get().activeOperation;
-    if (!operation || operation.kind !== "download" || !get().canCancelCurrentOperation) return;
+    const active = get().operation.active;
+    if (!active || !get().operation.canCancel) return;
+    if (active.kind !== "download") return;
 
     set({
-      operationError: null,
-      retryOperation: null,
-      canRetryLastOperation: false,
-      canCancelCurrentOperation: false,
-      updateCheckResult: null,
+      operation: {
+        ...get().operation,
+        canCancel: false,
+      },
     });
     try {
-      await cancelScannerAssetsOperation(operation.operationId);
+      await cancelScannerAssetOperation(active.operationId);
     } catch {
-      // Cancellation is best-effort and idempotent; the active operation will settle normally.
+      // Best-effort
     }
   },
 
   retryLastOperation: async () => {
-    const operation = get().retryOperation;
-    if (!operation || get().isOperating) return;
+    const retry = get().operation.retry;
+    if (!retry || get().operation.isOperating) return;
 
-    if (operation.kind === "download") {
-      if (operation.source === "update") {
-        await get().startUpdateDownload();
-        return;
-      }
-      await get().startDownload();
+    if (retry.kind === "download") {
+      await get().startDownload(retry.target);
       return;
     }
-
-    if (operation.kind === "import") {
-      await get().startImport(operation.archivePath);
+    if (retry.kind === "import") {
+      await get().startImport(retry.target, retry.archivePath);
       return;
     }
-
-    await get().clearInstalledAssets();
+    if (retry.kind === "clear") {
+      await get().clearAssets(retry.target);
+    }
   },
 
   clearError: () =>
     set({
-      operationError: null,
-      progress: null,
-      retryOperation: null,
-      canRetryLastOperation: false,
-      updateCheckResult: null,
+      operation: {...initialOperationState},
     }),
-
-  clearUpdateCheckResult: () => set({updateCheckResult: null}),
 }));
 
-function operationSuccessState() {
-  return {
-    isOperating: false,
-    activeOperation: null,
-    progress: null,
-    operationError: null,
-    retryOperation: null,
-    canRetryLastOperation: false,
-    canCancelCurrentOperation: false,
-    updateCheckResult: null,
-  };
+function operationSuccessState(): ScannerOperationState {
+  return {...initialOperationState};
 }
 
-function displayOnlyErrorState(error: ScannerAssetsError) {
+function displayOnlyErrorState(error: ScannerAssetsError): ScannerOperationState {
   return {
-    isOperating: false,
-    activeOperation: null,
-    progress: null,
-    operationError: error,
-    retryOperation: null,
-    canRetryLastOperation: false,
-    canCancelCurrentOperation: false,
+    ...initialOperationState,
+    error,
   };
 }
 
 function operationFailureState(
   error: ScannerAssetsError,
   operation: ScannerOperationContext,
-) {
-  const retryOperation = error.retryable && !isCancellationError(error) ? operation : null;
+): ScannerOperationState {
+  const retry = error.retryable && !isCancellationError(error) ? operation : null;
   return {
-    isOperating: false,
-    activeOperation: null,
-    operationError: error,
-    retryOperation,
-    canRetryLastOperation: retryOperation != null,
-    canCancelCurrentOperation: false,
-    updateCheckResult: null,
+    ...initialOperationState,
+    error,
+    retry,
+    canRetry: retry != null,
   };
 }
 
-function operationCancelledState() {
+function operationCancelledState(): ScannerOperationState {
+  return {...initialOperationState};
+}
+
+function mergeInstalledAssetStatus(
+  status: ScannerAssetsStatusResponse | null,
+  target: AssetTarget,
+  result: {assetVersion: string; platformTarget?: string; currentDir: string; path?: string},
+): ScannerAssetsStatusResponse | null {
+  if (!status) return status;
+
+  if (target === "camera-server") {
+    return {
+      ...status,
+      "camera-server": {
+        state: "ready",
+        currentDir: result.currentDir,
+        artifact: {
+          assetVersion: result.assetVersion,
+          path: result.path ?? status["camera-server"].artifact?.path ?? result.currentDir,
+        },
+      },
+    };
+  }
+
+  const platformTarget = result.platformTarget ?? status.onnxruntime.platformTarget;
   return {
-    isOperating: false,
-    activeOperation: null,
-    progress: null,
-    operationError: null,
-    retryOperation: null,
-    canRetryLastOperation: false,
-    canCancelCurrentOperation: false,
-    updateCheckResult: null,
+    ...status,
+    onnxruntime: {
+      state: "ready",
+      platformTarget,
+      currentDir: result.currentDir,
+      manifest: {
+        schemaVersion: status.onnxruntime.manifest?.schemaVersion ?? 1,
+        assetVersion: result.assetVersion,
+        platformTarget,
+      },
+    },
+  };
+}
+
+function markTargetMissing(
+  status: ScannerAssetsStatusResponse | null,
+  target: AssetTarget,
+): ScannerAssetsStatusResponse | null {
+  if (!status) return status;
+
+  if (target === "camera-server") {
+    return {
+      ...status,
+      "camera-server": {
+        state: "missing",
+        currentDir: status["camera-server"].currentDir,
+      },
+    };
+  }
+
+  return {
+    ...status,
+    onnxruntime: {
+      state: "missing",
+      platformTarget: status.onnxruntime.platformTarget,
+      currentDir: status.onnxruntime.currentDir,
+    },
+  };
+}
+
+function markTargetCurrent(
+  update: ScannerAssetsUpdateCheckResponse | null,
+  target: AssetTarget,
+  assetVersion: string,
+): ScannerAssetsUpdateCheckResponse | null {
+  if (!update) return update;
+
+  if (target === "camera-server") {
+    return {
+      ...update,
+      "camera-server": {
+        ...update["camera-server"],
+        currentAssetVersion: assetVersion,
+        updateAvailable: false,
+      },
+    };
+  }
+
+  return {
+    ...update,
+    onnxruntime: {
+      ...update.onnxruntime,
+      currentAssetVersion: assetVersion,
+      updateAvailable: false,
+    },
+  };
+}
+
+function markTargetMissingForUpdate(
+  update: ScannerAssetsUpdateCheckResponse | null,
+  target: AssetTarget,
+): ScannerAssetsUpdateCheckResponse | null {
+  if (!update) return update;
+
+  if (target === "camera-server") {
+    const {currentAssetVersion: _currentAssetVersion, ...cameraUpdate} = update["camera-server"];
+    void _currentAssetVersion;
+    return {
+      ...update,
+      "camera-server": {
+        ...cameraUpdate,
+        updateAvailable: true,
+      },
+    };
+  }
+
+  const {currentAssetVersion: _currentAssetVersion, ...ortUpdate} = update.onnxruntime;
+  void _currentAssetVersion;
+  return {
+    ...update,
+    onnxruntime: {
+      ...ortUpdate,
+      updateAvailable: true,
+    },
   };
 }
 
 function operationMatches(
-  activeOperation: ScannerOperationContext | null,
+  active: ScannerOperationContext | null,
   operation: ScannerOperationContext,
 ) {
-  if (!activeOperation || activeOperation.kind !== operation.kind) return false;
-  if (operation.kind === "download") {
-    return (
-      activeOperation.kind === "download" &&
-      activeOperation.operationId === operation.operationId &&
-      activeOperation.source === operation.source
-    );
+  if (!active || active.kind !== operation.kind) return false;
+  if (operation.kind === "download" && active.kind === "download") {
+    return active.operationId === operation.operationId && active.target === operation.target;
   }
-  if (operation.kind === "import") {
-    return activeOperation.kind === "import" && activeOperation.archivePath === operation.archivePath;
+  if (operation.kind === "import" && active.kind === "import") {
+    return active.archivePath === operation.archivePath && active.target === operation.target;
   }
-  return activeOperation.kind === "clear";
+  if (operation.kind === "clear" && active.kind === "clear") {
+    return active.target === operation.target;
+  }
+  return false;
 }
 
 function isCancellationError(error: ScannerAssetsError) {

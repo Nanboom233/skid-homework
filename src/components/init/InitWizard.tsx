@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import { useInitStore } from "@/store/init-store";
 import { useAvailableModels } from "@/hooks/use-available-models";
-import { PlatformScannerSetupStep } from "@/platform";
+import { PlatformScannerSetupStep, usePlatformScannerSetupReady } from "@/platform";
 import StepIndicator from "./StepIndicator";
 import WizardNavigation from "./WizardNavigation";
 import WelcomeStep from "./steps/WelcomeStep";
@@ -43,6 +43,7 @@ export default function InitWizard() {
   const setInitCompleted = useInitStore((s) => s.setInitCompleted);
   const { t } = useTranslation("commons", { keyPrefix: "init-page.navigation" });
   const router = useRouter();
+  const scannerSetupReady = usePlatformScannerSetupReady();
 
   // Lift model fetching to share between steps
   const { sourceModelsMap, allModels, isLoading, fetchErrors, hasFetched } = useAvailableModels();
@@ -131,7 +132,10 @@ export default function InitWizard() {
           showAdvanced={currentStep === 3}
           onAdvanced={advanceToNextStep}
           finishLabel={currentStep >= 3 ? t("finish") : undefined}
-          disableNext={currentStep === 1 && hasFetched && !hasValidConfig && !isLoading}
+          disableNext={
+            (currentStep === 1 && hasFetched && !hasValidConfig && !isLoading)
+            || (currentStep === 2 && !scannerSetupReady)
+          }
         />
       </div>
     </div>

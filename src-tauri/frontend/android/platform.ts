@@ -33,3 +33,7 @@ export { default as PlatformInitGuard } from "@/components/guards/RequireInit";
 export function PlatformScannerSetupStep() { return null; }
 export function PlatformScannerSettingsCard() { return null; }
 
+export function usePlatformScannerSetupReady(): boolean {
+  return true;
+}
+

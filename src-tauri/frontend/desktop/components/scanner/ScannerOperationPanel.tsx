@@ -15,8 +15,8 @@ interface ScannerOperationPanelProps {
   progress: ScannerAssetsProgress | null;
   activeOperation: ScannerOperationContext | null;
   operationError: ScannerAssetsError | null;
-  canRetryLastOperation: boolean;
-  canCancelCurrentOperation: boolean;
+  canRetry: boolean;
+  canCancel: boolean;
   isOperating: boolean;
   errorClassName?: string;
   onCancel: () => void;
@@ -28,8 +28,8 @@ export function ScannerOperationPanel({
   progress,
   activeOperation,
   operationError,
-  canRetryLastOperation,
-  canCancelCurrentOperation,
+  canRetry,
+  canCancel,
   isOperating,
   errorClassName = "space-y-3 rounded-lg border border-red-200 bg-red-50 p-4 dark:border-red-800 dark:bg-red-950",
   onCancel,
@@ -50,7 +50,7 @@ export function ScannerOperationPanel({
                 {operationPhaseLabel(t, progress, activeOperation)}
               </span>
             </div>
-            {canCancelCurrentOperation && (
+            {canCancel && (
               <Button size="sm" variant="outline" onClick={onCancel}>
                 <X className="mr-2 h-4 w-4" />
                 {t("actions.cancel")}
@@ -95,7 +95,7 @@ export function ScannerOperationPanel({
             </div>
           </div>
           <div className="flex gap-2">
-            {operationError.retryable && canRetryLastOperation && (
+            {operationError.retryable && canRetry && (
               <Button
                 size="sm"
                 variant="outline"
@@ -121,10 +121,10 @@ function operationPhaseLabel(
   progress: ScannerAssetsProgress | null,
   activeOperation: ScannerOperationContext | null,
 ) {
-  if (progress) {
-    return t(`phases.${progress.phase}`);
-  }
   if (activeOperation?.kind === "download") {
+    if (progress) {
+      return t(`phases.${progress.phase}`);
+    }
     return t("status.downloading");
   }
   if (activeOperation?.kind === "clear") {
