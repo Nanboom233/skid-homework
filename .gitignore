@@ -31,6 +31,7 @@ node_modules
 /.tmp/
 /tmp/
 /temp/
+/test/
 /coverage/
 *.tsbuildinfo
 
@@ -73,6 +74,7 @@ src-tauri/validation-run/
 .agents/
 .codex/
 .trellis/
+worktrees/
 agents.md
 claude.md
 

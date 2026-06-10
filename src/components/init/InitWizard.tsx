@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import { useInitStore } from "@/store/init-store";
 import { useAvailableModels } from "@/hooks/use-available-models";
+import { PlatformScannerSetupStep } from "@/platform";
 import StepIndicator from "./StepIndicator";
 import WizardNavigation from "./WizardNavigation";
 import WelcomeStep from "./steps/WelcomeStep";
@@ -12,7 +13,7 @@ import AiConfigStep from "./steps/AiConfigStep";
 import PreferencesStep from "./steps/PreferencesStep";
 import AdvancedStep from "./steps/AdvancedStep";
 
-const TOTAL_STEPS = 4;
+const TOTAL_STEPS = 5;
 
 const variants = {
   enter: (direction: number) => ({
@@ -37,8 +38,8 @@ const transition = {
 export default function InitWizard() {
   const currentStep = useInitStore((s) => s.currentStep);
   const direction = useInitStore((s) => s.direction);
-  const nextStep = useInitStore((s) => s.nextStep);
   const prevStep = useInitStore((s) => s.prevStep);
+  const setCurrentStep = useInitStore((s) => s.setCurrentStep);
   const setInitCompleted = useInitStore((s) => s.setInitCompleted);
   const { t } = useTranslation("commons", { keyPrefix: "init-page.navigation" });
   const router = useRouter();
@@ -52,19 +53,23 @@ export default function InitWizard() {
     router.replace("/");
   }, [setInitCompleted, router]);
 
+  const advanceToNextStep = useCallback(() => {
+    setCurrentStep(Math.min(currentStep + 1, TOTAL_STEPS - 1));
+  }, [currentStep, setCurrentStep]);
+
   const handleNext = useCallback(() => {
-    if (currentStep >= 2) {
-      // Steps 2 (Preferences) and 3 (Advanced) both finish the wizard
+    if (currentStep >= 3) {
+      // Steps 3 (Preferences) and 4 (Advanced) both finish the wizard
       completeWizard();
     } else {
-      nextStep();
+      advanceToNextStep();
     }
-  }, [currentStep, nextStep, completeWizard]);
+  }, [currentStep, advanceToNextStep, completeWizard]);
 
   const handleSkip = useCallback(() => {
-    // Skip only applies to step 1 (AI Config), advances to step 2
-    nextStep();
-  }, [nextStep]);
+    // Skip applies to step 1 (AI Config) and step 2 (Scanner Setup)
+    advanceToNextStep();
+  }, [advanceToNextStep]);
 
   const stepContent = useMemo(() => {
     switch (currentStep) {
@@ -73,6 +78,8 @@ export default function InitWizard() {
       case 1:
         return <AiConfigStep allModels={allModels} isLoadingModels={isLoading} fetchErrors={fetchErrors} hasFetched={hasFetched} />;
       case 2:
+        return <PlatformScannerSetupStep />;
+      case 3:
         return (
           <PreferencesStep
             sourceModelsMap={sourceModelsMap}
@@ -80,7 +87,7 @@ export default function InitWizard() {
             isLoadingModels={isLoading}
           />
         );
-      case 3:
+      case 4:
         return (
           <AdvancedStep
             sourceModelsMap={sourceModelsMap}
@@ -120,10 +127,10 @@ export default function InitWizard() {
           onBack={prevStep}
           onNext={handleNext}
           onSkip={handleSkip}
-          showSkip={currentStep === 1}
-          showAdvanced={currentStep === 2}
-          onAdvanced={() => nextStep()}
-          finishLabel={currentStep >= 2 ? t("finish") : undefined}
+          showSkip={currentStep === 1 || currentStep === 2}
+          showAdvanced={currentStep === 3}
+          onAdvanced={advanceToNextStep}
+          finishLabel={currentStep >= 3 ? t("finish") : undefined}
           disableNext={currentStep === 1 && hasFetched && !hasValidConfig && !isLoading}
         />
       </div>

@@ -353,6 +353,125 @@ export default interface Resources {
         }
       }
     },
+    "scanner": {
+      "actions": {
+        "cancel": "取消",
+        "check-update": "检查更新",
+        "clear": "清理已下载内容",
+        "confirm-clear": "确认清除？",
+        "download": "下载",
+        "import": "导入本地包",
+        "install-version": "安装 {{version}}",
+        "retry": "重试",
+        "up-to-date": "已是最新版本",
+        "update": "更新",
+        "update-to": "更新到 {{version}}"
+      },
+      "diagnostics": {
+        "build-info": "ORT 构建信息",
+        "compat-runtime-path": "运行时库路径（兼容）",
+        "empty-resource-tree": "未发现已安装资源",
+        "loaded-runtime-path": "已加载的运行时库路径",
+        "models": "模型",
+        "providers": "可用提供者",
+        "resource-base-dir": "资源目录",
+        "resource-tree": "已安装资源树",
+        "resources": "资源",
+        "resources-summary": "{{files}} 个文件 / {{directories}} 个文件夹 / {{size}}",
+        "runtime-error": "运行时错误",
+        "selected-runtime-path": "选中的运行时库路径",
+        "title": "高级诊断"
+      },
+      "error": {
+        "codes": {
+          "assets": {
+            "clear": {
+              "removeFailed": "无法清理已安装的扫描器资源，请关闭占用中的文件后重试。"
+            },
+            "download": {
+              "fetch": {
+                "httpStatus": "下载服务器返回了错误状态。",
+                "networkFailed": "下载扫描器资源失败，请检查网络后重试。",
+                "writeFailed": "无法写入下载的扫描器资源包。"
+              }
+            },
+            "import": {
+              "archive": {
+                "formatMismatch": "本地资源包格式与当前平台不匹配。",
+                "openFailed": "无法打开本地扫描器资源包。"
+              }
+            },
+            "install": {
+              "activate": {
+                "replaceFailed": "无法激活新的扫描器资源，已保留现有资源。"
+              },
+              "manifest": {
+                "invalid": "资源包 manifest.json 无效。",
+                "missing": "资源包缺少 manifest.json。",
+                "platformMismatch": "资源包平台与当前设备不匹配。",
+                "versionMismatch": "资源包版本与当前应用期望版本不一致。"
+              },
+              "verify": {
+                "checksumMismatch": "资源包文件校验和不匹配。",
+                "fileMissing": "资源包缺少必需文件。",
+                "sizeMismatch": "资源包文件大小校验失败。",
+                "unsafePath": "资源包包含不安全的文件路径。"
+              }
+            },
+            "operation": {
+              "cancelled": "操作已取消。",
+              "inProgress": "已有扫描器资源操作正在进行，请稍后再试。",
+              "taskFailed": "扫描器资源任务异常结束。"
+            },
+            "status": {
+              "resolveDataDirFailed": "无法解析应用数据目录。"
+            },
+            "update": {
+              "checkFailed": "无法检查扫描器资源更新，请检查网络后重试。"
+            }
+          },
+          "runtime": {
+            "probe": {
+              "taskFailed": "扫描器运行时诊断任务异常结束。"
+            }
+          }
+        },
+        "diagnostic-code": "错误码：{{code}}",
+        "diagnostic-details": "诊断信息：{{details}}",
+        "title": "操作失败",
+        "unknown": "扫描器操作失败（{{code}}）。"
+      },
+      "import": {
+        "filter-label": "扫描器资源包"
+      },
+      "init": {
+        "description": "SkidHomework 使用本地 ONNX 模型进行文档扫描。请下载或导入扫描器资源以启用此功能。",
+        "missing-description": "扫描器资源尚未安装。立即下载或导入本地包。你也可以跳过此步骤，稍后在设置中配置。",
+        "title": "扫描器配置"
+      },
+      "phases": {
+        "activating": "正在激活资源...",
+        "completed": "已完成",
+        "failed": "失败",
+        "fetching": "正在下载安装包...",
+        "unpacking": "正在解压文件...",
+        "verifying": "正在校验完整性..."
+      },
+      "settings": {
+        "description": "管理 ONNX Runtime 和扫描器模型资源。",
+        "title": "扫描器"
+      },
+      "status": {
+        "clearing": "清理中...",
+        "cpu-fallback": "CPU",
+        "downloading": "下载中...",
+        "importing": "导入中...",
+        "invalid": "无效",
+        "missing": "未安装",
+        "ready": "扫描器就绪",
+        "version": "版本 {{version}}"
+      }
+    },
     "settings-page": {
       "advanced": {
         "custom-base-url": {

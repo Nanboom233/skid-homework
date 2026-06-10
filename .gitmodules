@@ -1,0 +1,3 @@
+[submodule "src-tauri/assets"]
+	path = src-tauri/assets
+	url = https://github.com/Nanboom233/skid-homework-assets.git

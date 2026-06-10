@@ -173,7 +173,9 @@ fn validate_adb_remote_address(value: &str, field_name: &str) -> Result<String, 
     }
 
     if address.contains("://") {
-        return Err(format!("{field_name} must be a host:port value, not a URL."));
+        return Err(format!(
+            "{field_name} must be a host:port value, not a URL."
+        ));
     }
 
     if address.contains('/') || address.contains('\\') {
@@ -192,14 +194,18 @@ fn validate_adb_remote_address(value: &str, field_name: &str) -> Result<String, 
         .parse::<u16>()
         .map_err(|_| format!("{field_name} port must be a number from 1 to 65535."))?;
     if port == 0 {
-        return Err(format!("{field_name} port must be a number from 1 to 65535."));
+        return Err(format!(
+            "{field_name} port must be a number from 1 to 65535."
+        ));
     }
 
     if !host
         .chars()
         .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | ':' | '[' | ']'))
     {
-        return Err(format!("{field_name} host contains unsupported characters."));
+        return Err(format!(
+            "{field_name} host contains unsupported characters."
+        ));
     }
 
     Ok(address)
