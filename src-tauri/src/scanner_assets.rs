@@ -524,7 +524,7 @@ async fn latest_official_release_target() -> Result<ScannerAssetsDownloadTarget,
             "assets.update.checkFailed",
             true,
             format!(
-                "No stable scanner asset release with {} was found.",
+                "No scanner asset release with {} and its checksum was found.",
                 platform_package_file_name_for_tag("<tag>")
             ),
         )
@@ -580,27 +580,32 @@ async fn fetch_official_releases() -> Result<Vec<GitHubRelease>, ScannerAssetsEr
 }
 
 fn select_latest_release_target(releases: &[GitHubRelease]) -> Option<ScannerAssetsDownloadTarget> {
-    releases
-        .iter()
-        .filter(|release| !release.draft && !release.prerelease)
-        .filter_map(|release| {
-            let version = parse_stable_semver_tag(&release.tag_name)?;
-            let package_file_name = platform_package_file_name_for_tag(&release.tag_name);
-            let _asset = release
-                .assets
-                .iter()
-                .find(|asset| asset.name == package_file_name)?;
-            Some((
-                version,
-                ScannerAssetsDownloadTarget {
-                    asset_tag: release.tag_name.clone(),
-                    asset_url: official_release_asset_url(&release.tag_name, &package_file_name),
-                    package_file_name,
-                },
-            ))
+    releases.iter().find_map(|release| {
+        if release.draft {
+            return None;
+        }
+        // GitHub's releases API returns prerelease entries; keep them
+        // eligible when their stable tag filename and checksum contract
+        // match this ORT target.
+        let _prerelease_is_eligible = release.prerelease;
+        parse_stable_semver_tag(&release.tag_name)?;
+        let package_file_name = platform_package_file_name_for_tag(&release.tag_name);
+        let checksum_file_name = format!("{package_file_name}.sha256");
+        if !release_has_asset(release, &package_file_name)
+            || !release_has_asset(release, &checksum_file_name)
+        {
+            return None;
+        }
+        Some(ScannerAssetsDownloadTarget {
+            asset_tag: release.tag_name.clone(),
+            asset_url: official_release_asset_url(&release.tag_name, &package_file_name),
+            package_file_name,
         })
-        .max_by_key(|(version, _)| *version)
-        .map(|(_, target)| target)
+    })
+}
+
+fn release_has_asset(release: &GitHubRelease, asset_name: &str) -> bool {
+    release.assets.iter().any(|asset| asset.name == asset_name)
 }
 
 fn parse_stable_semver_tag(tag: &str) -> Option<(u64, u64, u64)> {

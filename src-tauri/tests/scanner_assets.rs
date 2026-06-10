@@ -94,6 +94,10 @@ mod scanner_assets_under_test {
             }
         }
 
+        fn asset_with_checksum(file_name: String) -> Vec<String> {
+            vec![file_name.clone(), format!("{file_name}.sha256")]
+        }
+
         #[test]
         fn package_file_name_and_default_url_use_expected_tag_without_prefix() {
             let file_name = platform_package_file_name();
@@ -108,7 +112,7 @@ mod scanner_assets_under_test {
         }
 
         #[test]
-        fn release_target_selection_uses_latest_stable_platform_asset() {
+        fn release_target_selection_uses_first_suitable_platform_asset() {
             let v010 = platform_package_file_name_for_tag("v0.1.0");
             let v020 = platform_package_file_name_for_tag("v0.2.0");
             let v100 = platform_package_file_name_for_tag("v1.0.0");
@@ -117,7 +121,7 @@ mod scanner_assets_under_test {
                     "v0.2.0-rc.1",
                     false,
                     true,
-                    &[platform_package_file_name_for_tag("v0.2.0-rc.1")],
+                    &asset_with_checksum(platform_package_file_name_for_tag("v0.2.0-rc.1")),
                 ),
                 github_release("v1.0.0", true, false, &[v100]),
                 github_release(
@@ -126,8 +130,8 @@ mod scanner_assets_under_test {
                     false,
                     &[platform_package_file_name_for_tag("other")],
                 ),
-                github_release("v0.1.0", false, false, &[v010]),
-                github_release("v0.2.0", false, false, &[v020.clone()]),
+                github_release("v0.2.0", false, false, &asset_with_checksum(v020.clone())),
+                github_release("v0.1.0", false, false, &asset_with_checksum(v010)),
             ];
 
             let target = select_latest_release_target(&releases).unwrap();
@@ -141,25 +145,73 @@ mod scanner_assets_under_test {
         }
 
         #[test]
-        fn release_target_selection_handles_semver_ordering() {
+        fn release_target_selection_skips_newer_releases_without_ort_assets() {
+            let other_asset = "camera-server-v0.3.0.jar".to_string();
+            let ort_asset = platform_package_file_name_for_tag("v0.2.0");
             let releases = vec![
+                github_release("v0.3.0", false, false, &asset_with_checksum(other_asset)),
                 github_release(
-                    "v0.9.0",
+                    "v0.2.0",
                     false,
                     false,
-                    &[platform_package_file_name_for_tag("v0.9.0")],
-                ),
-                github_release(
-                    "v0.10.0",
-                    false,
-                    false,
-                    &[platform_package_file_name_for_tag("v0.10.0")],
+                    &asset_with_checksum(ort_asset.clone()),
                 ),
             ];
 
             let target = select_latest_release_target(&releases).unwrap();
 
-            assert_eq!(target.asset_tag, "v0.10.0");
+            assert_eq!(target.asset_tag, "v0.2.0");
+            assert_eq!(target.package_file_name, ort_asset);
+        }
+
+        #[test]
+        fn release_target_selection_allows_prerelease_release() {
+            let prerelease_asset = platform_package_file_name_for_tag("v0.3.0");
+            let stable_asset = platform_package_file_name_for_tag("v0.2.0");
+            let releases = vec![
+                github_release(
+                    "v0.3.0",
+                    false,
+                    true,
+                    &asset_with_checksum(prerelease_asset.clone()),
+                ),
+                github_release("v0.2.0", false, false, &asset_with_checksum(stable_asset)),
+            ];
+
+            let target = select_latest_release_target(&releases).unwrap();
+
+            assert_eq!(target.asset_tag, "v0.3.0");
+            assert_eq!(target.package_file_name, prerelease_asset);
+        }
+
+        #[test]
+        fn release_target_selection_requires_archive_checksum_sidecar() {
+            let file_name = platform_package_file_name_for_tag("v0.2.0");
+            let releases = vec![github_release("v0.2.0", false, false, &[file_name])];
+
+            assert!(select_latest_release_target(&releases).is_none());
+        }
+
+        #[test]
+        fn release_target_selection_uses_newest_first_release_order() {
+            let releases = vec![
+                github_release(
+                    "v0.9.0",
+                    false,
+                    false,
+                    &asset_with_checksum(platform_package_file_name_for_tag("v0.9.0")),
+                ),
+                github_release(
+                    "v0.10.0",
+                    false,
+                    false,
+                    &asset_with_checksum(platform_package_file_name_for_tag("v0.10.0")),
+                ),
+            ];
+
+            let target = select_latest_release_target(&releases).unwrap();
+
+            assert_eq!(target.asset_tag, "v0.9.0");
         }
 
         #[test]
