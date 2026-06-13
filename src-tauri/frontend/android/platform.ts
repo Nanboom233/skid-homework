@@ -27,6 +27,8 @@ export function PlatformCaptureActions(
   return null;
 }
 
-export { default as PlatformInitPage } from "@/components/init/MobileInitWizard";
-export { default as PlatformInitGuard } from "@/components/guards/RequireInit";
+export {PlatformRootShell} from "./PlatformRootShell";
+export {ImagePostProcessLoader, processImage} from "../shared/scan-enhance";
+export {default as PlatformInitPage} from "@/components/init/MobileInitWizard";
+export {default as PlatformInitGuard} from "@/components/guards/RequireInit";
 

@@ -1,8 +1,12 @@
 mod adb_plugin;
+mod scan_enhance;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .register_uri_scheme_protocol("skidhw", |_ctx, request| {
+            scan_enhance::handle_protocol(request)
+        })
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             adb_plugin::tauri_adb_list_devices,

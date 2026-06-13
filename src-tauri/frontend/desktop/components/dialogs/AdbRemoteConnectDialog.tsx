@@ -19,7 +19,7 @@ import {Tabs, TabsContent, TabsList, TabsTrigger} from "@/components/ui/tabs";
 
 const hasInput = (value: string) => value.trim().length > 0;
 
-export interface AdbRemoteConnectDialogProps {
+export type AdbRemoteConnectDialogProps = {
   isOpen: boolean;
   isSubmitting: boolean;
   onConnect: (address: string) => Promise<void> | void;
@@ -30,9 +30,9 @@ export interface AdbRemoteConnectDialogProps {
   }) => Promise<void> | void;
   onSelectDevice: (serial: string) => Promise<void> | void;
   selectedSerial?: string | null;
-}
+};
 
-export const AdbRemoteConnectDialog = ({
+export function AdbRemoteConnectDialog({
   isOpen,
   isSubmitting,
   onConnect,
@@ -40,7 +40,7 @@ export const AdbRemoteConnectDialog = ({
   onPair,
   onSelectDevice,
   selectedSerial,
-}: AdbRemoteConnectDialogProps) => {
+}: AdbRemoteConnectDialogProps): React.JSX.Element {
   const { t } = useTranslation("commons", {
     keyPrefix: "upload-area.adb.remote-dialog",
   });
@@ -270,4 +270,4 @@ export const AdbRemoteConnectDialog = ({
       </DialogContent>
     </Dialog>
   );
-};
+}

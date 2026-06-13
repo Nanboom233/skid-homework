@@ -83,6 +83,8 @@ export default function SettingsPage() {
   const setCustomFallbackSourceId = useAiStore((s) => s.setCustomFallbackSourceId);
 
   const {
+    imageEnhancement,
+    setImageEnhancement,
     onlineSearchEnabled,
     setOnlineSearchEnabled,
     showModelSelectorInScanPage,
@@ -707,6 +709,19 @@ export default function SettingsPage() {
             <CardDescription>{t("advanced.desc")}</CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-3">
+            <div className="flex items-center gap-3">
+              <Checkbox
+                id="image-enhancement"
+                checked={imageEnhancement}
+                onCheckedChange={(state) =>
+                  setImageEnhancement(state === true)
+                }
+              />
+              <Label htmlFor="image-enhancement">
+                {t("advanced.image-post-processing.enhancement")}
+              </Label>
+            </div>
+
             <div className="flex items-center gap-3">
               <Checkbox
                 id="devtools-enabled"

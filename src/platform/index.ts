@@ -20,6 +20,9 @@ export async function openExternalUrl(url: string): Promise<void> {
 }
 
 export {WebCaptureActions as PlatformCaptureActions} from "./WebCaptureActions";
+export {WebRootShell as PlatformRootShell} from "./WebRootShell";
+export {default as ImagePostProcessLoader} from "@/components/OpenCVLoader";
+export {processImage} from "@/utils/image-post-processing";
 
-export { default as PlatformInitPage } from "./WebInitPage";
-export { default as PlatformInitGuard } from "./WebInitGuard";
+export {default as PlatformInitPage} from "./WebInitPage";
+export {default as PlatformInitGuard} from "./WebInitGuard";

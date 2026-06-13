@@ -1,8 +1,7 @@
 import "../index.css";
 import type {Metadata, Viewport} from "next";
 import Providers from "./providers";
-import {TauriAwareSerwist} from "@/components/guards/tauri-aware-serwist";
-import {TauriLinkInterceptor} from "@/components/guards/tauri-link-interceptor";
+import {PlatformRootShell} from "@/platform";
 
 import "@/css/jsxgraph.css";
 
@@ -51,11 +50,9 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <body suppressHydrationWarning>
-        <TauriAwareSerwist>
-          <TauriLinkInterceptor>
-            <Providers>{children}</Providers>
-          </TauriLinkInterceptor>
-        </TauriAwareSerwist>
+        <PlatformRootShell>
+          <Providers>{children}</Providers>
+        </PlatformRootShell>
       </body>
     </html>
   );

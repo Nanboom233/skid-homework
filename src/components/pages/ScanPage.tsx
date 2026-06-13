@@ -15,6 +15,7 @@ import {parseSolveResponse} from "@/ai/response";
 import {type FileItem, type ProblemSolution, useProblemsStore} from "@/store/problems-store";
 import SolutionsArea from "../solutions/SolutionsArea";
 import {useSettingsStore} from "@/store/settings-store";
+import {ImagePostProcessLoader, processImage} from "@/platform";
 
 import {Button} from "../ui/button";
 import {useTranslation} from "react-i18next";
@@ -38,6 +39,7 @@ export default function ScanPage() {
     addFileItems,
     updateItemStatus,
     removeImageItem,
+    updateFileItem,
     clearAllItems,
     setSelectedProblem,
     addSolution,
@@ -49,7 +51,7 @@ export default function ScanPage() {
   } = useProblemsStore((s) => s);
   const isStoreReady = useStoreInitialization();
 
-  const { traits, onlineSearchEnabled } = useSettingsStore(
+  const { imageEnhancement, traits, onlineSearchEnabled } = useSettingsStore(
     (s) => s
   );
 
@@ -161,12 +163,41 @@ export default function ScanPage() {
         mimeType: file.type,
         url: URL.createObjectURL(file),
         source,
-        status: "pending",
+        status:
+          file.type.startsWith("image/") && imageEnhancement
+            ? "processing"
+            : "pending",
       }));
 
       addFileItems(initialItems);
+
+      if (imageEnhancement) {
+        initialItems.forEach((item) => {
+          if (item.status !== "processing") {
+            return;
+          }
+
+          void processImage(item.file)
+            .then((result) => {
+              URL.revokeObjectURL(item.url);
+              updateFileItem(item.id, {
+                status: "pending",
+                file: result.file,
+                displayName: result.file.name,
+                mimeType: result.file.type,
+                url: result.url,
+              });
+            })
+            .catch((error) => {
+              console.error(`Failed to enhance ${item.displayName}:`, error);
+              updateFileItem(item.id, {
+                status: "failed",
+              });
+            });
+        });
+      }
     },
-    [addFileItems, allowPdfUploads, t]
+    [addFileItems, allowPdfUploads, imageEnhancement, t, updateFileItem]
   );
 
   // Function to remove a specific item from the list by its ID.
@@ -513,6 +544,7 @@ ${traits}
 
   return (
     <>
+      {imageEnhancement && <ImagePostProcessLoader />}
 
 
       <div className={cn("min-h-screen", isMobile && "pb-24")}>

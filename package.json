@@ -23,7 +23,7 @@
     "tauri:android:release": "node scripts/gen-keystore-props.cjs && dotenv -- tauri android build"
   },
   "lint-staged": {
-    "*.{js,jsx,ts,tsx}": [
+    "{src,src-tauri/frontend}/**/*.{js,jsx,ts,tsx}": [
       "eslint --fix"
     ]
   },

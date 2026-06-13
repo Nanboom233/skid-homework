@@ -31,6 +31,9 @@ const DEFAULT_SHORTCUTS: ShortcutMap = {
 const DEFAULT_LANGUAGE: LanguagePreference = "en";
 
 export interface SettingsState {
+  imageEnhancement: boolean;
+  setImageEnhancement: (imageEnhancement: boolean) => void;
+
   theme: ThemePreference;
   setThemePreference: (theme: ThemePreference) => void;
 
@@ -67,6 +70,7 @@ export interface SettingsState {
 export const useSettingsStore = create<SettingsState>()(
   persist(
     (set) => ({
+      imageEnhancement: false,
       theme: "system",
       language: DEFAULT_LANGUAGE,
       languageInitialized: false,
@@ -79,6 +83,7 @@ export const useSettingsStore = create<SettingsState>()(
       showModelSelectorInScanPage: false,
       showOnlineSearchInScanPage: false,
 
+      setImageEnhancement: (imageEnhancement) => set({ imageEnhancement }),
       setThemePreference: (theme) => set({ theme }),
       setLanguage: (language) =>
         set({
@@ -120,6 +125,7 @@ export const useSettingsStore = create<SettingsState>()(
       name: "skidhw-storage",
       storage: createJSONStorage(() => localStorage),
       partialize: (state) => ({
+        imageEnhancement: state.imageEnhancement,
         theme: state.theme,
         language: state.language,
         languageInitialized: state.languageInitialized,
@@ -166,6 +172,9 @@ export const useSettingsStore = create<SettingsState>()(
           onlineSearchEnabled:
             (data as { onlineSearchEnabled?: boolean }).onlineSearchEnabled ??
             false,
+          imageEnhancement:
+            (data as { imageEnhancement?: boolean }).imageEnhancement ??
+            false,
           showModelSelectorInScanPage:
             (data as { showModelSelectorInScanPage?: boolean })
               .showModelSelectorInScanPage ??
@@ -183,7 +192,6 @@ export const useSettingsStore = create<SettingsState>()(
         };
 
         delete (migratedData as Record<string, unknown>).devtools;
-        delete (migratedData as Record<string, unknown>).imageEnhancement;
         delete (migratedData as Record<string, unknown>)
           .showModelSelectorInScanner;
         delete (migratedData as Record<string, unknown>)

@@ -2,8 +2,20 @@
 from pathlib import Path
 
 
-IMPORT_LINE = "import java.util.Properties"
-SIGNING_SNIPPET = """\
+def main() -> None:
+    build_gradle_path = Path("src-tauri/gen/android/app/build.gradle.kts")
+    if not build_gradle_path.exists():
+        raise SystemExit(f"Missing Android Gradle file: {build_gradle_path}")
+
+    build_gradle = build_gradle_path.read_text(encoding="utf-8")
+
+    # Add the generated keystore.properties loader once.
+    import_line = "import java.util.Properties"
+    if import_line not in build_gradle:
+        build_gradle = f"{import_line}\n{build_gradle}"
+
+    # Inject the release signing config into Tauri's generated Android project.
+    signing_snippet = """\
 
 val keystorePropertiesFile = rootProject.file("keystore.properties")
 val keystoreProperties = Properties()
@@ -23,54 +35,29 @@ android {
     }
 }
 """
-RELEASE_SIGNING_LINE = '            signingConfig = signingConfigs.getByName("release")'
-RELEASE_MARKERS = (
-    '        getByName("release") {',
-    '        named("release") {',
-    "        release {",
-)
+    if 'keystorePropertiesFile = rootProject.file("keystore.properties")' not in build_gradle:
+        marker = "android {"
+        index = build_gradle.find(marker)
+        if index == -1:
+            raise SystemExit("Unable to find android block in Android build.gradle.kts")
 
+        build_gradle = build_gradle[:index] + signing_snippet + "\n" + build_gradle[index:]
 
-def ensure_import(build_gradle: str) -> str:
-    if IMPORT_LINE in build_gradle:
-        return build_gradle
+    # Attach the signing config to whichever release buildType shape Gradle generated.
+    release_signing_line = '            signingConfig = signingConfigs.getByName("release")'
+    if release_signing_line not in build_gradle:
+        for release_marker in (
+            '        getByName("release") {',
+            '        named("release") {',
+            "        release {",
+        ):
+            if release_marker in build_gradle:
+                replacement = f"{release_marker}\n{release_signing_line}"
+                build_gradle = build_gradle.replace(release_marker, replacement, 1)
+                break
+        else:
+            raise SystemExit("Unable to find release buildType block in Android build.gradle.kts")
 
-    return f"{IMPORT_LINE}\n{build_gradle}"
-
-
-def ensure_signing_block(build_gradle: str) -> str:
-    if 'keystorePropertiesFile = rootProject.file("keystore.properties")' in build_gradle:
-        return build_gradle
-
-    marker = "android {"
-    index = build_gradle.find(marker)
-    if index == -1:
-        raise SystemExit("Unable to find android block in Android build.gradle.kts")
-
-    return build_gradle[:index] + SIGNING_SNIPPET + "\n" + build_gradle[index:]
-
-
-def ensure_release_build_type(build_gradle: str) -> str:
-    if RELEASE_SIGNING_LINE in build_gradle:
-        return build_gradle
-
-    for release_marker in RELEASE_MARKERS:
-        if release_marker in build_gradle:
-            replacement = f'{release_marker}\n{RELEASE_SIGNING_LINE}'
-            return build_gradle.replace(release_marker, replacement, 1)
-
-    raise SystemExit("Unable to find release buildType block in Android build.gradle.kts")
-
-
-def main() -> None:
-    build_gradle_path = Path("src-tauri/gen/android/app/build.gradle.kts")
-    if not build_gradle_path.exists():
-        raise SystemExit(f"Missing Android Gradle file: {build_gradle_path}")
-
-    build_gradle = build_gradle_path.read_text(encoding="utf-8")
-    build_gradle = ensure_import(build_gradle)
-    build_gradle = ensure_signing_block(build_gradle)
-    build_gradle = ensure_release_build_type(build_gradle)
     build_gradle_path.write_text(build_gradle, encoding="utf-8")
 
 

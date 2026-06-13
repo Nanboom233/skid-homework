@@ -226,16 +226,58 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf pkg-config libopencv-dev
+
+      - name: Install macOS system dependencies
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install opencv pkgconf
+
+          opencv_prefix="$(brew --prefix opencv)"
+          brew_prefix="$(brew --prefix)"
+          echo "PKG_CONFIG_PATH=${opencv_prefix}/lib/pkgconfig:${brew_prefix}/lib/pkgconfig:${PKG_CONFIG_PATH:-}" >> "$GITHUB_ENV"
+
+      - name: Install Windows OpenCV SDK
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $opencvVersion = "4.10.0"
+          $archive = Join-Path $env:RUNNER_TEMP "opencv-$opencvVersion-windows.exe"
+          $extractRoot = Join-Path $env:RUNNER_TEMP "opencv-windows"
+          $downloadUrl = "https://github.com/opencv/opencv/releases/download/$opencvVersion/opencv-$opencvVersion-windows.exe"
+
+          Invoke-WebRequest -Uri $downloadUrl -OutFile $archive
+          & $archive "-o$extractRoot" -y
+          if ($LASTEXITCODE -ne 0) {
+            throw "OpenCV Windows SDK extraction failed with exit code $LASTEXITCODE"
+          }
+
+          $opencvRoot = Join-Path $extractRoot "opencv\build"
+          $opencvLib = Join-Path $opencvRoot "x64\vc16\lib\opencv_world4100.lib"
+          if (-not (Test-Path $opencvLib)) {
+            throw "OpenCV Windows library not found at $opencvLib"
+          }
+
+          "OPENCV_WINDOWS_SDK_DIR=$opencvRoot" | Out-File -FilePath $env:GITHUB_ENV -Append
+          (Join-Path $opencvRoot "x64\vc16\bin") | Out-File -FilePath $env:GITHUB_PATH -Append
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Apply release version
-        run: python .github/scripts/set_release_version.py ${{ needs.prepare-release.outputs.version_name }}
-
       - name: Build desktop bundles
-        run: pnpm tauri build --ci --no-sign ${{ matrix.build_args }}
+        shell: bash
+        env:
+          VERSION_NAME: ${{ needs.prepare-release.outputs.version_name }}
+        run: |
+          set -euo pipefail
+
+          release_config="$(printf '{"version":"%s"}' "$VERSION_NAME")"
+          # Keep source manifests unchanged; Tauri merges this release version only for the current build.
+          pnpm tauri build --ci --no-sign --config "$release_config" ${{ matrix.build_args }}
 
       - name: Collect desktop artifacts
         run: python .github/scripts/collect_tauri_artifacts.py --platform-id ${{ matrix.platform_id }} --output-dir release-assets
@@ -307,11 +349,29 @@ jobs:
           echo "NDK_HOME=${selected_ndk}" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_HOME=${selected_ndk}" >> "$GITHUB_ENV"
 
+      - name: Install Android OpenCV SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          opencv_version="4.10.0"
+          archive="${RUNNER_TEMP}/opencv-${opencv_version}-android-sdk.zip"
+          extract_root="${RUNNER_TEMP}/opencv-android"
+          download_url="https://github.com/opencv/opencv/releases/download/${opencv_version}/opencv-${opencv_version}-android-sdk.zip"
+
+          curl -fsSL "$download_url" -o "$archive"
+          unzip -q "$archive" -d "$extract_root"
+
+          sdk_dir="${extract_root}/OpenCV-android-sdk"
+          if [ ! -d "${sdk_dir}/sdk/native" ]; then
+            echo "OpenCV Android SDK not found under ${sdk_dir}" >&2
+            exit 1
+          fi
+
+          echo "OPENCV_ANDROID_SDK_DIR=${sdk_dir}" >> "$GITHUB_ENV"
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-
-      - name: Apply release version
-        run: python .github/scripts/set_release_version.py ${{ needs.prepare-release.outputs.version_name }}
 
       - name: Initialize Android target
         run: pnpm tauri android init --ci --skip-targets-install
@@ -339,7 +399,15 @@ jobs:
           python .github/scripts/configure_android_signing.py
 
       - name: Build Android bundles
-        run: pnpm tauri android build --apk --aab --ci
+        shell: bash
+        env:
+          VERSION_NAME: ${{ needs.prepare-release.outputs.version_name }}
+        run: |
+          set -euo pipefail
+
+          release_config="$(printf '{"version":"%s"}' "$VERSION_NAME")"
+          # Keep source manifests unchanged; Tauri merges this release version only for the current build.
+          pnpm tauri android build --apk --aab --ci --config "$release_config"
 
       - name: Collect Android artifacts
         run: python .github/scripts/collect_tauri_artifacts.py --platform-id android --output-dir release-assets

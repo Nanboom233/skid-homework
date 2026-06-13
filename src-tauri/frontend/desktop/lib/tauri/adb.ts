@@ -1,22 +1,22 @@
 import {isTauri} from "./platform";
 
-export interface TauriAdbDevice {
+export type TauriAdbDevice = {
   serial: string;
   name: string;
   state: string;
-}
+};
 
-export interface TauriAdbConnectResult {
+export type TauriAdbConnectResult = {
   serial: string;
   message: string;
-}
+};
 
-export interface TauriAdbPairRequest {
+export type TauriAdbPairRequest = {
   address: string;
   pairingCode: string;
-}
+};
 
-type TauriRawChannelPayload = string | ArrayBuffer | Uint8Array | number[];
+type TauriRawChannelPayload = ArrayBuffer | Uint8Array | number[];
 
 const invokeTauriCommand = async <T>(
   command: string,
@@ -30,23 +30,7 @@ const invokeTauriCommand = async <T>(
   return await invoke<T>(command, payload);
 };
 
-const decodeBase64ToUint8Array = (base64: string): Uint8Array => {
-  const normalized = base64.replace(/\s+/g, "");
-  const binary = atob(normalized);
-  const bytes = new Uint8Array(binary.length);
-
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
-  }
-
-  return bytes;
-};
-
 const normalizeTauriRawChannelPayload = (payload: TauriRawChannelPayload): Uint8Array => {
-  if (typeof payload === "string") {
-    return decodeBase64ToUint8Array(payload);
-  }
-
   if (payload instanceof ArrayBuffer) {
     return new Uint8Array(payload);
   }

@@ -529,6 +529,10 @@
         "placeholder": "https://example.com/v1",
         "helper": "留空将使用 {{provider}} 的默认地址。"
       },
+      "image-post-processing": {
+        "title": "图像后处理",
+        "enhancement": "开启二值化"
+      },
       "ui": {
         "title": "界面",
         "clear-dialog-on-submit": "提交后清空输入框"
