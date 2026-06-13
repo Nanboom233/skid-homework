@@ -128,6 +128,20 @@ The workflow automatically:
 - generates a project-specific GitHub Release markdown page;
 - collects the platform artifacts and publishes them in a single GitHub Release.
 
+You can also append an automatic release marker to a commit on the default
+branch `main`:
+
+- `[release major]` / `[release minor]` / `[release patch]`
+- `[pre-release major]` / `[pre-release minor]` / `[pre-release patch]`
+
+Markers must match these lowercase forms exactly and appear at the end of the
+commit message.
+
+If the release target commit changes `.github/workflows/`, also configure
+`WORKFLOW_GIT_TOKEN`. The token needs repository contents write permission and
+workflow permission so GitHub Actions can create the release tag safely for
+workflow-changing commits.
+
 If you want signed Android release builds in CI, configure these repository secrets:
 
 - `ANDROID_KEYSTORE_BASE64`

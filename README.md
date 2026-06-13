@@ -278,6 +278,15 @@ pnpx i18next-cli types
 - 生成适合本项目的 GitHub Release Markdown 页面；
 - 汇总各平台构建产物并上传到同一个 Release。
 
+也可以在默认分支 `main` 的提交信息末尾追加自动发布标记：
+
+- `[release major]` / `[release minor]` / `[release patch]`
+- `[pre-release major]` / `[pre-release minor]` / `[pre-release patch]`
+
+标记必须完全匹配以上小写格式，并位于提交信息末尾。
+
+如果发布目标提交修改了 `.github/workflows/`，请额外配置 `WORKFLOW_GIT_TOKEN`。该 token 需要具备仓库内容写入权限和 workflow 权限，用于 GitHub Actions 在 workflow 变更提交上安全地创建发布 tag。
+
 如果需要为 Android Release 构建启用签名，请配置以下仓库 Secrets：
 
 - `ANDROID_KEYSTORE_BASE64`
