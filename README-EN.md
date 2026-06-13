@@ -56,7 +56,7 @@ You need to request a Gemini API key for AI usage.
 You have two local-only options:
 
 - Web: use ADB screenshot via WebUSB in a supported browser.
-- Tauri desktop: use Android Wireless debugging with native Remote ADB pair/connect.
+- Tauri desktop: use Android wireless debugging with native Remote ADB pair/connect.
 
 You can also try [SkidCamera](https://github.com/996-ai/SkidCamera)
 and follow the guide in the SkidCamera README.

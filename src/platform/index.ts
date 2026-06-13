@@ -1,7 +1,7 @@
 import type {
   AppTarget,
   PlatformCaptureActionsProps,
-} from "../../src-tauri/frontend/shared/platform-types";
+} from "./platform-types";
 
 export type {AppTarget, PlatformCaptureActionsProps};
 

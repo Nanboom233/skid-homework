@@ -1,4 +1,8 @@
-const ENHANCE_SCAN_ENDPOINT = "skidhw://localhost/enhance_scan";
+export const ENHANCE_SCAN_PROTOCOL = "skidhw";
+export const ENHANCE_SCAN_HOST = "localhost";
+export const ENHANCE_SCAN_PATH = "/enhance_scan";
+export const ENHANCE_SCAN_ENDPOINT =
+  `${ENHANCE_SCAN_PROTOCOL}://${ENHANCE_SCAN_HOST}${ENHANCE_SCAN_PATH}`;
 
 export function ImagePostProcessLoader(): React.JSX.Element | null {
   return null;

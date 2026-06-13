@@ -6,7 +6,7 @@ import {useCallback, useEffect, useState} from "react";
 import {useTranslation} from "react-i18next";
 import {toast} from "sonner";
 
-import type {PlatformCaptureActionsProps} from "../../shared/platform-types";
+import type {PlatformCaptureActionsProps} from "../../../../src/platform/platform-types";
 import {ShortcutHint} from "@/components/ShortcutHint";
 import {Button} from "@/components/ui/button";
 import {
@@ -16,7 +16,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {useShortcut} from "@/hooks/use-shortcut";
-import {TimeoutError, withTimeout} from "@/utils/timeout";
+import {useAdbCaptureActions} from "../../../../src/platform/use-adb-capture-actions";
 import {AdbRemoteConnectDialog} from "./dialogs/AdbRemoteConnectDialog";
 import {
   captureAdbScreenshot,
@@ -34,36 +34,31 @@ export function DesktopCaptureActions({
   isCompact,
 }: PlatformCaptureActionsProps): React.JSX.Element | null {
   const {t} = useTranslation("commons", {keyPrefix: "upload-area"});
-  const [adbBusy, setAdbBusy] = useState(false);
-  const [adbBusyMode, setAdbBusyMode] = useState<"connect" | "capture" | null>(
-    null,
-  );
   const [adbConnected, setAdbConnected] = useState(false);
   const [adbRemoteDialogOpen, setAdbRemoteDialogOpen] = useState(false);
   const [selectedAdbSerial, setSelectedAdbSerial] = useState<string | null>(
     null,
   );
-
-  const isDisabled = disabled || adbBusy;
-
-  const handleAdbError = useCallback(
-    (error: unknown) => {
-      if (error instanceof UnsupportedEnvironmentError) {
-        toast.error(t("toasts.webusb-not-supported"));
-        return;
-      }
-
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      toast.error(t("toasts.adb-failed", {error: errorMessage}));
-    },
-    [t],
-  );
+  const {
+    adbBusy,
+    adbBusyMode,
+    captureAdbScreenshot: captureWithAdbState,
+    isDisabled,
+    runAdbAction,
+  } = useAdbCaptureActions({
+    appendFiles,
+    disabled,
+    onUnsupportedEnvironment: (error) =>
+      error instanceof UnsupportedEnvironmentError,
+  });
 
   const refreshAdbStatus = useCallback(async (): Promise<boolean> => {
     try {
       const connected = await isAdbDeviceConnected();
       setAdbConnected(connected);
-      setSelectedAdbSerial(connected ? getSelectedDesktopAdbSerial() ?? null : null);
+      setSelectedAdbSerial(
+        connected ? getSelectedDesktopAdbSerial() ?? null : null,
+      );
       return connected;
     } catch (error) {
       console.error("ADB status check failed", error);
@@ -112,81 +107,43 @@ export function DesktopCaptureActions({
       return;
     }
 
-    try {
-      setAdbBusy(true);
-      setAdbBusyMode("capture");
-      const file = await withTimeout(captureAdbScreenshot(), 5_000);
-      appendFiles([file], "adb");
-    } catch (err) {
-      if (err instanceof TimeoutError) {
-        toast.error(t("adb.capture-timeout"));
-      } else {
-        handleAdbError(err);
-      }
-    } finally {
-      setAdbBusy(false);
-      setAdbBusyMode(null);
-    }
-  }, [appendFiles, handleAdbError, isDisabled, refreshAdbStatus, t]);
+    await captureWithAdbState(captureAdbScreenshot);
+  }, [captureWithAdbState, isDisabled, refreshAdbStatus]);
 
   const handleTauriRemoteConnect = useCallback(
     async (address: string) => {
-      if (isDisabled) return;
-      try {
-        setAdbBusy(true);
-        setAdbBusyMode("connect");
+      await runAdbAction("connect", async () => {
         const serial = await connectRemoteAdbDevice(address);
         setAdbConnected(true);
         setSelectedAdbSerial(serial);
         setAdbRemoteDialogOpen(false);
         toast.success(t("adb.connected", {serial}));
-      } catch (error) {
-        handleAdbError(error);
-      } finally {
-        setAdbBusy(false);
-        setAdbBusyMode(null);
-      }
+      });
     },
-    [handleAdbError, isDisabled, t],
+    [runAdbAction, t],
   );
 
   const handleTauriPairAndConnect = useCallback(
     async (request: {pairingAddress: string; pairingCode: string}) => {
-      if (isDisabled) return;
-      try {
-        setAdbBusy(true);
-        setAdbBusyMode("connect");
+      await runAdbAction("connect", async () => {
         await pairRemoteAdbDevice(request);
         toast.success(t("adb.paired"));
-      } catch (error) {
-        handleAdbError(error);
-      } finally {
-        setAdbBusy(false);
-        setAdbBusyMode(null);
-      }
+      });
     },
-    [handleAdbError, isDisabled, t],
+    [runAdbAction, t],
   );
 
   const handleTauriDeviceSelect = useCallback(
     async (serial: string) => {
-      if (isDisabled) return;
-      try {
-        setAdbBusy(true);
-        setAdbBusyMode("connect");
+      await runAdbAction("connect", async () => {
         const selectedSerial = await selectDesktopAdbDevice(serial);
         setAdbConnected(true);
         setSelectedAdbSerial(selectedSerial);
         setAdbRemoteDialogOpen(false);
         toast.success(t("adb.connected", {serial: selectedSerial}));
-      } catch (error) {
-        handleAdbError(error);
-      } finally {
-        setAdbBusy(false);
-        setAdbBusyMode(null);
-      }
+      });
     },
-    [handleAdbError, isDisabled, t],
+    [runAdbAction, t],
   );
 
   const adbScreenshotShortcut = useShortcut(

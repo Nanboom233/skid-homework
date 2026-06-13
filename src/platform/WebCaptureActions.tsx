@@ -4,8 +4,7 @@ import Image from "next/image";
 import {MoreVertical} from "lucide-react";
 import {useCallback, useEffect, useState} from "react";
 import {useTranslation} from "react-i18next";
-import {toast} from "sonner";
-import type {PlatformCaptureActionsProps} from "../../src-tauri/frontend/shared/platform-types";
+import type {PlatformCaptureActionsProps} from "./platform-types";
 import {ShortcutHint} from "@/components/ShortcutHint";
 import {Button} from "@/components/ui/button";
 import {
@@ -15,7 +14,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {useShortcut} from "@/hooks/use-shortcut";
-import {TimeoutError, withTimeout} from "@/utils/timeout";
+import {useAdbCaptureActions} from "./use-adb-capture-actions";
 import {UnsupportedEnvironmentError} from "./webadb/manager";
 import {
   captureAdbScreenshot,
@@ -29,26 +28,19 @@ export function WebCaptureActions({
   isCompact,
 }: PlatformCaptureActionsProps): React.JSX.Element | null {
   const {t} = useTranslation("commons", {keyPrefix: "upload-area"});
-  const [adbBusy, setAdbBusy] = useState(false);
-  const [adbBusyMode, setAdbBusyMode] = useState<"connect" | "capture" | null>(
-    null,
-  );
   const [adbConnected, setAdbConnected] = useState(false);
-
-  const isDisabled = disabled || adbBusy;
-
-  const handleAdbError = useCallback(
-    (error: unknown) => {
-      if (error instanceof UnsupportedEnvironmentError) {
-        toast.error(t("toasts.webusb-not-supported"));
-        return;
-      }
-
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      toast.error(t("toasts.adb-failed", {error: errorMessage}));
-    },
-    [t],
-  );
+  const {
+    adbBusy,
+    adbBusyMode,
+    captureAdbScreenshot: captureWithAdbState,
+    isDisabled,
+    runAdbAction,
+  } = useAdbCaptureActions({
+    appendFiles,
+    disabled,
+    onUnsupportedEnvironment: (error) =>
+      error instanceof UnsupportedEnvironmentError,
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -102,46 +94,30 @@ export function WebCaptureActions({
   }, []);
 
   const handleAdbReconnect = useCallback(async () => {
-    if (isDisabled) return;
-
-    try {
-      setAdbBusy(true);
-      setAdbBusyMode("connect");
+    await runAdbAction("connect", async () => {
       const ok = await reconnectAdbDevice();
       setAdbConnected(ok);
-    } catch (error) {
-      handleAdbError(error);
-    } finally {
-      setAdbBusy(false);
-      setAdbBusyMode(null);
-    }
-  }, [handleAdbError, isDisabled]);
+    });
+  }, [runAdbAction]);
 
   const handleAdbBtnClicked = useCallback(async () => {
     if (isDisabled) return;
 
-    try {
-      setAdbBusy(true);
-      if (!adbConnected) {
-        setAdbBusyMode("connect");
+    if (!adbConnected) {
+      await runAdbAction("connect", async () => {
         const ok = await reconnectAdbDevice();
         setAdbConnected(ok);
-      } else {
-        setAdbBusyMode("capture");
-        const file = await withTimeout(captureAdbScreenshot(), 5_000);
-        appendFiles([file], "adb");
-      }
-    } catch (error) {
-      if (error instanceof TimeoutError) {
-        toast.error(t("adb.capture-timeout"));
-      } else {
-        handleAdbError(error);
-      }
-    } finally {
-      setAdbBusy(false);
-      setAdbBusyMode(null);
+      });
+      return;
     }
-  }, [adbConnected, appendFiles, handleAdbError, isDisabled, t]);
+
+    await captureWithAdbState(captureAdbScreenshot);
+  }, [
+    adbConnected,
+    captureWithAdbState,
+    isDisabled,
+    runAdbAction,
+  ]);
 
   const adbScreenshotShortcut = useShortcut(
     "adbScreenshot",
