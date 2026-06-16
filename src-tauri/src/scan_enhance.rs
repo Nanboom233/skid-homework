@@ -1,44 +1,36 @@
-use std::{ptr, slice};
+use std::io::Cursor;
 
+use image::{GrayImage, ImageReader, Luma};
+use imageproc::contrast::otsu_level;
+use imageproc::filter::gaussian_blur_f32;
 use tauri::http::{header, Method, Request, Response, StatusCode};
 use thiserror::Error;
 
-const ENHANCE_SCAN_PATH: &str = "/enhance_scan";
-const NATIVE_STATUS_OK: i32 = 0;
-const NATIVE_STATUS_EMPTY_INPUT: i32 = 1;
-const NATIVE_STATUS_INVALID_IMAGE: i32 = 2;
-const NATIVE_STATUS_PROCESSING_FAILED: i32 = 3;
-const NATIVE_STATUS_PNG_ENCODE_FAILED: i32 = 4;
-const NATIVE_STATUS_OUT_OF_MEMORY: i32 = 5;
+pub const ENHANCE_SCAN_PATH: &str = "/enhance_scan";
 
-extern "C" {
-    fn skid_enhance_scan(
-        input: *const u8,
-        input_len: usize,
-        output: *mut *mut u8,
-        output_len: *mut usize,
-    ) -> i32;
-    fn skid_enhance_scan_free(ptr: *mut u8);
-}
+const MAX_IMAGE_BYTES: usize = 100 * 1024 * 1024;
+const MAX_IMAGE_PIXELS: u64 = 50_000_000;
 
-#[derive(Debug, Error)]
+#[derive(Debug, Error, PartialEq, Eq)]
 pub enum ScanEnhanceError {
     #[error("Image enhancement request body is empty.")]
     EmptyInput,
     #[error("Image enhancement request body is not a supported image.")]
     InvalidImage,
-    #[error("OpenCV scan enhancement failed.")]
+    #[error("Image enhancement input is too large.")]
+    InputTooLarge,
+    #[error("Image enhancement failed.")]
     ProcessingFailed,
-    #[error("OpenCV scan enhancement failed to encode PNG output.")]
+    #[error("Image enhancement failed to encode PNG output.")]
     PngEncodeFailed,
-    #[error("OpenCV scan enhancement ran out of memory.")]
+    #[error("Image enhancement ran out of memory.")]
     OutOfMemory,
 }
 
 impl ScanEnhanceError {
     fn status_code(&self) -> StatusCode {
         match self {
-            Self::EmptyInput | Self::InvalidImage => StatusCode::BAD_REQUEST,
+            Self::EmptyInput | Self::InvalidImage | Self::InputTooLarge => StatusCode::BAD_REQUEST,
             Self::ProcessingFailed | Self::PngEncodeFailed | Self::OutOfMemory => {
                 StatusCode::INTERNAL_SERVER_ERROR
             }
@@ -47,44 +39,113 @@ impl ScanEnhanceError {
 }
 
 pub fn enhance_scan(source_bytes: &[u8]) -> Result<Vec<u8>, ScanEnhanceError> {
-    if source_bytes.is_empty() {
+    let decoded = decode_image_with_limits(source_bytes)?;
+    let grayscale = decoded.to_luma8();
+    let background_sigma = compute_background_sigma(grayscale.width(), grayscale.height());
+    let background = gaussian_blur_f32(&grayscale, background_sigma);
+    let flattened = flatten_background(&grayscale, &background);
+    let denoised = gaussian_blur_f32(&flattened, 0.8);
+    let normalized = normalize_gray(&denoised);
+    let threshold = otsu_level(&normalized);
+    let binary = threshold_to_binary(&normalized, threshold);
+
+    encode_png_grayscale(&binary)
+}
+
+fn decode_image_with_limits(bytes: &[u8]) -> Result<image::DynamicImage, ScanEnhanceError> {
+    if bytes.is_empty() {
         return Err(ScanEnhanceError::EmptyInput);
     }
 
-    let mut output = ptr::null_mut();
-    let mut output_len = 0usize;
-    let status = unsafe {
-        skid_enhance_scan(
-            source_bytes.as_ptr(),
-            source_bytes.len(),
-            &mut output,
-            &mut output_len,
-        )
-    };
-
-    if status != NATIVE_STATUS_OK {
-        if !output.is_null() {
-            unsafe { skid_enhance_scan_free(output) };
-        }
-        return match status {
-            NATIVE_STATUS_EMPTY_INPUT => Err(ScanEnhanceError::EmptyInput),
-            NATIVE_STATUS_INVALID_IMAGE => Err(ScanEnhanceError::InvalidImage),
-            NATIVE_STATUS_PNG_ENCODE_FAILED => Err(ScanEnhanceError::PngEncodeFailed),
-            NATIVE_STATUS_OUT_OF_MEMORY => Err(ScanEnhanceError::OutOfMemory),
-            NATIVE_STATUS_PROCESSING_FAILED => Err(ScanEnhanceError::ProcessingFailed),
-            _ => Err(ScanEnhanceError::ProcessingFailed),
-        };
+    if bytes.len() > MAX_IMAGE_BYTES {
+        return Err(ScanEnhanceError::InputTooLarge);
     }
 
-    if output.is_null() || output_len == 0 {
-        if !output.is_null() {
-            unsafe { skid_enhance_scan_free(output) };
+    if let Ok(reader) = ImageReader::new(Cursor::new(bytes)).with_guessed_format() {
+        if let Ok((width, height)) = reader.into_dimensions() {
+            validate_pixel_count(width, height)?;
         }
-        return Err(ScanEnhanceError::PngEncodeFailed);
     }
 
-    let bytes = unsafe { slice::from_raw_parts(output, output_len).to_vec() };
-    unsafe { skid_enhance_scan_free(output) };
+    let decoded = image::load_from_memory(bytes).map_err(|_| ScanEnhanceError::InvalidImage)?;
+    validate_pixel_count(decoded.width(), decoded.height())?;
+    Ok(decoded)
+}
+
+fn validate_pixel_count(width: u32, height: u32) -> Result<(), ScanEnhanceError> {
+    let pixels = u64::from(width) * u64::from(height);
+    if pixels == 0 || pixels > MAX_IMAGE_PIXELS {
+        return Err(ScanEnhanceError::InputTooLarge);
+    }
+    Ok(())
+}
+
+fn compute_background_sigma(width: u32, height: u32) -> f32 {
+    let shortest_side = width.min(height) as f32;
+    (shortest_side * 0.08).clamp(5.0, 80.0)
+}
+
+fn flatten_background(grayscale: &GrayImage, background: &GrayImage) -> GrayImage {
+    let mut output = GrayImage::new(grayscale.width(), grayscale.height());
+
+    for y in 0..grayscale.height() {
+        for x in 0..grayscale.width() {
+            let luminance = grayscale.get_pixel(x, y).0[0] as f32;
+            let background_luminance = (background.get_pixel(x, y).0[0] as f32).max(1.0);
+            let value = ((luminance / background_luminance) * 255.0).clamp(0.0, 255.0) as u8;
+            output.put_pixel(x, y, Luma([value]));
+        }
+    }
+
+    output
+}
+
+fn normalize_gray(input: &GrayImage) -> GrayImage {
+    let mut min_value = u8::MAX;
+    let mut max_value = u8::MIN;
+
+    for pixel in input.pixels() {
+        let value = pixel.0[0];
+        min_value = min_value.min(value);
+        max_value = max_value.max(value);
+    }
+
+    let range = max_value.saturating_sub(min_value).max(1) as f32;
+    let mut output = GrayImage::new(input.width(), input.height());
+
+    for (x, y, pixel) in input.enumerate_pixels() {
+        let normalized =
+            (((pixel.0[0].saturating_sub(min_value)) as f32) * 255.0 / range).round() as u8;
+        output.put_pixel(x, y, Luma([normalized]));
+    }
+
+    output
+}
+
+fn threshold_to_binary(input: &GrayImage, threshold: u8) -> GrayImage {
+    let mut output = GrayImage::new(input.width(), input.height());
+
+    for (x, y, pixel) in input.enumerate_pixels() {
+        let value = if pixel.0[0] > threshold { 255 } else { 0 };
+        output.put_pixel(x, y, Luma([value]));
+    }
+
+    output
+}
+
+fn encode_png_grayscale(image: &GrayImage) -> Result<Vec<u8>, ScanEnhanceError> {
+    let mut bytes = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut bytes, image.width(), image.height());
+        encoder.set_color(png::ColorType::Grayscale);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder
+            .write_header()
+            .map_err(|_| ScanEnhanceError::PngEncodeFailed)?;
+        writer
+            .write_image_data(image.as_raw())
+            .map_err(|_| ScanEnhanceError::PngEncodeFailed)?;
+    }
     Ok(bytes)
 }
 

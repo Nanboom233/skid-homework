@@ -29,8 +29,6 @@ opt-level = 3
 debug = 0
 
 [build-dependencies]
-cc = "1"
-pkg-config = "0.3"
 tauri-build = { version = "2.5.6", features = [] }
 
 [dependencies]
@@ -38,6 +36,9 @@ serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
 duct = "0.13"
 thiserror = "2"
+image = { version = "=0.25.5", default-features = false, features = ["jpeg", "png"] }
+imageproc = { version = "=0.25.0", default-features = false }
+png = "=0.17.16"
 tauri = { version = "2.10.3", features = [] }
 tauri-plugin-log = "2"
 tauri-plugin-opener = "2"

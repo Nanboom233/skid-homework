@@ -307,44 +307,15 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf pkg-config libopencv-dev
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf pkg-config
 
       - name: Install macOS system dependencies
         if: runner.os == 'macOS'
         shell: bash
         run: |
           set -euo pipefail
-          brew install opencv pkgconf
+          brew install pkgconf
 
-          opencv_prefix="$(brew --prefix opencv)"
-          brew_prefix="$(brew --prefix)"
-          echo "PKG_CONFIG_PATH=${opencv_prefix}/lib/pkgconfig:${brew_prefix}/lib/pkgconfig:${PKG_CONFIG_PATH:-}" >> "$GITHUB_ENV"
-
-      - name: Install Windows OpenCV SDK
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          $opencvVersion = "4.10.0"
-          $archive = Join-Path $env:RUNNER_TEMP "opencv-$opencvVersion-windows.exe"
-          $extractRoot = Join-Path $env:RUNNER_TEMP "opencv-windows"
-          $downloadUrl = "https://github.com/opencv/opencv/releases/download/$opencvVersion/opencv-$opencvVersion-windows.exe"
-
-          Invoke-WebRequest -Uri $downloadUrl -OutFile $archive
-          & $archive "-o$extractRoot" -y
-          if ($LASTEXITCODE -ne 0) {
-            throw "OpenCV Windows SDK extraction failed with exit code $LASTEXITCODE"
-          }
-
-          $opencvRoot = Join-Path $extractRoot "opencv\build"
-          $opencvLib = Join-Path $opencvRoot "x64\vc16\lib\opencv_world4100.lib"
-          if (-not (Test-Path $opencvLib)) {
-            throw "OpenCV Windows library not found at $opencvLib"
-          }
-
-          "OPENCV_WINDOWS_SDK_DIR=$opencvRoot" | Out-File -FilePath $env:GITHUB_ENV -Append
-          (Join-Path $opencvRoot "x64\vc16\bin") | Out-File -FilePath $env:GITHUB_PATH -Append
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -432,26 +403,6 @@ jobs:
           echo "NDK_HOME=${selected_ndk}" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_HOME=${selected_ndk}" >> "$GITHUB_ENV"
 
-      - name: Install Android OpenCV SDK
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          opencv_version="4.10.0"
-          archive="${RUNNER_TEMP}/opencv-${opencv_version}-android-sdk.zip"
-          extract_root="${RUNNER_TEMP}/opencv-android"
-          download_url="https://github.com/opencv/opencv/releases/download/${opencv_version}/opencv-${opencv_version}-android-sdk.zip"
-
-          curl -fsSL "$download_url" -o "$archive"
-          unzip -q "$archive" -d "$extract_root"
-
-          sdk_dir="${extract_root}/OpenCV-android-sdk"
-          if [ ! -d "${sdk_dir}/sdk/native" ]; then
-            echo "OpenCV Android SDK not found under ${sdk_dir}" >&2
-            exit 1
-          fi
-
-          echo "OPENCV_ANDROID_SDK_DIR=${sdk_dir}" >> "$GITHUB_ENV"
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile

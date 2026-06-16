@@ -1,5 +1,5 @@
 mod adb_plugin;
-mod scan_enhance;
+pub mod scan_enhance;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
