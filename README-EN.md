@@ -137,10 +137,9 @@ branch `main`:
 Markers must match these lowercase forms exactly and appear at the end of the
 commit message.
 
-If the release target commit changes `.github/workflows/`, also configure
-`WORKFLOW_GIT_TOKEN`. The token needs repository contents write permission and
-workflow permission so GitHub Actions can create the release tag safely for
-workflow-changing commits.
+Ordinary target commits can use `github.token`. A target commit that changes
+`.github/workflows/` requires `WORKFLOW_GIT_TOKEN` with repository contents
+write permission and workflow permission.
 
 If you want signed Android release builds in CI, configure these repository secrets:
 

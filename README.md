@@ -285,7 +285,7 @@ pnpx i18next-cli types
 
 标记必须完全匹配以上小写格式，并位于提交信息末尾。
 
-如果发布目标提交修改了 `.github/workflows/`，请额外配置 `WORKFLOW_GIT_TOKEN`。该 token 需要具备仓库内容写入权限和 workflow 权限，用于 GitHub Actions 在 workflow 变更提交上安全地创建发布 tag。
+普通目标提交可直接使用 `github.token`。`github.token` 不能为修改了 `.github/workflows/` 的提交创建 tag。发布此类提交时，请设置 `WORKFLOW_GIT_TOKEN`。该 token 必须具有仓库内容写入权限和 workflow 权限。
 
 如果需要为 Android Release 构建启用签名，请配置以下仓库 Secrets：
 
